@@ -1,0 +1,35 @@
+[project]
+name = "doppel-test-evita"
+version = "1.0"
+description = "Porting of the DoppelTest code for ICSE23 to EVITA framework"
+authors = [
+    {name = "Yuqi Huai"},
+    {name = "Yuntianyi Chen"},
+    {name = "Sumaya Almanee"},
+    {name = "Tuan Ngo"},
+    {name = "Xiang Liao"},
+    {name = "Ziwen Wan"},
+    {name = "Qi Alfred Chen"},
+    {name = "Joshua Garcia"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click >= 8.1.3",
+    "deap==1.4.1",
+    "networkx >=2.5.1",
+    "numpy >=1.21.0",
+    "pandas >=1.2.4",
+    "Shapely >=2.0.4"
+]
+
+[build-system]
+requires = ["setuptools>=65.5.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["data*, framework*, hdmap*, utils"]
+exclude = ["docs*", "tests*", "apollo*", "modules*"]
