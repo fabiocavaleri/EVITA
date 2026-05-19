@@ -2,7 +2,7 @@ from copy import deepcopy
 from datetime import datetime
 import pickle
 from random import random, sample, shuffle, randint
-from config import APOLLO_ROOT, HD_MAP_PATH, MAX_ADC_COUNT, MAX_PD_COUNT, RUN_FOR_HOUR, RECORDS_DIR_BASE, TRAJECTORIES_DIR_BASE, RuntimeConfig
+from config import APOLLO_ROOT, HD_MAP_PATH, MAX_ADC_COUNT, MAX_PD_COUNT, RUN_FOR_HOUR, RECORDS_DIR_BASE, RuntimeConfig
 from apollo.ApolloContainer import ApolloContainer
 from framework.oracles import RecordAnalyzer
 from framework.oracles.ViolationTracker import ViolationTracker
@@ -302,7 +302,6 @@ def main():
     experiment_name = os.path.join(f"MAX_ADC_COUNT_{MAX_ADC_COUNT}_RUN_FOR_HOUR_{RUN_FOR_HOUR}_SCENARIO_MAP_{map_name}_{experiment_time}")
 
     RuntimeConfig.RECORDS_DIR = os.path.join(RECORDS_DIR_BASE, experiment_name)
-    RuntimeConfig.TRAJECTORIES_DIR = os.path.join(TRAJECTORIES_DIR_BASE, experiment_name)
 
     os.makedirs(RuntimeConfig.RECORDS_DIR)
     destination = os.path.join(RuntimeConfig.RECORDS_DIR, "config.py")
@@ -313,10 +312,6 @@ def main():
     config_src = config_src.replace(
         'RECORDS_DIR = None',
         f'RECORDS_DIR = "{RuntimeConfig.RECORDS_DIR}"'
-    )
-    config_src = config_src.replace(
-        'TRAJECTORIES_DIR = None',
-        f'TRAJECTORIES_DIR = "{RuntimeConfig.TRAJECTORIES_DIR}"'
     )
 
     with open(destination, "w") as f:

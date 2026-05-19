@@ -21,13 +21,13 @@ import pandas as pd
 from copy import deepcopy
 from typing import List, Tuple
 
-from conversion_scripts.utils.RecordFileError import RecordFileError
+from EVITA_DoppelTest.conversion_scripts.utils.RecordFileError import RecordFileError
 
 import matplotlib.pyplot as plt
 from commonroad.visualization.mp_renderer import MPRenderer
 
-from conversion_scripts.utils.conversion_utils import build_json_scenario
-from conversion_scripts.utils.interactions_utils import augment_with_interactions, planned_trajectories_to_df, augment_with_collisions
+from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import build_json_scenario
+from EVITA_DoppelTest.conversion_scripts.utils.interactions_utils import augment_with_interactions, planned_trajectories_to_df, augment_with_collisions
 
 from commonroad.scenario.scenario import Scenario
 from commonroad.common.file_reader import XMLFileReader

@@ -529,6 +529,7 @@ def run(ctx, scenario_generator_path,scenario_generator_module, scenario_generat
                     logger.critical( "=" * ( len(msg) + 2) )
                     scenario.is_valid = False
                     scenario.validation_message = "Error during the simulation execution"
+                    raise e
 
             # Evaluation
             if scenario.is_valid:
@@ -549,7 +550,7 @@ def run(ctx, scenario_generator_path,scenario_generator_module, scenario_generat
                         "evaluation-data": criticality_dataframe,
                     })
                 except Exception as e:
-                    msg = f"A critical error prevented {scenario.generation_id} to be evaluated. Mark it as invalid"
+                    msg = f" {scenario.generation_id} to be evaluated. Mark it as invalid"
                     logger.critical( "=" * ( len(msg) + 2 ) )
                     logger.critical( f" {msg} ")
                     logger.critical( "=" * ( len(msg) + 2) )

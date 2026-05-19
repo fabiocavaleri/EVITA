@@ -125,7 +125,7 @@ def draw_scenario(scenario: Scenario, output_folder: str, planned_trajectories: 
                         else:
                             tl_draw_params.scale_factor = 0.15
                         
-                        tl_draw_params.zorder = 600
+                        tl_draw_params.zorder = 500
                         tl_draw_params.color_mapping = {
                             "red": "#ff0000",
                             "yellow": "#ffff00",
@@ -138,40 +138,39 @@ def draw_scenario(scenario: Scenario, output_folder: str, planned_trajectories: 
                         traffic_light.draw(rnd, draw_params = tl_draw_params)
                 
                 # Iterate over each scenario obstacle
-                stop_points = {}
                 for obstacle in obstacles:
-
                     # Get obstacle occupancy at plotting timestep
                     obstacle_occupancy = obstacle.occupancy_at_time(time_step)
                     # If the obstacle is present at this timestep, plot it
                     if obstacle_occupancy is not None:
                         # Set obstacle parameters
                         obs_params = MPDrawParams()
-                        obs_params.dynamic_obstacle.draw_icon = True
-                        obs_params.dynamic_obstacle.show_label = True
 
                         # We need both otherwise begin and end otherwise it will not show it
                         obs_params.dynamic_obstacle.time_begin = time_step
                         obs_params.dynamic_obstacle.time_end = obstacle.prediction.final_time_step
+                   
+                        obs_params.dynamic_obstacle.draw_icon = True
+                        obs_params.dynamic_obstacle.show_label = True
+                        obs_params.dynamic_obstacle.draw_direction = True
+                        obs_params.dynamic_obstacle.draw_signals = True
 
                         # Set vehicle icon colors
                         obs_params.dynamic_obstacle.vehicle_shape.occupancy.shape.facecolor = color_mapping[obstacle.obstacle_id]
                         obs_params.dynamic_obstacle.vehicle_shape.occupancy.shape.edgecolor = "black"
 
                         # Ensure this is draw above everything else
-                        obs_params.dynamic_obstacle.vehicle_shape.occupancy.shape.zorder = 900
+                        obs_params.dynamic_obstacle.vehicle_shape.occupancy.shape.zorder = 1000
                         obs_params.dynamic_obstacle.vehicle_shape.occupancy.shape.opacity = 1
 
-                        obs_params.dynamic_obstacle.draw_direction = True
-                        obs_params.dynamic_obstacle.draw_signals = True
-                        
                         # Draw a line instead of a set of points using the same color of the vehicle
                         # Highlight better the planned trajectories (bold lines)
                         obs_params.dynamic_obstacle.trajectory.draw_trajectory = True
                         obs_params.dynamic_obstacle.trajectory.draw_continuous = True
                         obs_params.dynamic_obstacle.trajectory.facecolor = color_mapping[obstacle.obstacle_id]
-                        obs_params.dynamic_obstacle.trajectory.line_width = 1.5
-                        obs_params.dynamic_obstacle.trajectory.zorder = 150
+                        obs_params.dynamic_obstacle.trajectory.line_width = 1.25
+                        obs_params.dynamic_obstacle.trajectory.zorder = -100
+                        
 
                         # Get obstacle planned trajectory (if exist)
                         # If the vehicle has planned a trajectory at time t, get it
@@ -180,20 +179,23 @@ def draw_scenario(scenario: Scenario, output_folder: str, planned_trajectories: 
                         vehicle_planned_trajectories = planned_trajectories.get(obstacle.obstacle_id, {})
                         if time_step in vehicle_planned_trajectories:
                             planned_trajectory_at_t = vehicle_planned_trajectories[time_step]["planned_trajectory"]
-                            stop_point_at_t = vehicle_planned_trajectories[time_step]["stop_position"]
                         else:
                             t = time_step - 1
                             while t >= (time_step - 25):
                                 if t in vehicle_planned_trajectories:
                                     planned_trajectory_at_t = vehicle_planned_trajectories[t]["planned_trajectory"]
-                                    stop_point_at_t = vehicle_planned_trajectories[t]["stop_position"]
                                     break
                                 t -= 1
 
+                        # Finally render the obstacle
+                        obstacle.draw(rnd, draw_params = obs_params)
+
                         # Draw planned trajectory if it exist
                         if planned_trajectory_at_t is not None:
-                            # print(f"{type(planned_trajectory_at_t)} Agent: {obstacle.obstacle_id} - Planning Timestep: {planned_trajectory_at_t.state_list[0].time_step} - Trajectory length: {len(planned_trajectory_at_t.state_list)}")
                             traj_params = MPDrawParams().dynamic_obstacle.trajectory
+
+                            traj_params.time_begin = time_step
+                            traj_params.time_end = obstacle.prediction.final_time_step
 
                             traj_params.draw_trajectory = True
                             traj_params.draw_continuous = True
@@ -213,12 +215,7 @@ def draw_scenario(scenario: Scenario, output_folder: str, planned_trajectories: 
                             if position_difference[0] <= 5 and position_difference[1] <= 5:
                                 planned_trajectory_at_t.draw(rnd, draw_params = traj_params)
                                 
-                                if stop_point_at_t is not None:
-                                    stop_points[obstacle.obstacle_id] = stop_point_at_t
-
-                        # Finally render the obstacle
-                        obstacle.draw(rnd, draw_params=obs_params)
-
+                
                         # Check if there is a valid planning problem for the current obstacle
                         if planning_problems_set is not None and pp_id_map[obstacle.obstacle_id] in planning_problems_set.planning_problem_dict:
                             # Get planning problem and its goal region
@@ -242,20 +239,8 @@ def draw_scenario(scenario: Scenario, output_folder: str, planned_trajectories: 
                                 sub_goal.draw(rnd, draw_params = goal_region_params)
                 
                 # Render the scenario onto the plot
-                rnd.render()
+                rnd.render()        
 
-                # for obstacle in obstacles:
-                #     if obstacle.obstacle_id in stop_points:
-                #         x, y = stop_points[obstacle.obstacle_id]
-                #         rnd.ax.plot(
-                #             x, y,
-                #             marker = 'x',
-                #             markersize = 5,
-                #             color = color_mapping[obstacle.obstacle_id],
-                #             zorder = 1500
-                #         )
-
-                
                 # Show scenario timesteps
                 middle_x = 0.5
                 top_y = 0.98

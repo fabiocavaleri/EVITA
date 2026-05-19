@@ -102,7 +102,7 @@ def get_random_init_state(config: ScenarioGeneratorConfig, lanelet: Lanelet) -> 
     yaw_rate = 0.0
     slip_angle = 0.0
 
-    from config import INSTANCE_MAX_WAIT_TIME
+    from EVITA_DoppelTest.config import INSTANCE_MAX_WAIT_TIME
     initial_time_step = random.randint(0, INSTANCE_MAX_WAIT_TIME)
     
     # TODO time_step is necessary?

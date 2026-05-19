@@ -56,15 +56,15 @@ def analyze_generation(record_files_folder: str, experiment: str, output_files_f
 
             # Define python 3.8 environment and script to run scenario using Apollo
             python_38 = "../.venv38/bin/python"
-            scenario_conversion_script = "conversion_scripts.scenario_converter"
-
+            scenario_conversion_script = "trajectories_analysis.scenario_converter"
+            
             ids_map_file_path = os.path.join(executed_scenario_folder, "ids_map.json")
             if os.path.exists(ids_map_file_path):
                 with open(ids_map_file_path, 'r') as f:
                     ids_map = json.load(f)
             else:
                 ids_map = None
-
+            
             try:
                 env = os.environ.copy()
                 env["PYTHONPATH"] = os.path.abspath("../") + ":" + os.path.abspath("../../")
@@ -87,9 +87,10 @@ def analyze_generation(record_files_folder: str, experiment: str, output_files_f
                 print("Return code:", e.returncode)
                 print("stdout:", e.stdout)
                 print("stderr:", e.stderr)
-                raise
+                # raise
+                continue
             
-            from conversion_scripts.utils.interactions_utils import augment_with_collisions, augment_with_interactions, planned_trajectories_to_df
+            from trajectories_analysis.utils.interactions_utils import augment_with_collisions, augment_with_interactions, planned_trajectories_to_df
 
             # Open executed scenario
             executed_scenario_file_path = os.path.join(executed_scenario_folder, "executed_scenario.xml")

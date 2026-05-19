@@ -1,0 +1,4 @@
+tqdm
+scipy
+commonroad-io==2024.1
+commonroad-route-planner==2024.2.0

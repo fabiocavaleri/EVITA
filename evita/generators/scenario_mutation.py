@@ -11,7 +11,7 @@ from ..config import ScenarioGeneratorConfig
 
 import os, json
 from typing import List
-from config import INSTANCE_MAX_WAIT_TIME
+from EVITA_DoppelTest.config import INSTANCE_MAX_WAIT_TIME
 
 from commonroad.geometry.shape import Rectangle
 from commonroad.scenario.lanelet import Lanelet
@@ -21,7 +21,7 @@ from commonroad.scenario.traffic_light import TrafficLightState
 from commonroad.planning.goal import GoalRegion
 from commonroad.planning.planning_problem import PlanningProblem, PlanningProblemSet
 
-from conversion_scripts.utils.conversion_utils import get_traffic_light_configuration, get_traffic_light_cycle, compute_map_elements_mapping
+from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import get_traffic_light_configuration, get_traffic_light_cycle, compute_map_elements_mapping
 
 class EVITAPlanningProblem(PlanningProblem):
     def __init__(self, planning_problem_id: int, initial_state: InitialState, goal_region: GoalRegion, path: List[int]):

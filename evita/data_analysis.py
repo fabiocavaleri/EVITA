@@ -1312,12 +1312,13 @@ def _rebuild_trajectory(_initial_time_step: str, xs: str, ys: str, orientations:
         state_list.append(state)
     return Trajectory(initial_time_step, state_list)
 
-def get_interaction_map_bins():
+def get_interaction_map_bins(n_bins: int = None):
     # Define the bins of the interaction map
     from evita.config import ScenarioGeneratorConfig
     scenario_generator_config = ScenarioGeneratorConfig()
     # scenario_generator_config.length
-    n_bins = scenario_generator_config.n_bins
+    if n_bins is None:
+        n_bins = scenario_generator_config.n_bins
     # One car in front/one car behind - How can one retrieve difference in speed/acc?
     long_bins = np.linspace(-scenario_generator_config.length, +scenario_generator_config.length, n_bins)
     # One lane on the left/right

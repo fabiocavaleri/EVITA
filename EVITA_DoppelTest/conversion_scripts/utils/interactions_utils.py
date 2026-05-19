@@ -297,7 +297,15 @@ def check_stop_line_crossing(scenario: Scenario, trajectory_at_time_next_t: Traj
         if stop_line is not None:
             # Convert stop line and planned trajectory to LineString
             stop_line_path = LineString([stop_line.start, stop_line.end])
-            traj_line = LineString((state.position[0], state.position[1]) for state in trajectory_at_time_next_t.state_list)
+            coords = [
+                (state.position[0], state.position[1])
+                for state in trajectory_at_time_next_t.state_list
+            ]
+
+            if len(coords) < 2:
+                return []
+
+            traj_line = LineString(coords)
 
             # Check if they intersect
             if stop_line_path.intersects(traj_line):

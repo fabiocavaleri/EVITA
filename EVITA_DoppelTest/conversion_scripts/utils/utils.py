@@ -739,6 +739,10 @@ def extract_planning_problems(scenario: Scenario, pp_ids: List[int], scenario_sp
 
     # Iterate over the extracted planning problems
     for i, pp_id in enumerate(pp_ids):
+        if i >= len(apollo_planning_problems):
+            # Skip if there are less planning problems in the scenario specification than expected
+            continue
+        
         # Extract initial lane and position
         apollo_pp = apollo_planning_problems[i]
         start_lane = map_lane_id_map[apollo_pp["routing"][0]]

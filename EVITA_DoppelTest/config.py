@@ -14,9 +14,9 @@ APOLLO_VEHICLE_back_edge_to_center = 1.043
 
 
 # DIRECTORIES =======================================
-APOLLO_ROOT = '/BaiduApollo_DoppelTest'
+APOLLO_ROOT = '/home/fabio/BaiduApollo_DoppelTest/'
 """Root directory of Apollo 7.0"""
-DT_ROOT = "/DoppelTest"
+DT_ROOT = "/home/fabio/EVITA/EVITA_DoppelTest/"
 """Root directory of DoppelTest"""
 RECORDS_DIR_BASE = f'{DT_ROOT}/data/records'
 """Desired directory to save record files"""
@@ -42,7 +42,7 @@ RUN_FOR_HOUR = 12
 """Number of hours you wish to run"""
 MAPS_ROOT_FOLDER = f'{DT_ROOT}/data/maps/'
 """Root folder with all the DoppelTest maps"""
-HD_MAP_PATH = f'{DT_ROOT}/data/maps/borregas_ave/base_map.bin'
+HD_MAP_PATH = f'{DT_ROOT}/data/maps/shalun/base_map.bin'
 """
 The HD map you are currently using
 
