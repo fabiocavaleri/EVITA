@@ -1,4 +1,4 @@
-# Replication Package for Automatically Testing Interacting Autonomous Vehicles
+# Replication Package for EVITA (EVolutionary Interaction Testing Approach)
 
 This repository contains the code to reproduce the results of our paper using EVITA (EVolutionary Interaction Testing Approach).
 

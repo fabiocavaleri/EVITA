@@ -118,6 +118,7 @@ def main():
     algorithm.run()
     result = algorithm.result()
 
+    # Extract and save performance metrics
     output_folder = result.problem.output_folder
     valid_scenarios = result.problem.valid_scenarios
     invalid_scenarios = result.problem.invalid_scenarios

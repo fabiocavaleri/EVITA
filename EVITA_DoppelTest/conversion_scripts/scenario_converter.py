@@ -38,7 +38,11 @@ vehicle_heigth = 1.48
 shape = Rectangle(vehicle_length, vehicle_width)
             
 def scenario_converter(record_files_path: str, executed_scenario_folder: str, map_name: str, ids_map: dict = None):
+    """
+    Convert DoppelTest generated scenario data into CommonRoad format and save the converted scenario and data
+    """
 
+    # Open HD map with MapParser
     mp = MapParser(HD_MAP_PATH)
 
     # Load the base scenario with the map lanelet network
@@ -46,7 +50,7 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
     base_scenario_file = os.path.join(BASE_DIR, "converted_maps", f"{map_name}.xml")
     base_scenario, _ = XMLFileReader(base_scenario_file).open(lanelet_assignment = True)          
     
-    # Set folder path containing the scenario .record files
+    # Initialize data structures to store scenario data extracted from the vehicles .record files
     vehicles_data = {}
     scenario_collisions = {}
     scenario_stop_signs_violations = {}
@@ -64,7 +68,7 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
     with open(scenario_specs_file, "r") as f:
         scenario_specs = json.load(f)
 
-    # Retrieve traffic lights data stored in c.json
+    # Retrieve traffic lights data configuration stored in c.json
     traffic_lights_initial_states = scenario_specs["tc_section"]["initial"]
     traffic_light_durations = {
         "red": scenario_specs["tc_section"]["duration_b"],
@@ -72,7 +76,7 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
         "green": scenario_specs["tc_section"]["duration_g"]
     }
 
-    # Update scenario's traffic lights
+    # Update CommonRoad scenario's traffic lights
     scenario = set_traffic_lights_cycles(base_scenario, traffic_lights_initial_states, traffic_light_durations)
 
     # Get scenario objects id count
@@ -81,6 +85,7 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
     # Build output scenario file path
     scenario_file_path = os.path.join(executed_scenario_folder, "scenario.xml")
     
+    # Check if the scenario file doesn't exist (EVITA pipeline does it automatically)
     if not os.path.exists(scenario_file_path):
         # Open .json file containing Apollo-CommonRoad lanes ids mapping
         map_signal_ids_map_file_path = base_scenario_file.replace(".xml", "_lane_ids_map.json")
@@ -88,6 +93,7 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
             map_lane_id_map = json.load(f)
 
         pp_ids = []
+        # Extract planning problems ids from scenario vehicles .record files
         for vehicle_record_file in scenario_vehicles_record_files:
             # Get vehicle numeric identifier
             vehicle = vehicle_record_file.split(".")[0]
@@ -95,8 +101,10 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
             if vehicle_id not in pp_ids:
                 pp_ids.append(vehicle_id)
         
+        # Build CommonRoad planning problems set for Apollo scenario
         planning_problem_set = extract_planning_problems(base_scenario, pp_ids, scenario_specs, map_lane_id_map)
 
+        # Save CommonRoad scenario file with the map and the planning problems
         writer = CommonRoadFileWriter(
             scenario,
             planning_problem_set
@@ -104,13 +112,16 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
 
         writer.write_to_file(scenario_file_path)
 
+    # Initialize CommonRoad executed scenario with the base scenario
     executed_scenario = deepcopy(scenario)
 
+    # If ids_map is available (EVITA generated scenario) setup vehicles ids map
     if ids_map is not None:
         for key, value in ids_map.items():
             new_value = scenario_id_base_counter + int(value.split('_')[3])
             ids_map[key] = new_value
 
+    # Iterate over the scenario vehicles .record files to extract and convert scenario data
     for vehicle_record_file in scenario_vehicles_record_files:
         # Get vehicle numeric identifier
         vehicle = vehicle_record_file.split(".")[0]
@@ -119,6 +130,7 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
         # Build path to the vehicle .record file
         vehicle_record_file_path = os.path.join(record_files_path, vehicle_record_file)
 
+        # Try to open the vehicle .record file and raise a custom error if it fails (e.g. due to file corruption)
         try:
             # Open DoppelTest generated .record file
             record = Record(vehicle_record_file_path)
@@ -138,9 +150,11 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
             detected_speeding_violations
         ) = extract_from_record(record)
 
+        # Convert extracted perception data to an easier format
         converted_vehicle_perception = convert_vehicle_perceptions(vehicle_perception, ids_map)
         converted_traffic_light_perception = convert_traffic_light_perception(traffic_light_perception)
 
+        # Adjust vehicles ids references if ids_map is available
         converted_planned_trajectories = extracted_planned_trajectories
         if ids_map is not None:
             converted_planned_trajectories = convert_planned_trajectories(extracted_planned_trajectories, ids_map)
@@ -175,10 +189,7 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
     for vehicle_id in vehicles_data.keys():
         # Check if vehicle has history states in the .record file
         if not vehicles_data[vehicle_id].get("history"):
-            # print(f"{vehicle_id} history empty")
             continue
-        # else:
-        #     print(f"{vehicle_id} history ok")
 
         # Extract vehicle's start timestep
         vehicle_start_timestep = next(
@@ -199,6 +210,8 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
     # Convert vehicles data to CommonRoad format and add them to the scenario
     for vehicle_id in tqdm(vehicles_data.keys(), desc = "Processing scenario vehicles"):
         tqdm.write(f"Processing vehicle {vehicle_id}")
+        
+        # Extract vehicle data and planned trajectories
         extracted_vehicle_history = vehicles_data[vehicle_id]["history"]
         extracted_planned_trajectories = vehicles_data[vehicle_id]["planned_trajectories"]
 

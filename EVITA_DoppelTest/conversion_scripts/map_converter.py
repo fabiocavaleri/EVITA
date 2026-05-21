@@ -13,6 +13,7 @@ from hdmap.MapParser import MapParser
 from commonroad.geometry.shape import Rectangle
 from commonroad.visualization.mp_renderer import MPRenderer
 from commonroad.common.file_writer import CommonRoadFileWriter
+from commonroad.common.writer.file_writer_interface import OverwriteExistingFile
 from commonroad.scenario.scenario import Scenario, ScenarioID, Tag
 from commonroad.planning.planning_problem import PlanningProblemSet
 from commonroad.scenario.lanelet import Lanelet, LaneletNetwork, LaneletType
@@ -161,7 +162,7 @@ DT_maps = sorted(os.listdir("../data/maps/"))
 
 # Iterate over available Baidu Apollo maps
 for i, map in enumerate(DT_maps):
-    # Build output file path for CommonRoad converted map
+    # Build output file paths for CommonRoad converted map
     output_map_file_path = os.path.join(output_folder, f"{map}.xml")
     output_map_image_file_path = os.path.join(output_folder, f"{map}.png")
     output_map_image_with_labels_file_path = os.path.join(output_folder, f"{map}_with_labels.png")
@@ -171,9 +172,9 @@ for i, map in enumerate(DT_maps):
     output_lanes_not_in_junction_file_path = os.path.join(output_folder, f"{map}_lanes_not_in_junction.json")
 
     # Build source file path for Baidu Apollo .bin map
-    # map_file = os.path.join(MAPS_ROOT_FOLDER, map, "base_map.bin")
     map_file = os.path.join("../data/maps/", map, "base_map.bin")
 
+    # Skip conversion if output file already exists or if source map file is missing
     if not os.path.exists(map_file) or os.path.exists(output_map_file_path):
         continue
 
@@ -200,11 +201,11 @@ for i, map in enumerate(DT_maps):
         author = "Fabio Cavaleri",
         tags = [Tag.URBAN],
         affiliation = "USI-AIT-NII",
-        source = "DoppelTest",
+        source = "BaiduApollo",
         location = None
     )
 
-    # Lanelet Network
+    # Initialize CommonRoad Lanelet Network object
     lanelet_network = LaneletNetwork()
     
     #
@@ -217,12 +218,12 @@ for i, map in enumerate(DT_maps):
     lane_id_map = {}
     lane_id_counter = 0
 
-    # Assign id to each lanelet
+    # Assign an id to each lanelet
     for lane_id in mp.get_lanes():
         lane_id_map[lane_id] = lane_id_counter
         lane_id_counter += 1
 
-    # Save to JSON
+    # Save lane ids map to JSON
     with open(output_lane_ids_map_file_path, "w") as f:
         json.dump(lane_id_map, f, indent = 2)
 
@@ -230,6 +231,7 @@ for i, map in enumerate(DT_maps):
 
     # Iterate over Baidu Apollo map lanes
     for lane_id in mp.get_lanes():
+        # Get lane object from map
         lane = mp.get_lane_by_id(lane_id)
 
         # Extract lane boundary points
@@ -251,14 +253,11 @@ for i, map in enumerate(DT_maps):
         right_adjacent, right_adjacent_same_direction = adjacent_lanes(right_adjacent_forward, right_adjacent_reverse)
         left_adjacent, left_adjacent_same_direction = adjacent_lanes(left_adjacent_forward, left_adjacent_reverse)
         
-        # Extract lanelet type
+        # Extract lanelet type and convert to CommonRoad lanelet type
         apollo_lane_type = lane.LaneType.Name(lane.type)
         cr_lane_type = APOLLO_TO_CR_TYPE.get(apollo_lane_type)
         
-        # apollo_lane_direction = lane.LaneDirection.Name(lane.direction)
-        # apollo_lane_turn = lane.LaneTurn.Name(lane.turn)
-
-        # Retrive assigned lanelet id
+        # Retrieve assigned lanelet id
         lanelet_id = lane_id_map[lane_id]
 
         # Build CommonRoad lanelet Object
@@ -290,67 +289,59 @@ for i, map in enumerate(DT_maps):
     # ----- Traffic Signals Conversion -----
     #
     
-    # Default rectangle size for traffic light (in meters)
-    DEFAULT_WIDTH = 0.3
-    DEFAULT_LENGTH = 0.3
-    DEFAULT_HEADING = 0.0
-
-    # Create basic traffic light cycle object
-    # The real cycle will be defined when the DoppelTest
-    # scenario is converted
-    cycle = TrafficLightCycle(
-        cycle_elements=[
-            TrafficLightCycleElement(
-                state = TrafficLightState.RED,
-                duration = 1000
-            )
-        ]
-    )
-    
+    # Initialize traffic signs id map and relations map
     signals_id_map = {}
     signals_relations_map = {}
 
-    # Iterate over all stop_signs in the map
+    # Iterate over all stop signs in the map
     for signal_id in mp.get_stop_signs():
-        # print(signal_id)
-        
+        # Extract stop sign object from map
         signal = mp.get_stop_sign_by_id(signal_id)
 
+        # Convert signal identifier to int
+        # Add 5000 to avoid lanelet ids duplicates
         if "_" not in signal_id:
             traffic_sign_id = int(signal_id) + 5000
         else:
             traffic_sign_id = int(signal_id.split("_")[-1]) + 5000
 
+        # Extract stop line points associated to the stop sign
         traffic_sign_stop_line = []
         for point in signal.stop_line[0].segment[0].line_segment.point:
             traffic_sign_stop_line.append([point.x, point.y])
 
         stopline_points = np.array(traffic_sign_stop_line)
 
-
+        # Extract traffic sign position
         traffic_sign_position = signal.stop_line[0].segment[0].line_segment.point[0]
 
+        # Retrieve the lanelet(s) associated to the stop line
         traffic_sign_lanelets = get_lanelet_from_stopline(lanelet_network, stopline_points)
 
+        # Iterate over each lanelet associated to the stop sign
         for lanelet_id in traffic_sign_lanelets:
+            # Extract CommonRoad lanelet object
             lanelet = scenario.lanelet_network.find_lanelet_by_id(lanelet_id)
 
+            # Compute stop line midpoint
             stopline_geom = LineString(stopline_points)
-            
-            midpoint = stopline_geom.interpolate(0.5, normalized=True)
+            midpoint = stopline_geom.interpolate(0.5, normalized = True)
 
+            # Extract lanelet boundaries as LineString
             left_bound = LineString(lanelet.left_vertices)
             right_bound = LineString(lanelet.right_vertices)
 
-            # project midpoint to lane boundaries
+            # Project midpoint to lane boundaries
             p_left = left_bound.interpolate(left_bound.project(midpoint))
             p_right = right_bound.interpolate(right_bound.project(midpoint))
 
+            # Crop the stop line to fit between the projected points on the lanelet boundaries
             cropped_stopline = np.array([
                 np.array(p_left.coords[0]),
                 np.array(p_right.coords[0])
             ])
 
+            # Create CommonRoad stop line object and associate it to the lanelet
             stop_line = StopLine(
                 cropped_stopline[0],
                 cropped_stopline[-1],
@@ -358,9 +349,11 @@ for i, map in enumerate(DT_maps):
                 traffic_sign_ref = set([traffic_sign_id])
             )
 
+            # Associate stop line to lanelet and save traffic sign id in lanelet traffic signs set
             lanelet.stop_line = stop_line
             lanelet.traffic_signs = set([traffic_sign_id])
 
+        # Create CommonRoad traffic sign object and add it to the scenario
         ts = TrafficSign(
             traffic_sign_id,
             [TrafficSignElement(TrafficSignIDGermany.STOP)],
@@ -370,15 +363,31 @@ for i, map in enumerate(DT_maps):
 
         scenario.add_objects(ts, traffic_sign_lanelets)
 
+    # Default rectangle size for traffic light (in meters)
+    DEFAULT_WIDTH = 0.3
+    DEFAULT_LENGTH = 0.3
+    DEFAULT_HEADING = 0.0
+
+    # Create basic traffic light cycle object
+    # The real cycle will be defined when the Apollo executed scenario is converted
+    cycle = TrafficLightCycle(
+        cycle_elements=[
+            TrafficLightCycleElement(
+                state = TrafficLightState.RED,
+                duration = 1000
+            )
+        ]
+    )
+
     # Iterate over all traffic lights in the map
     for signal_id in mp.get_signals():
-        # print(signal_id)
+        # Extract traffic light object from map
         signal = mp.get_signal_by_id(signal_id)
 
-        # Position of the signal
+        # Extract position of the signal
         x, y = signal.subsignal[0].location.x, signal.subsignal[0].location.y
 
-        # Direction of the signal (ARROW_FORWARD, ARROW_LEFT, etc.)
+        # Extract direction of the traffic light (ARROW_FORWARD, ARROW_LEFT, etc.)
         arrow_type = signal.subsignal[0].type
 
         # Map Apollo arrow type to CommonRoad TrafficLightDirection
@@ -393,6 +402,7 @@ for i, map in enumerate(DT_maps):
         }
         direction = direction_mapping.get(arrow_type, TrafficLightDirection.ALL)
 
+        # Build traffic light shape as a rectangle centered on the signal position
         traffic_light_shape = Rectangle(
             center = np.array([x, y]),
             width = DEFAULT_WIDTH,
@@ -417,44 +427,47 @@ for i, map in enumerate(DT_maps):
             traffic_light_cycle = cycle
         )
 
-        # Get stopline associated to the lanelet
-        # This allows to retrieve the lanelet where the signal is located
-        # The lanelet is required to add the signal to the scenario lanelet network
+        # Get stopline associated to the traffic light signal
         stopline_points = []
-
         for sl in signal.stop_line:
             for point in sl.segment[0].line_segment.point:
                 stopline_points.append([point.x, point.y])
 
         stopline_points = np.array(stopline_points)
 
+        # Get lanelet(s) associated to the traffic light stop line
         traffic_light_lanelets = get_lanelet_from_stopline(lanelet_network, stopline_points)
 
-        # Add to scenario
+        # Add traffic light to scenario
         if traffic_light_lanelets is None:
             print(f"Unable to find lanelet for traffic light {signal_id}")
         else:
             scenario.add_objects(tl, traffic_light_lanelets)
 
+            # Add traffic light reference to the associated lanelet(s)
             for lanelet_id in traffic_light_lanelets:
+                # Get lanelet CommonRoad object
                 lanelet = scenario.lanelet_network.find_lanelet_by_id(lanelet_id)
 
+                # Compute stop line midpoint
                 stopline_geom = LineString(stopline_points)
-
                 midpoint = stopline_geom.interpolate(0.5, normalized=True)
 
+                # Extract lanelet boundaries as LineString
                 left_bound = LineString(lanelet.left_vertices)
                 right_bound = LineString(lanelet.right_vertices)
 
-                # project midpoint to lane boundaries
+                # Project midpoint to lane boundaries
                 p_left = left_bound.interpolate(left_bound.project(midpoint))
                 p_right = right_bound.interpolate(right_bound.project(midpoint))
 
+                # Crop the stop line to fit between the projected points on the lanelet boundaries
                 cropped_stopline = np.array([
                     np.array(p_left.coords[0]),
                     np.array(p_right.coords[0])
                 ])
 
+                # Create CommonRoad stop line object and associate it to the lanelet
                 stop_line = StopLine(
                     cropped_stopline[0],
                     cropped_stopline[-1],
@@ -462,18 +475,18 @@ for i, map in enumerate(DT_maps):
                     traffic_light_ref = set([tl_id])
                 )
 
+                # Associate stop line to lanelet
                 lanelet.stop_line = stop_line
-                # lanelet.traffic_lights = set([tl_id])
         
-        # Retrieve the map traffic lights related to the current signal
+        # Retrieve the traffic lights related to the current signal
         related_signals = mp.get_signals_wrt(signal_id)
         signals_relations_map[signal_id] = related_signals
 
-    # Save to JSON
+    # Save traffic light ids mapping to JSON
     with open(output_signal_ids_map_file_path, "w") as f:
         json.dump(signals_id_map, f, indent = 2)
 
-    # Save to JSON
+    # Save traffic light relations mapping to JSON
     with open(output_signal_relations_map_file_path, "w") as f:
         json.dump(signals_relations_map, f, indent = 2)
     
@@ -485,13 +498,13 @@ for i, map in enumerate(DT_maps):
         planning_problem_set = PlanningProblemSet()
     )
 
-    from commonroad.common.writer.file_writer_interface import OverwriteExistingFile
     writer.write_to_file(output_map_file_path, OverwriteExistingFile.ALWAYS)
 
     #
     # ----- Extract lanes not in junction -----
     #
 
+    # Extract lanelets not in junction and convert their ids to CommonRoad lanelet ids
     lanes_not_in_junction = list(mp.get_lanes_not_in_junction())
     converted_lanes_ids = [lane_id_map[lane_id] for lane_id in lanes_not_in_junction]
 
@@ -507,15 +520,20 @@ for i, map in enumerate(DT_maps):
 
     lanelets_reachable = {}
     feasible_paths = {}
+
+    # Iterate over all lanes in the map
     for lane_id in mp.get_lanes():
+        # Extract reachable paths from the lanelet
         reachable_paths = mp._MapParser__get_reachable_from(lane_id, 10)
         
         reachable_set = set()
         for path in reachable_paths:
             reachable_set.update(path)
 
+        # Convert reachable lanelet ids to CommonRoad lanelet ids
         converted_reachable_lanes = [lane_id_map[l_id] for l_id in reachable_set]
 
+        # Save converted raechable lanelets
         lanelets_reachable[lane_id_map[lane_id]] = converted_reachable_lanes
         
         converted_feasible_paths = [[lane_id_map[lane_id]]]
@@ -528,43 +546,6 @@ for i, map in enumerate(DT_maps):
 
         feasible_paths[lane_id_map[lane_id]] = converted_feasible_paths
 
-    ''' 
-    ===== Manual Approach =====
-    
-    # Import map file (I manually added some missing lanes link)
-    scenario, _ = XMLFileReader(output_map_file_path).open(lanelet_assignment = True)
-    
-    lanelets_reachable = {}
-    for current_lanelet in scenario.lanelet_network.lanelets:
-
-        visited = set()
-        queue = deque([current_lanelet.lanelet_id])
-
-        while queue:
-            current_id = queue.popleft()
-
-            if current_id in visited:
-                continue
-
-            visited.add(current_id)
-
-            lanelet = scenario.lanelet_network.find_lanelet_by_id(current_id)
-            if lanelet is None:
-                continue
-
-            to_check = lanelet.successor
-
-            if lanelet.adj_left_same_direction:
-                to_check.append(lanelet.adj_left)
-            if lanelet.adj_right_same_direction:
-                to_check.append(lanelet.adj_right)
-
-            for succ_id in to_check:
-                if succ_id not in visited:
-                    queue.append(succ_id)
-
-        lanelets_reachable[current_lanelet.lanelet_id] = list(visited)
-    '''
 
     # Save to JSON
     with open(os.path.join(output_folder, f"{map}_rechable_lanelets.json"), "w") as f:
@@ -616,19 +597,18 @@ for i, map in enumerate(DT_maps):
         ax.text(
             x, y,
             str(lanelet.lanelet_id),
-            fontsize=2,
-            color="black",
-            ha="center",
-            va="center",
-            zorder=100,
-            bbox=dict(
-                boxstyle="round,pad=0.2",
-                fc="white",
-                ec="none",
-                alpha=0.5
+            fontsize = 2,
+            color = "black",
+            ha = "center",
+            va = "center",
+            zorder = 100,
+            bbox = dict(
+                boxstyle = "round,pad=0.2",
+                fc = "white",
+                ec = "none",
+                alpha = 0.5
             )
         )
-
 
     plt.savefig(
         output_map_image_with_labels_file_path,
