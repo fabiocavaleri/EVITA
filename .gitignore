@@ -164,5 +164,6 @@ cython_debug/
 
 # Fabio's Folders
 .venv*
-EVITA_DoppelTest/data/
+EVITA_DoppelTest/data/records/
+EVITA_DoppelTest/data/evita-records/
 results/
