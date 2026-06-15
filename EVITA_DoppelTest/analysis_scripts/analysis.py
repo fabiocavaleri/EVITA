@@ -14,7 +14,6 @@ from commonroad.common.file_reader import XMLFileReader
 from commonroad.scenario.traffic_sign import TrafficSign
 from commonroad.scenario.traffic_light import TrafficLight
 
-
 import traceback
 
 def process_scenario(scenario_folder_path: str, impact_location_bins, riv_bins, ria_bins):
@@ -187,8 +186,14 @@ def process_scenario(scenario_folder_path: str, impact_location_bins, riv_bins, 
             position = None
             if agent_state is not None:
                 provisional_position = agent_state.position
-                if provisional_position is not None and hasattr(provisional_position, 'x') and hasattr(provisional_position, 'y'):
-                    position = [float(provisional_position.x), float(provisional_position.y)]
+                if provisional_position is not None:
+                    # CommonRoad positions are usually numpy arrays
+                    if isinstance(provisional_position, np.ndarray):
+                        if provisional_position.shape[0] >= 2:
+                            position = [float(provisional_position[0]), float(provisional_position[1])]
+                    # Fallback for objects exposing x/y
+                    elif hasattr(provisional_position, "x") and hasattr(provisional_position, "y"):
+                        position = [float(provisional_position.x), float(provisional_position.y)]
 
             # Iterate over each interacting agent
             for agent_id in is_interacting_with:
@@ -268,13 +273,14 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
         for s in ["L", "C", "R", "+"]
     ]
 
-    # Initialize aggregated collision maps
-    collision_map_only_impact_location = np.zeros(len(impact_location_bins))
-    collision_map_impact_location_and_riv = np.zeros((len(impact_location_bins), len(riv_bins) + 1))
-    collision_map = np.zeros((len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1))
-
     # List of experiments IDs (folder names)
     experiments_ids = [experiment.name for experiment in os.scandir(experiments_folder_path) if experiment.is_dir() and experiment.name != "experiments_analysis"]
+    
+    # Initialize aggregated collision maps
+    collision_map_only_impact_location = {exp_id: np.zeros(len(impact_location_bins)) for exp_id in experiments_ids}
+    collision_map_impact_location_and_riv = {exp_id: np.zeros((len(impact_location_bins), len(riv_bins) + 1)) for exp_id in experiments_ids}
+    collision_maps = {exp_id: np.zeros((len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1)) for exp_id in experiments_ids}
+
     
     # Initialize aggregated lists for interactions, collisions, violations, vehicles number and trajectories metrics
     total_vehicles_interactions = {exp_id: [] for exp_id in experiments_ids}
@@ -286,8 +292,9 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
     total_traffic_lights_interactions_positions = []
     total_collisions = {exp_id: [] for exp_id in experiments_ids}
     total_unique_collisions = {exp_id: [] for exp_id in experiments_ids}
-    total_unique_collisions_POI = {exp_id: [] for exp_id in experiments_ids}
-    total_unique_collisions_POI_RIV = {exp_id: [] for exp_id in experiments_ids}
+    total_unique_collisions = {exp_id: [] for exp_id in experiments_ids}
+    total_unique_scenarios_collisions_POI = {exp_id: [] for exp_id in experiments_ids}
+    total_unique_scenarios_collisions_POI_RIV = {exp_id: [] for exp_id in experiments_ids}
     scenario_violations = {exp_id: [] for exp_id in experiments_ids}
     vehicles_number = {exp_id: [] for exp_id in experiments_ids}
     start_positions = []
@@ -371,13 +378,13 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
             # Save collisions metrics
             total_collisions[future_experiment_id].append(res["collisions"])
             total_unique_collisions[future_experiment_id].append(res["unique_collisions"])
-            total_unique_collisions_POI[future_experiment_id].append(res["unique_collisions_POI"])
-            total_unique_collisions_POI_RIV[future_experiment_id].append(res["unique_collisions_POI_RIV"])
+            total_unique_scenarios_collisions_POI[future_experiment_id].append(res["unique_collisions_POI"])
+            total_unique_scenarios_collisions_POI_RIV[future_experiment_id].append(res["unique_collisions_POI_RIV"])
 
             # Save collision maps
-            collision_map_only_impact_location += res["collision_map_only_impact_location"]
-            collision_map_impact_location_and_riv += res["collision_map_impact_location_and_riv"]
-            collision_map += res["collision_map"]
+            collision_map_only_impact_location[future_experiment_id] += res["collision_map_only_impact_location"]
+            collision_map_impact_location_and_riv[future_experiment_id] += res["collision_map_impact_location_and_riv"]
+            collision_maps[future_experiment_id] += res["collision_map"]
 
             # Save violations data
             scenario_violations[future_experiment_id].append(res["violations"])
@@ -412,6 +419,8 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
             return [make_json_serializable(v) for v in obj]
         elif isinstance(obj, np.generic):
             return obj.item()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
         else:
             return obj
 
@@ -426,8 +435,19 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
     def save_positions(data, filename):
         arr = np.asarray(data)
 
-        df = pd.DataFrame(arr, columns = ["x", "y"])
-        df.to_csv(os.path.join(experiments_analysis_folder_path, filename), index = False)
+        # Handle empty data safely
+        if arr.size == 0:
+            df = pd.DataFrame(columns = ["x", "y"])
+
+        else:
+            # Ensure correct shape
+            arr = arr.reshape(-1, 2)
+            df = pd.DataFrame(arr, columns = ["x", "y"])
+
+        df.to_csv(
+            os.path.join(experiments_analysis_folder_path, filename),
+            index = False
+        )
 
     # ================= PLOT HEATMAPS =================
     # Load one reference scenario for map data
@@ -437,51 +457,63 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
 
     # ---- Start positions heatmap ----
     fig = plot_position_heatmap(start_positions, scenario, "Start Positions Heatmap")
-    plt.savefig(os.path.join(experiments_analysis_folder_path, "start_heatmap.png"),
-                dpi = 500,
-                bbox_inches = "tight",
-                transparent = False)
-    plt.close(fig)
+    if fig is not None:
+        plt.savefig(os.path.join(experiments_analysis_folder_path, "start_heatmap.png"),
+                    dpi = 500,
+                    bbox_inches = "tight",
+                    transparent = False)
+        plt.close(fig)
 
     # ---- Goal positions heatmap ----
     fig = plot_position_heatmap(goal_positions, scenario, "Goal Positions Heatmap")
-    plt.savefig(os.path.join(experiments_analysis_folder_path, "goal_heatmap.png"),
-                dpi = 500,
-                bbox_inches = "tight",
-                transparent = False)
-    plt.close(fig)
+    if fig is not None:
+        plt.savefig(os.path.join(experiments_analysis_folder_path, "goal_heatmap.png"),
+                    dpi = 500,
+                    bbox_inches = "tight",
+                    transparent = False)
+        plt.close(fig)
 
     # ---- Trajectories  heatmap ----
     fig = plot_position_heatmap(trajectories_points, scenario, "Trajectories Heatmap")
-    plt.savefig(os.path.join(experiments_analysis_folder_path, "trajectories_heatmap.png"),
-                dpi = 500,
-                bbox_inches = "tight",
-                transparent = False)
-    plt.close(fig)
+    if fig is not None:
+        plt.savefig(os.path.join(experiments_analysis_folder_path, "trajectories_heatmap.png"),
+                    dpi = 500,
+                    bbox_inches = "tight",
+                    transparent = False)
+        plt.close(fig)
 
     # ---- Vehicle interactions heatmap ----
     fig = plot_position_heatmap(total_vehicle_interactions_positions, scenario, "Vehicle Interactions Heatmap")
-    plt.savefig(os.path.join(experiments_analysis_folder_path, "vehicle_interactions_heatmap.png"),
+    if fig is not None:
+        plt.savefig(os.path.join(experiments_analysis_folder_path, "vehicle_interactions_heatmap.png"),
                 dpi = 500,
                 bbox_inches = "tight",
                 transparent = False)
-    plt.close(fig)
+        plt.close(fig)
 
     # ---- Stop sign interactions heatmap ----
     fig = plot_position_heatmap(total_stop_sign_interaction_positions, scenario, "Stop Sign Interactions Heatmap")
-    plt.savefig(os.path.join(experiments_analysis_folder_path, "stop_sign_interactions_heatmap.png"),
-                dpi = 500,
-                bbox_inches = "tight",
+    if fig is not None:
+        plt.savefig(os.path.join(experiments_analysis_folder_path, "stop_sign_interactions_heatmap.png"),
+                    dpi = 500,
+                    bbox_inches = "tight",
                 transparent = False)
-    plt.close(fig)
+        plt.close(fig)
 
     # ---- Traffic light interactions heatmap ----
     fig = plot_position_heatmap(total_traffic_lights_interactions_positions, scenario, "Traffic Light Interactions Heatmap")
-    plt.savefig(os.path.join(experiments_analysis_folder_path, "traffic_light_interactions_heatmap.png"),
+    if fig is not None:
+        plt.savefig(os.path.join(experiments_analysis_folder_path, "traffic_light_interactions_heatmap.png"),
                 dpi = 500,
                 bbox_inches = "tight",
                 transparent = False)
-    plt.close(fig)
+        plt.close(fig)
+
+    # ================ UNIQUE COLLISIONS =================
+    # Iterate over each experiment ID and violations lists
+    for experiment_key, values in collision_maps.items():
+        # Save unique collisions count for the experiment
+        total_unique_collisions[experiment_key] = np.count_nonzero(values)
 
     # ================= VIOLATIONS =================
     converted_scenario_violations = {}
@@ -528,8 +560,12 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
     save_positions(total_traffic_lights_interactions_positions, "total_traffic_light_interactions_positions.csv")
     save_list(total_collisions, "total_collisions.json")
     save_list(total_unique_collisions, "total_unique_collisions.json")
-    save_list(total_unique_collisions_POI, "total_unique_collisions_POI.json")
-    save_list(total_unique_collisions_POI_RIV, "total_unique_collisions_POI_RIV.json")
+    save_list(total_unique_scenarios_collisions_POI, "total_unique_scenarios_collisions_POI.json")
+    save_list(total_unique_scenarios_collisions_POI_RIV, "total_unique_scenarios_collisions_POI_RIV.json")
+    save_list(collision_map_only_impact_location, "collision_map_only_impact_location.json")
+    save_list(collision_map_impact_location_and_riv, "collision_map_impact_location_and_riv.json")
+    save_list(collision_maps, "collision_map.json")
+    save_list(total_unique_collisions, "total_unique_collisions.json")
     save_list(vehicles_number, "vehicles_number.json")
     save_positions(start_positions, "start_positions.csv")
     save_positions(goal_positions, "goal_positions.csv")
@@ -656,7 +692,7 @@ def count_interactions(interactions_dict: dict):
         # Iterate over each scenario interactions list
         for interactions in interactions_list:
             # Count the number of interactions for the scenario
-            count = sum(len(ints) for ints in interactions)
+            count = len(interactions)
             interactions_count[experiment_key].append(count)
 
     return interactions_count

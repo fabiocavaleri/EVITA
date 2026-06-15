@@ -306,7 +306,8 @@ def generate_comparison_plots(evita_borregas_folder_path: str, doppeltest_borreg
             os.path.join(doppeltest_borregas_folder_path, "experiments_analysis", "total_unique_collisions.json")
         ),
     },
-    os.path.join(output_folder_path, "unique_collisions_comparison.png")
+    os.path.join(output_folder_path, "unique_collisions_comparison.png"),
+    False
     )
 
     effect_size_data["unique_collisions"] = {
@@ -362,7 +363,7 @@ def generate_comparison_plots(evita_borregas_folder_path: str, doppeltest_borreg
     with open(effect_size_data_file_path, "w") as f:
         json.dump(effect_size_data, f, indent = 4)
 
-def interactions_collisions_plots(data_map: dict, output_path: str):
+def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: bool = True):
     """
     Generates the comparison plot between Evita and DoppelTest for the interactions or collisions metrics and saves the result in the output folder
     """
@@ -375,24 +376,24 @@ def interactions_collisions_plots(data_map: dict, output_path: str):
         evita_path, dt_path = paths
         
         # Load DoppelTest data
-        doppeltest_data = load_json_data(dt_path)
+        doppeltest_data = load_json_data(dt_path, aggregate)
 
         # Iterate over the aggregated metrics values for DoppelTest
-        for val in doppeltest_data:
+        for key, val in doppeltest_data.items():
             all_data.append({"Map": map, "Metric": val, "Framework": "DoppelTest"})
-            
+
         # Load Evita data
-        evita_data = load_json_data(evita_path)
+        evita_data = load_json_data(evita_path, aggregate)
 
         # Iterate over the aggregated metrics values for EVITA
-        for val in evita_data:
+        for key, val in evita_data.items():
             all_data.append({"Map": map, "Metric": val, "Framework": "Evita"})
 
     # Create DataFrame with the collected data
     df = pd.DataFrame(all_data)
 
     # Initialize the figure and axis for the boxplot
-    fig, ax = plt.subplots(figsize = (10, 5))
+    fig, ax = plt.subplots(figsize = (6, 5))
     sns.set_style("ticks")
     
     # Define colors for each framework's data'
@@ -407,21 +408,24 @@ def interactions_collisions_plots(data_map: dict, output_path: str):
         palette = palette,
         linewidth = 1,
         fliersize = 4,
-        gap = 0.25,
+        width = 0.1,
+        gap = 0.1,
         flierprops = {"marker": "o", "markeredgecolor": "gray"},
         ax = ax
     )
 
     # Styling
-    ax.legend(loc = 'upper left')
+    ax.legend(loc = 'upper right')
     ax.set_xlabel("")
     ax.set_ylabel("")
-    sns.despine(top = False, right = False) 
+    sns.despine(top = False, right = False)
+
+    ax.margins(x = 0.05)
     
     plt.tight_layout()
     
     # Save boxplot to file
-    fig.savefig(output_path, dpi = 500)
+    fig.savefig(output_path, dpi = 800)
     plt.close(fig)
 
     # Compute effect size for Borregas Ave map
@@ -434,7 +438,7 @@ def interactions_collisions_plots(data_map: dict, output_path: str):
 
     return borregas_effect_size
 
-def load_json_data(file_path: str):
+def load_json_data(file_path: str, aggregate: bool = True) -> dict:
     """
     Loads JSON data from a file and aggregates data by experiment ID
     """
@@ -442,13 +446,15 @@ def load_json_data(file_path: str):
     with open(file_path, "r") as f:
         data = json.load(f)
     
-    try:
-        aggregated_data = {
-            experiment: sum(values for values in values if isinstance(values, int))
-            for experiment, values in data.items()
-        }
-    except Exception as exc:
-        raise exc
+    aggregated_data = data
+    if aggregate:
+        try:
+            aggregated_data = {
+                experiment: sum(values for values in values if isinstance(values, int))
+                for experiment, values in data.items()
+            }
+        except Exception as exc:
+            raise exc
     
     return aggregated_data
 
@@ -493,7 +499,7 @@ def violations_plots(data_map: dict, output_folder_path: str):
         df = pd.DataFrame(all_data)
 
         # Initialize the figure and axis for the boxplot
-        fig, ax = plt.subplots(figsize = (10, 5))
+        fig, ax = plt.subplots(figsize = (6, 5))
         sns.set_style("ticks")
         
         # Define a plotting color for each framework
@@ -508,7 +514,8 @@ def violations_plots(data_map: dict, output_folder_path: str):
             palette = palette,
             linewidth = 1,
             fliersize = 4,
-            gap = 0.25,
+            width = 0.1,
+            gap = 0.1,
             flierprops = {"marker": "o", "markeredgecolor": "gray"},
             ax = ax
         )
@@ -517,12 +524,14 @@ def violations_plots(data_map: dict, output_folder_path: str):
         ax.legend(loc = 'upper left')
         ax.set_xlabel("")
         ax.set_ylabel("")
-        sns.despine(top = False, right = False) 
+        sns.despine(top = False, right = False)
+        
+        ax.margins(x = 0.05)
         
         plt.tight_layout()
 
         # Save boxplot to file
-        fig.savefig(os.path.join(output_folder_path, f"scenario_{violations[i]}_violations_comparison.png"), dpi = 500)
+        fig.savefig(os.path.join(output_folder_path, f"scenario_{violations[i]}_violations_comparison.png"), dpi = 800)
         plt.close(fig)
 
         # Compute effect size for Borregas Ave map
@@ -556,14 +565,14 @@ def generatation_statistics_plots(data_map: dict, output_folder_path: str):
         borregas_data = load_json_data(evita_path)
 
         # Iterate over the aggregated metrics values for EVITA
-        for val in borregas_data:
+        for _, val in borregas_data.items():
             all_data.append({"Map": "Borregas Ave", f"{statistic}": val, "Framework": "Evita"})
 
         # Create DataFrame with the collected data for the current generation statistic
         df = pd.DataFrame(all_data)
 
         # Initialize the figure and axis for the boxplot
-        fig, ax = plt.subplots(figsize = (10, 5))
+        fig, ax = plt.subplots(figsize = (6, 5))
         sns.set_style("ticks")
         
         # Define a plotting color for Evita
@@ -578,7 +587,8 @@ def generatation_statistics_plots(data_map: dict, output_folder_path: str):
             palette = palette,
             linewidth = 1,
             fliersize = 4,
-            gap = 0.25,
+            width = 0.1,
+            gap = 0.1,
             flierprops = {"marker": "o", "markeredgecolor": "gray"},
             ax = ax
         )
@@ -588,12 +598,14 @@ def generatation_statistics_plots(data_map: dict, output_folder_path: str):
         ax.set_xlabel("")
         ax.set_ylabel("")
         sns.despine(top = False, right = False) 
+
+        ax.margins(x = 0.05)
         
         plt.tight_layout()
         
         # Save boxplot to file
         output_file_path = os.path.join(output_folder_path, f"{statistic}_comparison.png")
-        fig.savefig(output_file_path, dpi = 500)
+        fig.savefig(output_file_path, dpi = 800)
         
         plt.close(fig)
 
@@ -714,7 +726,7 @@ def agents_number_plots(data_map: dict, output_folder_path: str):
 if __name__ == "__main__":
     # Check if the correct number of arguments is provided
     if len(sys.argv) != 4:
-        print("Usage: python generate_plots.py <evita_borregas_folder_path> <doppeltest_borregas_folder_path> <output_folder_path>")
+        print("Usage: python generate_plots.py <evita_experiments_folder_path> <doppeltest_experiments_folder_path> <output_folder_path>")
         sys.exit(1)
 
     evita_borregas_folder_path = sys.argv[1]
