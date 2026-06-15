@@ -148,13 +148,13 @@ After the execution of DoppelTest you can convert the generated scenarios to Com
 ```
 source .venv310/bin/activate
 (.venv310) cd EVITA_DoppelTest
-(.venv310) python convert_experiments.py <record_files_folder> <experiment_name> <output_files_folder> [max_workers]
+(.venv310) python convert_analyze_experiment.py <record_files_folder> <output_files_folder> [max_workers]
 ```
 
-For example, if the `main_ga.py` script created the experiment `MAX_ADC_COUNT_5_RUN_FOR_HOUR_12_SCENARIO_MAP_borregas_ave_20260421200506`, the call to the conversion script should look like:
+For example, if the `main_ga.py` script has generated some experiments in the `data/records` folder, the call to the conversion script should look like:
 
 ```
-python convert_analyze_experiment.py data/records/ MAX_ADC_COUNT_5_RUN_FOR_HOUR_12_SCENARIO_MAP_borregas_ave_20260421200506 data/evita-records/
+python convert_analyze_experiment.py data/records/ data/evita-records/
 ```
 
 > Note: You can also specify the number of parallel processes with `max_workers` (default value is 5) to speed up the conversion and analysis process
