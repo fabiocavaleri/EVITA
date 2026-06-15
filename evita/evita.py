@@ -7,7 +7,6 @@
 from .utils import initialize_main_logger, get_main_logger, RESULTS_FOLDER
 
 import click
-import logging
 import os
 
 @click.group()

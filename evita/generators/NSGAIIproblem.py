@@ -39,6 +39,11 @@ from cr_scenario_handler.utils.agent_status import AgentStatus
 
 TOTAL_GENERATED_SCENARIOS = 0
 def ensure_generation_id(scenario_tuples: List[Tuple[Scenario, PlanningProblemSet]]) -> None:
+    """
+    Ensure that each scenario has a unique generation ID
+    This is useful for debugging and tracking purposes.
+    The generation ID is a simple integer that is incremented for each scenario generated
+    """
     global TOTAL_GENERATED_SCENARIOS
     # Debug Plot
     for scenario, planning_problem_set in scenario_tuples:
@@ -47,19 +52,34 @@ def ensure_generation_id(scenario_tuples: List[Tuple[Scenario, PlanningProblemSe
         setattr(scenario, "generation_id", TOTAL_GENERATED_SCENARIOS)
 
 def backup_debug(_output_folder, _debug_folder, _scenario, _logger):
+    """
+    In case of a critical error during the evaluation, we want to move the entire folder of the scenario away from the results folder, to avoid that the data analysis picks up broken data and to keep it for debug.
+    """
     # We need to clean up this folder to avoid the data analysis to pick broken data up!
     _logger.critical(f"Moving problematic folder {_output_folder} of invalid scenario {_scenario.generation_id} into debug folder {_debug_folder} ")
-    exeuction_folder_name = str(_scenario.generation_id).rjust(5, '0')
-    execution_folder = os.path.join(_output_folder, exeuction_folder_name)
+    execution_folder_name = str(_scenario.generation_id).rjust(5, '0')
+    execution_folder = os.path.join(_output_folder, execution_folder_name)
     if os.path.exists(execution_folder):
-        os.makedirs(_debug_folder, exist_ok=True)
+        os.makedirs(_debug_folder, exist_ok = True)
         shutil.move(execution_folder, _debug_folder)
     else:
         _logger.critical(f"Folder {execution_folder} does not exist")
 
 class NSGAIIproblem(ElementwiseProblem):
+    """
+    This class defines the problem to be solved by the NSGA-II algorithm.
+    The problem is defined as follows:
+    - Decision variables: the scenario and the planning problem set
+    - Objectives:
+        1. Maximize the number of interactions in the scenario
+        2. Maximize the variety of the interaction in the scenario'
+        3. Minimize the number of cars in the scenario
+    """
     def __init__(self, map_file, driving_agent_name, pop_size, termination_criterion, **kwargs):
-        super().__init__(n_var=2, n_obj=3, n_ieq_constr=0, **kwargs)
+        """
+        Initialize the NSGA-II problem
+        """
+        super().__init__(n_var = 2, n_obj = 3, n_ieq_constr = 0, **kwargs)
         
         self.scenario_generator_module = "evita.generators.nsgaii"
         self.scenario_generator_class = "NSGAIIproblem"
@@ -81,9 +101,8 @@ class NSGAIIproblem(ElementwiseProblem):
         
         self.output_folder = os.path.join(RESULTS_FOLDER, self.output_folder_name)
         
-        
         # This is the folder of the entire run, each simulation will have its own folder
-        os.makedirs(self.output_folder, exist_ok=True)
+        os.makedirs(self.output_folder, exist_ok = True)
 
         self.logger.info(f"Outputting results to {self.output_folder}")
         self.debug_folder = os.path.join(self.output_folder, "debug")
@@ -95,58 +114,62 @@ class NSGAIIproblem(ElementwiseProblem):
         self.valid_scenarios = 0
         self.invalid_scenarios = 0
 
-
     def _evaluate(self, x, out, *args, **kwargs):
-        
+        """
+        This function is called by the NSGA-II algorithm to evaluate the fitness of a scenario
+        """
+        # Extract the scenario and the planning problem set from the decision variables
         scenario = x[0]
         planning_problem_set = x[1]
         
-        # Preprocess the scenario
+        # ===== Preprocess the scenario =====
         
-        # ensure that the scenario has an unique number
+        # Ensure that the scenario has an unique number
         ensure_generation_id([(scenario, planning_problem_set)])
         
-        # simulate
-        # This requires a list of tuples
+        # Validate the generated scenarios
         self.scenario_validator.validate_all([(scenario, planning_problem_set)])
-    # Validate the generated scenarios. This will add the attribute: is_valid to the scenario object
-    # scenario_validator.validate_all(scenario_tuples)
 
         print(f"SCENARIO {scenario.debug_id} is valid {scenario.is_valid}")
               
+        # Simulate valide scenarios and skip invalid ones
         if scenario.is_valid:
-            # Do not simulate invalid scenarios
             simulation_data = self.simulate(scenario, planning_problem_set)
         
         # Evaluate only valid scenario, simulation might invalidate them
         if scenario.is_valid:
+            # Extract from executed scenario the data required for the fitness computation
             agent_data = simulation_data["agent-data"]
             evaluation_data = simulation_data["evaluation-data"]
             fitness_num_interactions = evaluation_data["is_interacting"].sum()
             fitness_num_cars = len(agent_data)
             interaction_map = simulation_data["interaction-map"]
+
+            # Compute the difference in the interaction map (variety of interactions)
             min_dist = sys.maxsize
             for i in range(1, (self.individual_number - (self.individual_number % self.pop_size)) + 1):
                 dist = np.linalg.norm(interaction_map - self.interaction_maps.__getitem__(i - 1))
                 min_dist = min(dist, min_dist)
+
+            # Update the individual number
             self.individual_number += 1
+            # Update the interaction maps with the new one
             self.interaction_maps.append(interaction_map)
-            # maximize number of interactions
-            # minimise the number of cars
-            # maximize minimum distance
+
+            # Output the fitness functions values
             out["F"] = [-fitness_num_interactions, fitness_num_cars, -min_dist]
             self.valid_scenarios = self.valid_scenarios + 1
         else:
-            out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
+            out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large fitness values for a non-valid solution
             self.invalid_scenarios = self.invalid_scenarios + 1
-        # out["F"] = [2, 3]
+
         print(out["F"])
 
-
-    # This one execute one scenario only, no need to return a list with one single element
     def simulate(self, scenario, planning_problem_set):
-
-        # Load the Scenario Executor - Hardcoded for the moment
+        """
+        This function simulates the scenario using the specified scenario executor and returns the data required for the fitness computation
+        """
+        # Load the Scenario Executor
         scenario_executor_path = os.path.join(ROOT_DIR, "Frenetix-Motion-Planner")
         scenario_executor_module = "evita.executors.frenetix_executor"
         scenario_executor_class = "FrenetixScenarioExecution"
@@ -156,7 +179,7 @@ class NSGAIIproblem(ElementwiseProblem):
         se_module = importlib.import_module(scenario_executor_module)
         se_class = getattr(se_module, scenario_executor_class)
 
-        # Load the Scenario Evaluator - Hardcoded for the moment
+        # Load the Scenario Evaluator
         scenario_evaluator_path = "."
         scenario_evaluator_module = "evita.evaluators.frenetix_evaluator"
         scenario_evaluator_class = "FrenetixScenarioEvaluator"
@@ -168,41 +191,28 @@ class NSGAIIproblem(ElementwiseProblem):
         sev_module = importlib.import_module(scenario_evaluator_module)
         sev_class = getattr(sev_module, scenario_evaluator_class)
 
+        # Instantiate the scenario executor
         scenario_executor: AbstractScenarioExecutor
-        scenario_executor = se_class(self.output_folder, driving_agent_name=self.driving_agent_name)
+        scenario_executor = se_class(self.output_folder, driving_agent_name = self.driving_agent_name)
 
+        # Instantiate the scenario evaluator
         scenario_evaluator: AbstractScenarioEvaluator
         scenario_evaluator = sev_class(self.output_folder)
 
-        exeuction_folder_name = str(scenario.generation_id).rjust(5, '0')
-        execution_folder = os.path.join(self.output_folder, exeuction_folder_name)
-        # debug_folder = os.path.join(self.output_folder, "debug")
-        # os.makedirs(debug_folder, exist_ok=True)
-
+        # Build the output folder for this scenario simulation
+        execution_folder_name = str(scenario.generation_id).rjust(5, '0')
+        execution_folder = os.path.join(self.output_folder, execution_folder_name)
 
         # Instantiate the scenario validator
         # scenario_validator_configuration = ValidationConfig()
         # scenario_validator = ScenarioValidator(scenario_validator_configuration)
-        
-        # Start the generation  + execution loop
-        # scenario_validator.validate(scenario, planning_problem_set)
 
-        # NOTE: This is useful for debug, in theory is the scenario generator who decides how long are the simulations or the timeout of each AV
-        # TODO Enfore max duration of the scenario, i.e., until when the planners can reach their goal area
-        # for planning_problem in planning_problem_set.planning_problem_dict.values():
-        #     for goal_state in planning_problem.goal.state_list:
-        #         if "time_step" in goal_state.attributes:
-        #             goal_state.time_step = Interval(0, DEBUG_MAX_DURATION)
-
+        # Execute the scenario and get the simulation data if it is valid
         if scenario.is_valid:
-            # In some cases, the scenario is valid, but there are no
             try:
+                # Log the scenario and the planning problems that we are going to execute
                 self.logger.info(f"Executing scenario: {scenario.generation_id}")
                 [ self.logger.debug(f"- {pp.planning_problem_id} - {pp.initial_state.position} - {pp.initial_state.velocity} - planned start at {pp.initial_state.time_step}") for pp in planning_problem_set.planning_problem_dict.values()]
-
-                # TODO: It seems that sometime the ID of the lanelet for the planning problem is not correcly set/found?
-                # TODO Extension can be also done by attaching a new lanelet if necessary, but that requires computing the right origentation and such..
-                # Extend the scenario by adding some road AFTER the goal areas
 
                 # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
                 extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters=LANELET_EXTENSION)
@@ -219,10 +229,9 @@ class NSGAIIproblem(ElementwiseProblem):
                     if agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0:
                         self.logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
                         scenario.is_valid = False
-                        scenario.validation_message = "Agent {agent.id} could not compute a phyisically possible trajectory since the beginning."
-                    
+                        scenario.validation_message = f"Agent {agent.id} could not compute a phyisically possible trajectory since the beginning."
             except Exception as e:
-                # We need to get rid of the execution folder!
+                # We need to get rid of the execution folder if scenario is invalid!
                 msg = f"A critical error prevented {scenario.generation_id} to complete. Mark it as Error and set the validity flag to False"
                 self.logger.critical( "=" * ( len(msg) + 2 ) )
                 self.logger.critical( f" {msg} ")
@@ -230,20 +239,24 @@ class NSGAIIproblem(ElementwiseProblem):
                 scenario.is_valid = False
                 scenario.validation_message = "Error during the simulation execution"
 
-        # Evaluation
+        # Evaluate scenarios after execution
         if scenario.is_valid:
             try:
                 self.logger.info(f"Evaluating scenario: {scenario.generation_id}")
 
-                # we do not consider the time spent in collecting the metrics
+                # We do not consider the time spent in collecting the metrics
                 self.termination_criterion.update_elapsed_time()
 
+                # Compute the criticality of the scenario using the scenario evaluator
                 criticality_dataframe = scenario_evaluator.evaluate(simulation)
+
+                # Restart the time budget for the next scenario evaluation and simulation
                 self.termination_criterion.restart()
             
                 # Compute the interaction map for the scenario
                 interaction_map = compute_interaction_map(simulation, criticality_dataframe)
             
+                # Return the data required for the fitness computation
                 return {
                     "individual": (scenario, planning_problem_set),
                     "agent-data": simulation.agents,
@@ -286,17 +299,35 @@ class NSGAIIproblem(ElementwiseProblem):
             }
         
 class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
+    """
+    This class defines the problem to be solved by the NSGA-II algorithm for the EVITA DoppelTest
+    The problem is defined as follows:
+    - Decision variables: the scenario and the planning problem set
+    - Objectives:
+        1. Maximize the number of interactions in the scenario
+        2. Maximize the variety of the interaction in the scenario'
+        3. Minimize the number of cars in the scenario
+    """
     def __init__(self, map_file_path, driving_agent_name, pop_size, termination_criterion, records_file_path, **kwargs):
+        """
+        Use parent constructor to initialize the NSGAIIproblem and then add the specific attributes for the EVITA + DoppelTest
+        """
         super().__init__(map_file_path, driving_agent_name, pop_size, termination_criterion, **kwargs)
 
         self.records_file_path = records_file_path
         self.scenario_validator = EVITAScenarioValidator(self.scenario_validator_configuration)
 
     def plot_pps(self, _scenario, planning_problems, output_folder: str):
+        """
+        This function plots the planning problems of a scenario and saves the plots to file
+        """
+        # Iterate over all scenario's planning problems
         for pp in planning_problems:
+            # Initialize the plot
             fig, ax = plt.subplots()
             rnd = MPRenderer(ax = ax)
 
+            # Define the drawing parameters for the lanelet network and the traffic signs
             rnd.draw_params.lanelet_network.traffic_sign.draw_traffic_signs = True
             rnd.draw_params.lanelet_network.traffic_sign.scale_factor = 0.7
             rnd.draw_params.lanelet_network.traffic_light.scale_factor = 0.7
@@ -305,10 +336,12 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
             # Plot the road and the signals
             _scenario.lanelet_network.draw(rnd)
 
+            # Define the drawing parameters for the initial state and the goal area
             rnd.draw_params.shape.facecolor = 'lightgreen'
             rnd.draw_params.shape.edgecolor = 'green'
             rnd.draw_params.shape.opacity = 0.6
 
+            # Extract and plot the initial state and the goal area of the planning problem
             pp.goal.state_list[-1].position.draw(rnd)
             rnd.render()
 
@@ -333,11 +366,14 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
             plt.close()
 
     def _evaluate(self, x, out, *args, **kwargs):
+        """
+        This function is called by the NSGA-II algorithm to evaluate the fitness of a scenario
+        """
         # Get scenario and planning problems to be evaluated     
         scenario = x[0]
         planning_problem_set = x[1]
 
-        # ensure that the scenario has an unique number
+        # Ensure that the scenario has an unique number
         ensure_generation_id([(scenario, planning_problem_set)])
 
         current_generation = self.algorithm.n_gen
@@ -345,19 +381,18 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
         
         print(f"\n{'-' * 25} Evaluation of scenario {current_individual} {'-' * 25}\n")
         
-        # This requires a list of tuples
         # Validate the generated scenarios. This will add the attribute: is_valid to the scenario object
         self.scenario_validator.validate_all([(scenario, planning_problem_set)])
 
         print(f"SCENARIO {current_individual} is valid {scenario.is_valid}")
               
+        # Simulate valide scenarios and skip invalid ones
         if scenario.is_valid:
-            # Do not simulate invalid scenarios
             try:
                 # Convert CommonRoad scenario to a Baidu Apollo compatible .json format
                 json_scenario = build_json_scenario(scenario, deepcopy(planning_problem_set), self.map_file)
 
-                # Save converted .json scenario to file
+                # Save converted .json scenario to file in the output folder
                 output_folder_path = os.path.join(self.records_file_path.replace("/records/", "/evita-records/"), f'Generation_{current_generation}', f'Scenario_{current_individual}')
                 os.makedirs(output_folder_path, exist_ok = True)
 
@@ -365,7 +400,7 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
                 with open(evita_scenario_file_path, "w") as f:
                     json.dump(json_scenario, f, indent = 2)
 
-                # Save CommonRoad scenario
+                # Save CommonRoad scenario to output folder
                 scenario_file_path = os.path.join(output_folder_path, f"scenario.xml")
 
                 writer = CommonRoadFileWriter(
@@ -384,7 +419,7 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
 
                 try:
                     # Launch script to run scenario with Apollo
-                    # The script also converts the Apollo executed scenario to CommonRoad format and saves collisions, interactions, and perceptions data
+                    # The script also converts the Apollo executed scenario to CommonRoad format and saves collisions, interactions, and perception data
                     _ = subprocess.run(
                         [python_38, scenario_running_script, evita_scenario_file_path, str(current_generation), str(current_individual), self.records_file_path],
                         check = True,
@@ -402,7 +437,7 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
                 print(f"===== Completed scenario execution with Apollo =====")
                 print(f"===== CommonRoad executed scenario saved at: {output_folder_path}\n")
                 
-                # Plot the scenario's planning problems
+                # Plot the scenario's planning problems and save the plots to file in the output folder
                 planning_problems_plots_folder = os.path.join(output_folder_path, "planning_problems_plots")
                 os.makedirs(planning_problems_plots_folder, exist_ok = True)
                 self.plot_pps(scenario, planning_problem_set._planning_problem_dict.values(), planning_problems_plots_folder)
@@ -456,7 +491,7 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
                 interactions_map_df = pd.DataFrame(interactions_map)
                 interactions_map_df.to_csv(f"{output_folder_path}/interactions_map.csv", index = False, header = False)
 
-                # Compute and return scenario's fitness value
+                # Compute and return scenario's fitness functions values
                 if interactions_df is None or interactions_map is None:
                     out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
                     self.invalid_scenarios = self.invalid_scenarios + 1
@@ -484,6 +519,5 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
 
                 pass 
 
-        # out["F"] = [2, 3]
         print(f'\nFitness Value: {out["F"]}')
         print(f"\n{'-' * 150}\n")

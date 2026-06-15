@@ -8,6 +8,7 @@ import json
 import numpy as np
 import pandas as pd
 import scipy.stats as ss
+import seaborn as sns
 
 from venny4py.venny4py import *
 
@@ -16,23 +17,18 @@ from bisect import bisect_left
 from commonroad.scenario.trajectory import Trajectory
 from commonroad.scenario.state import CustomState
 from commonroad.common.file_reader import CommonRoadFileReader
+from commonroad.visualization.mp_renderer import MPRenderer
 from commonroad.scenario.scenario import Scenario
-from commonroad.scenario.state import InitialState
-from cr_scenario_handler.utils.agent_status import AgentState, AgentStatus
 from typing import Dict
-from commonroad.geometry.shape import Rectangle
-from commonroad.scenario.obstacle import DynamicObstacle, ObstacleType
-from commonroad.prediction.prediction import TrajectoryPrediction
 from .config import ScenarioGeneratorConfig
-from copy import deepcopy
-from .generators.utils import compute_difference_in_cc_space, compute_RIA, compute_RIV, compute_impact_position
+from .generators.utils import compute_difference_in_cc_space
 from .utils import EVITA_MAIN_LOGGER_NAME, simulation_folders, collisions_folders, find_csv_files, folders_of_completed_runs, RESULTS_FOLDER
 
 TIMEOUT = 200
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
-
+# Mapping of the generator full name to a more readable name for the plots and tables
 GENERATORS = dict()
 GENERATORS["evita.generators.basic_generator.EAOnePlusOneGenerator_MaxInteractions"] = "EA1+1 (Interactions)"
 GENERATORS["evita.generators.basic_generator.EAOnePlusOneGenerator_MaxDanger"] = "EA1+1 (Danger)"
@@ -40,6 +36,7 @@ GENERATORS["evita.generators.doppeltest_generator.DoppelTestScenarioGenerator"] 
 GENERATORS["evita.generators.random_generator.RandomScenarioGenerator"] = "Random"
 GENERATORS["evita.generators.nsgaii.NSGAIIproblem"] = "Evita"
 
+# Mapping of the base scenario name to a more readable name for the plots and tables
 BASE_SCENARIOS = dict()
 BASE_SCENARIOS['CHN_Cho-2_2_I-1-1'] = "Cho"
 BASE_SCENARIOS['DEU_Cologne-79_2_I-1'] = "Cologne"
@@ -76,14 +73,10 @@ def compute_effect_size(treatment, control) -> float:
     m = len(treatment)
     n = len(control)
 
-    # if m != n:
-    #     raise ValueError("Data must have the same length")
-
     r = ss.rankdata(treatment + control)
     r1 = sum(r[0:m])
 
     # Compute the measure
-    # A = (r1/m - (m+1)/2)/n # formula (14) in Vargha and Delaney, 2000
     A = (2 * r1 - m * (m + 1)) / (2 * n * m)  # equivalent formula to avoid accuracy errors
 
     levels = [0.147, 0.33, 0.474]  # effect sizes from Hess and Kromrey, 2004
@@ -95,31 +88,27 @@ def compute_effect_size(treatment, control) -> float:
 
     return estimate, magnitude#, power, nruns
 
-# TODO Generators is superflous since it is derived from the df
 def compute_metrics_for(df: pd.DataFrame, metrics: List[str]):
     """
-    Produces a df containing p value and a12 for all scenarios and each scenario comparing the generators
+    Produces a DataFrame containing p-value and A12 for all scenarios and each scenario comparing the generators
     """
     column_names = ["base_scenario", "metric_name", "generator_1", "generator_2", "p_value", "a_12", "n_obs_generator_1", "n_obs_generator_2"]
     results_df = None
 
+    # Extract the generators and the base scenarios to compare
     generators = sorted(df["generator"].unique().tolist())
     base_scenarios = sorted(df["base_scenario"].unique().tolist())
 
+    # Iterate over all the metrics, scenarios and pairs of generators to compare them
     for metric in metrics:
-
-        # Sorted
         for generator_1 in generators:
-
-            # Sorted
             for generator_2 in generators:
-
-                # Sorted
                 for base_scenario in base_scenarios:
-                    # Values specific to each scenario
-                    bs_values_1 = df[ (df["generator"] == generator_1) & (df["base_scenario"] == base_scenario) ][metric].tolist()
-                    bs_values_2 = df[ (df["generator"] == generator_2) & (df["base_scenario"] == base_scenario) ][metric].tolist()
+                    # Retrieve the values for the metric for the two generators in the given scenario
+                    bs_values_1 = df[(df["generator"] == generator_1) & (df["base_scenario"] == base_scenario) ][metric].tolist()
+                    bs_values_2 = df[(df["generator"] == generator_2) & (df["base_scenario"] == base_scenario) ][metric].tolist()
 
+                    # Extract the number of observations for each generator in the given scenario
                     n_obs_generator_1 = len(bs_values_1)
                     n_obs_generator_2 = len(bs_values_2)
 
@@ -128,26 +117,26 @@ def compute_metrics_for(df: pd.DataFrame, metrics: List[str]):
                         module_logger.info(f"Missing values for scenario {base_scenario}, cannot compare {generator_1} - {len(bs_values_1)} and {generator_2} - {len(bs_values_2)}")
                         continue
 
+                    # Compute the p-value and A12 effect size for the comparison of the two generators in the given scenario
                     bs_p_value = compute_p_value(bs_values_1, bs_values_2)
                     bs_a_12 = compute_effect_size(bs_values_1, bs_values_2)
 
-                    results_df = pd.concat([results_df, pd.DataFrame([[base_scenario, metric, generator_1, generator_2, bs_p_value, bs_a_12, n_obs_generator_1, n_obs_generator_2]], columns=column_names)], ignore_index=True)
+                    # Store the results in the DataFrame
+                    results_df = pd.concat([results_df, pd.DataFrame([[base_scenario, metric, generator_1, generator_2, bs_p_value, bs_a_12, n_obs_generator_1, n_obs_generator_2]], columns = column_names)], ignore_index = True)
 
     return results_df
 
-
 def store_to_html(output_file_html, df, metrics_and_plots: Dict[str, List[str]]):
-    
+    """
+    Store the results of the analysis in an HTML file containing a table for each metric and the corresponding plots
+    """
     output_folder = os.path.dirname(output_file_html)
 
-    with open(output_file_html, "w", newline="") as htmlfile:
-        # Generate on table for each metric
-        # metrics = df["metric_name"].unique().tolist()
-
+    with open(output_file_html, "w", newline = "") as htmlfile:
         htmlfile.write("<HTML><BODY>")
     
+        # Generate on table for each metric
         for metric in metrics_and_plots.keys():
-
             htmlfile.write(f"<H1> Metric: {metric} </H1>")
             
             # Show any plot
@@ -156,18 +145,19 @@ def store_to_html(output_file_html, df, metrics_and_plots: Dict[str, List[str]])
                 htmlfile.write(f'<IMG src="{os.path.relpath(plot_file, output_folder)}">')
             
             # Select only the rows for the metric
-            metric_df = df[ df["metric_name"] == metric ]        
+            metric_df = df[df["metric_name"] == metric]
             
             # Replace the generator names
             metric_df["generator_1"] = metric_df["generator_1"].replace(GENERATORS)
             metric_df["generator_2"] = metric_df["generator_2"].replace(GENERATORS)
             metric_df["base_scenario"] = metric_df["base_scenario"].replace(BASE_SCENARIOS)
 
-            sorted_df = metric_df.sort_values(['base_scenario', 'generator_1', 'generator_2'], ascending=[True, True, True], inplace=False)
+            sorted_df = metric_df.sort_values(['base_scenario', 'generator_1', 'generator_2'], ascending = [True, True, True], inplace = False)
 
             # Remove rows for the same generator
             sorted_df = sorted_df[sorted_df['generator_1'] != sorted_df['generator_2']]
-            sorted_df = sorted_df.drop(columns=["metric_name"])
+            sorted_df = sorted_df.drop(columns = ["metric_name"])
+
             # Format the output
             # Highlight 
             EXPECTED_VALUES = 10
@@ -180,14 +170,14 @@ def store_to_html(output_file_html, df, metrics_and_plots: Dict[str, List[str]])
             html_content = sorted_df.style.apply(apply_formatting).to_html()
 
             htmlfile.write(html_content)
-            # htmlfile.write(sorted_df.to_html(formatter=formatters))
         
         htmlfile.write("</BODY></HTML>")
 
-
 def venn_diagram(file_name, sets: dict):
+    """
+    Plot a venn diagram for the given sets and store it in the given file name
+    """
     import venn
-    # size=3.5
 
     sorted_names = list()
     sorted_values = list()
@@ -200,23 +190,26 @@ def venn_diagram(file_name, sets: dict):
     fig = None
 
     if len(sorted_names) == 5:
-        fig, ax = venn.venn5(labels, names=sorted_names)
+        fig, _ = venn.venn5(labels, names = sorted_names)
     if len(sorted_names) == 4:
-        fig, ax = venn.venn4(labels, names=sorted_names)
+        fig, _ = venn.venn4(labels, names = sorted_names)
     if len(sorted_names) == 3:
-        fig, ax = venn.venn3(labels, names=sorted_names)
+        fig, _ = venn.venn3(labels, names = sorted_names)
     if len(sorted_names) == 2:
-        fig, ax = venn.venn2(labels, names=sorted_names)
+        fig, _ = venn.venn2(labels, names = sorted_names)
     if len(sorted_names) < 2:
         print("Cannot plot a single venn diagram!")
         return
     
-    fig.savefig(file_name, bbox_inches='tight', facecolor='w', )
+    fig.savefig(file_name, bbox_inches = 'tight', facecolor = 'w')
 
     plt.close(fig)
 
-
 def accumulate_results_in_set(the_generator, the_base_scenario, the_sets, the_map):
+    """
+    Given a map of collisions or interactions, accumulate the results in the corresponding set for the given generator and base scenario
+    """
+    
     if "all" not in the_sets:
         the_sets["all"] = dict()
 
@@ -234,40 +227,39 @@ def accumulate_results_in_set(the_generator, the_base_scenario, the_sets, the_ma
 
     # Accumulate them into the all scenarios
     the_sets["all"][the_generator] = the_sets["all"][the_generator].union(per_run_set)    
+    
     # Accumulate them into the base scenarios
     the_sets[the_base_scenario][the_generator] = the_sets[the_base_scenario][the_generator].union(per_run_set)
 
-import seaborn as sns
-
-def plot_as_grouped_bloxplot(df, metric_header:str, metric_label:str):
-    sns.set_theme(style="ticks", palette="pastel")
+def plot_as_grouped_bloxplot(df, metric_header: str, metric_label: str):
+    """
+    Plot the given metric as a box plot grouped by the base scenario and colored by the generator
+    """
+    sns.set_theme(style = "ticks", palette = "pastel")
     
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize = (8, 4))
     ax = sns.boxplot(
-        x="base_scenario", 
-        y=metric_header,
+        x = "base_scenario", 
+        y = metric_header,
         # Refine
         hue = "generator",
-        # hue_order = GENERATORS,
-        # order = [  remap_generator_name(g) for g in GENERATORS],
-        # palette=["m", "g", "r"],
-        data=df)
+        data = df)
     
-    # ax.set(xlabel="Sampler", ylabel=metric_label, fontsize=20)
-    ax.set_xlabel("Base Scenario") #, fontsize=20)
-    ax.set_ylabel(metric_label) #, fontsize=20)
-    plt.legend(loc='upper left')
+    ax.set_xlabel("Base Scenario")
+    ax.set_ylabel(metric_label)
+    plt.legend(loc = 'upper left')
     # Make sure we do not cut labels
     plt.tight_layout()
 
     return fig
     
-
-def plot_metrics_for(results_folder:str, plotting_df: pd.DataFrame, metrics:List[str]) -> List[str]:
-    
+def plot_metrics_for(results_folder: str, plotting_df: pd.DataFrame, metrics: List[str]) -> List[str]:
+    """
+    Plot the given metrics as box plots grouped by the base scenario and colored by the generator and store them in the given results folder
+    """
     output_files = []
+
     for metric_name in metrics:
-    
         # Plot the results achieved by each generator by grouping them on base_scenarios
         fig = plot_as_grouped_bloxplot(plotting_df, metric_name, metric_name)
         
@@ -280,35 +272,35 @@ def plot_metrics_for(results_folder:str, plotting_df: pd.DataFrame, metrics:List
 
     return output_files
 
-
 def _load_data_from_results_folders(results_folders: List):
-    """ Go over all the experimental run folders contained in each of the provided results_folders """
-    requirements_violations_df, performace_df, behavior_df, collisions_df = None, None, None, None
+    """
+    Go over all the experimental run folders contained in each of the provided results_folders
+    """
+    
+    # Initialize the dataframes and sets to accumulate the results
+    requirements_violations_df, performace_df, behavior_df = None, None, None
     interaction_sets = dict()
 
     collision_only_impact_location_sets = dict()
     collision_impact_location_and_riv_sets = dict()
     collision_impact_location_riv_and_ria_sets = dict()
 
+    # Iterate over the results folders and collect the data from each of the runs contained in them
     for results_folder in results_folders:
-
         # Return only the folders that contain valid data
         for run_folder, _ in folders_of_completed_runs(results_folder):
-
-            # module_logger.info(f"Collecting data from folder {run_folder}")
-
+            # Save the metadata to file
             metadata_file = os.path.join(run_folder, "metadata.csv")
             with open(metadata_file, "r") as csvfile:
-                csv_reader = csv.DictReader(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                csv_reader = csv.DictReader(csvfile, delimiter=',', quotechar='"', quoting = csv.QUOTE_MINIMAL)
                 data = [row for row in csv_reader][0]
                 base_scenario = data["scenario_name"]
-                # Find out which generator - By name + module - TODO Hardcoded
+                # Find out which generator - By name + module
                 generator = data["generator"]
                 # Ensure runs are distinguishable
                 timestamp_id = data["timestamp_id"]
 
-            # module_logger.debug(f"Generator {generator} - Base Scenario {base_scenario}")
-
+            # Open requirements violations file and save the data in the dataframe
             requirements_violations_file = os.path.join(run_folder, "requirements_violations.csv")
             r_df = pd.read_csv(requirements_violations_file)
             r_df['generator'] = generator
@@ -318,8 +310,9 @@ def _load_data_from_results_folders(results_folders: List):
             if requirements_violations_df is None:
                 requirements_violations_df = r_df
             else:
-                requirements_violations_df = pd.concat([requirements_violations_df, r_df], ignore_index=True)
+                requirements_violations_df = pd.concat([requirements_violations_df, r_df], ignore_index = True)
 
+            # Open behavior file and save the data in the dataframe
             behavior_file = os.path.join(run_folder, "behavior.csv")
             b_df = pd.read_csv(behavior_file)
             b_df['generator'] = generator
@@ -329,8 +322,9 @@ def _load_data_from_results_folders(results_folders: List):
             if behavior_df is None:
                 behavior_df = b_df
             else:
-                behavior_df = pd.concat([behavior_df, b_df], ignore_index=True)
+                behavior_df = pd.concat([behavior_df, b_df], ignore_index = True)
             
+            # Open performance file and save the data in the dataframe
             performance_file = os.path.join(run_folder, "performance.csv")
             p_df = pd.read_csv(performance_file)
             p_df['generator'] = generator
@@ -340,10 +334,9 @@ def _load_data_from_results_folders(results_folders: List):
             if performace_df is None:
                 performace_df = p_df
             else:
-                performace_df = pd.concat([performace_df, p_df], ignore_index=True)
+                performace_df = pd.concat([performace_df, p_df], ignore_index = True)
 
             # Load the collisions maps
-
             # Read the collision and interaction maps, transform them into sets for the venn diagram visualization
             collision_map_file = os.path.join(run_folder, "collision_map.npy")
             collision_map = np.load(collision_map_file)
@@ -352,54 +345,30 @@ def _load_data_from_results_folders(results_folders: List):
 
             collision_map_only_impact_location_file = os.path.join(run_folder, "collision_map_only_impact_location.npy")
             collision_map_only_impact_location = np.load(collision_map_only_impact_location_file)
-            # collision_only_impact_location_sets[generator] = set(list(zip(*[ a.tolist() for a in np.nonzero(collision_map_only_impact_location) ])))
             accumulate_results_in_set(generator, base_scenario, collision_only_impact_location_sets, collision_map_only_impact_location)
 
             collision_map_impact_location_and_riv_file = os.path.join(run_folder, "collision_map_impact_location_and_riv.npy")
             collision_map_impact_location_and_riv = np.load(collision_map_impact_location_and_riv_file)
-            # collision_impact_location_and_riv_sets[generator] = set(list(zip(*[ a.tolist() for a in np.nonzero(collision_map_impact_location_and_riv) ])))
             accumulate_results_in_set(generator, base_scenario, collision_impact_location_and_riv_sets, collision_map_impact_location_and_riv)
 
             interaction_map_file = os.path.join(run_folder, "interaction_map.npy")
             interaction_map = np.load(interaction_map_file)
-            # interaction_sets[generator] = set(list(zip(*[ a.tolist() for a in np.nonzero(interaction_map) ])))
             accumulate_results_in_set(generator, base_scenario, interaction_sets, interaction_map)
 
-
-
-
-    # TODO We need to add all the generators togethere -> Correlation analysis
-    # TODO We need to add all the base_scenarios  -> Aggregated analysis
-
-    # TODO This is a bit too much...
     return requirements_violations_df, performace_df, behavior_df, interaction_sets, collision_only_impact_location_sets, collision_impact_location_and_riv_sets, collision_impact_location_riv_and_ria_sets
 
-    # Correlation data: (scenario, list[int])
-    # Pairs must be sorted 
-    # TODO
-    # correlation_df: pd.DataFrame
-    # correlation_df_header = ["scenario", "total_interactions", "total_collision"]
-    # Correlation analysis. For each scenario (and possibly number of agent), across all the generators, accumulated
-    # (scenario, interaction_count) -> (scenario, collisions)
-    # (scenario, unique_interaction_count) -> (scenario, unique_collisions)
-
-    # results_folders = [os.path.abspath(f) for f in results_folders] if len(results_folders) > 0 else [RESULTS_FOLDER]
-
-
-#
-# TODO Consider replacting this one with UpSetPlot to include more baselines
-#
 def plot_venn_diagrams(the_results_folder: str, the_sets: dict, the_name: str):
+    """
+     Plot the venn diagrams for the given sets and store them in the given results folder with the given name
+    """
     for the_base_scenario, the_result_sets in the_sets.items():
         venn_diagram_file = os.path.join(the_results_folder, f"{the_name}-{the_base_scenario}.png")
         venn_diagram(venn_diagram_file, the_result_sets)
 
-def plot_heatmap(map_df: pd.DataFrame, output_folder):
-    """ Plot the collision and interaction """
-    pass
-
-
 def get_collisions_details_from_db(simulation_db) -> pd.DataFrame:
+    """
+    Get the details of the collisions from the db file produced by the simulation
+    For each colliding agent we get the time of the collision, its RIV, and the impact location"""
     # Open connection
     connection = sqlite3.connect(simulation_db)
     try:
@@ -411,6 +380,10 @@ def get_collisions_details_from_db(simulation_db) -> pd.DataFrame:
             pass
 
 def get_scenario_details_from_db(simulation_db) -> pd.DataFrame:
+    """
+    Get the details of the scenario from the db file produced by the simulation.
+    For each scenario we get the number of agents in the scenario, the time of the first collision, and the time of the last collision
+    """
     # Open connection
     connection = sqlite3.connect(simulation_db)
     try:
@@ -421,59 +394,63 @@ def get_scenario_details_from_db(simulation_db) -> pd.DataFrame:
         except:
             pass
 
-from commonroad.visualization.mp_renderer import MPRenderer
-
 def plot_collisions_on_map(scenario: Scenario, df: pd.DataFrame):
     """
-      Given a scenario, plot the collisions of whatever generators and base_scenarios are listed in the dataframe
+    Given a scenario, plot the collisions of whatever generators and base_scenarios are listed in the dataframe
     """
+    # Extract the generators and the base scenarios to compare
     generators = df["generator"].unique().tolist()
     base_scenarios = df["base_scenario"].unique().tolist()
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    # Initialize plot image
+    fig, ax = plt.subplots(figsize = (8, 4))
 
-    rnd = MPRenderer(ax=ax)
+    rnd = MPRenderer(ax = ax)
     scenario.draw(rnd)
     rnd.render()
 
     the_mins = None
     the_maxs = None
 
+    # Iterate over the base scenarios and generators
     for base_scenario in base_scenarios:
-
         # We'd like to keep the markers, colors connected to the generators
         for generator, color, marker in zip(generators, ["red", "blue", "green"], [".", "*", "s"]):
             # Get the filtered dataframe
-            filtered_df = df[ (df["base_scenario"] == base_scenario) & (df["generator"] == generator) ]
+            filtered_df = df[(df["base_scenario"] == base_scenario) & (df["generator"] == generator)]
             
-            # Some combinations might not be there
-            if df.empty:
+            # Some combinations might not be there, skip them
+            if filtered_df.empty:
                 continue
 
+            # Extract the x and y positions of the collisions for that generator and base scenario
             x_y_positions_series = filtered_df[["x_position", "y_position"]]
-            # get position of the collisions for that generation in the scenario
             mins = x_y_positions_series.min().tolist()
             maxs = x_y_positions_series.max().tolist()
 
+            # Set the limits of the figure to include all the collision points
             if the_mins is None:
                 the_mins = mins
             if the_maxs is None:
                 the_maxs = maxs
 
+            # Check that the mins and maxs are not NaN
             assert not np.isnan(the_mins[0]), f"the_mins[0] none for {base_scenario} and {generator}"
-            assert not np.isnan(the_mins[1]), "the_mins[1] none for {base_scenario} and {generator}"
-            assert not np.isnan(the_maxs[0]), "the_maxs[0] none for {base_scenario} and {generator}"
-            assert not np.isnan(the_maxs[1]), "the_maxs[1] none for {base_scenario} and {generator}"
+            assert not np.isnan(the_mins[1]), f"the_mins[1] none for {base_scenario} and {generator}"
+            assert not np.isnan(the_maxs[0]), f"the_maxs[0] none for {base_scenario} and {generator}"
+            assert not np.isnan(the_maxs[1]), f"the_maxs[1] none for {base_scenario} and {generator}"
 
+            # Extract mins and maxs values
             the_mins = min(the_mins[0], mins[0]), min(the_mins[1], mins[1])
             the_maxs = max(the_maxs[0], maxs[0]), max(the_maxs[1], maxs[1])
 
             serie_x, serie_y = [], []
-            for x, y in x_y_positions_series.itertuples(index=False):
+            for x, y in x_y_positions_series.itertuples(index = False):
                 serie_x.append(x)
                 serie_y.append(y)
 
-            plt.scatter(serie_x, serie_y, marker=marker, color=color, zorder=50, alpha=0.1, label=generator)
+            # Plot the collisions for the generator and the base scenario
+            plt.scatter(serie_x, serie_y, marker = marker, color = color, zorder = 50, alpha = 0.1, label = generator)
 
         # Set the limits of the figure to include the collision points and not the entire map
         plt.gca().set_xlim(the_mins[0] - 20, the_maxs[0] + 20)
@@ -485,33 +462,29 @@ def plot_collisions_on_map(scenario: Scenario, df: pd.DataFrame):
 
     return fig
 
-
 def collisions_analysis(requirements_violations_df: pd.DataFrame, collision_sets: dict, output_folder:str, indepth_collisions_df: pd.DataFrame = None):
-    #
-    #   TODO Count how many vehicles per scenario?
-    #
+    """
+    Analyze the collisions found by the generators and produce an HTML report with the results of the analysis and the corresponding plots
+    """
+    # Define the output folder for the collisions analysis results
     collisions_analysis_output_folder = os.path.join(output_folder, "collisions_analysis")
-
-    # Prepare the output folder
     os.makedirs(collisions_analysis_output_folder, exist_ok=True)
-
-    # - How many total and unique collisions? Which generator is the best? Which (unique) collisions are found by which generator?
-    #   - Box plot + p, A12
 
     # Duplicate the metrics for the scenarios and tag them as all scenario
     all_scenarios_df = requirements_violations_df.copy()
     # Replace the base scenarios with the generic "all" label
-    all_scenarios_df = all_scenarios_df.assign(base_scenario='all')
-    # Concat the two dataframes
-    requirements_violations_df = pd.concat([requirements_violations_df, all_scenarios_df], ignore_index=True)
+    all_scenarios_df = all_scenarios_df.assign(base_scenario = 'all')
+    # Concatenate the two dataframes
+    requirements_violations_df = pd.concat([requirements_violations_df, all_scenarios_df], ignore_index = True)
 
-    # TODO Move this up?!
+    # Replace the generator and base scenario names with the more readable ones for the plots and tables
     requirements_violations_df = requirements_violations_df.replace(GENERATORS).replace(BASE_SCENARIOS)
 
+    # Iterate over collision metrics
     for metric in ["total_collisions", "unique_collisions"]:
         # Select the data and compute the p - A12 for each pair of generators in each base scenario and by aggregating the results across all of the scenarios
-        df_metrics= compute_metrics_for(requirements_violations_df, [metric])
-        # Selecte the data and plot a box plot for each scenario and by aggregating the metrics across all the scenarios
+        df_metrics = compute_metrics_for(requirements_violations_df, [metric])
+        # Select the data and plot a box plot for each scenario and by aggregating the metrics across all the scenarios
         plot_files = plot_metrics_for(collisions_analysis_output_folder, requirements_violations_df, [metric])
         
         metrics_and_plots = dict()
@@ -523,31 +496,32 @@ def collisions_analysis(requirements_violations_df: pd.DataFrame, collision_sets
     # Which generator finds collision types that other generators did not find?
     plot_venn_diagrams(collisions_analysis_output_folder, collision_sets, "venn-diagram-collisions")
     
+    # ========================================
     # Detailed collision analysis:
-
     # - How critical are the found collisions?
     #   - Harm (distribution) - How can we compare those if the size of the distribution is different?
     #   - Riv 
     #   - pdof
     # - What's the time to observe collisions?
-    
     # - Which collisions are found?
     # - Which collisions each generator finds?
+    # ========================================
+    
     if indepth_collisions_df is not None:
-
-        # Do the renaming here once for all!
+        # Replace the generator and base scenario names with the more readable ones for the plots and tables
         collisions_df = indepth_collisions_df.copy()
         collisions_df["generator"] = collisions_df["generator"].replace(GENERATORS)
         collisions_df["base_scenario"] = collisions_df["base_scenario"].replace(BASE_SCENARIOS)
 
         # Duplicate the metrics for the scenarios and tag them as all scenario
-        collisiosn_all_scenarios_df = collisions_df.copy()
+        collisions_all_scenarios_df = collisions_df.copy()
         # Replace the base scenarios with the generic "all" label
-        collisiosn_all_scenarios_df = collisiosn_all_scenarios_df.assign(base_scenario='all')
-        # Concat the two dataframes
-        collisions_df = pd.concat([collisions_df, collisiosn_all_scenarios_df], ignore_index=True)
+        collisions_all_scenarios_df = collisions_all_scenarios_df.assign(base_scenario = 'all')
+        # Concatenate the two dataframes
+        collisions_df = pd.concat([collisions_df, collisions_all_scenarios_df], ignore_index = True)
 
-        for metric in ["ego_harm", "time_step", "pdof", "riv", "collision_time"]: # add riv later
+        # Iterate over collision criticality metrics and plot them for each scenario
+        for metric in ["ego_harm", "time_step", "pdof", "riv", "collision_time"]:
             plot_metrics_for(collisions_analysis_output_folder, collisions_df, [metric])
         
         ######## 
@@ -562,16 +536,17 @@ def collisions_analysis(requirements_violations_df: pd.DataFrame, collision_sets
         for base_scenario in base_scenarios:
             from commonroad.scenario.scenario import Scenario
             from commonroad.common.file_reader import CommonRoadFileReader
-            from commonroad.visualization.mp_renderer import MPRenderer
 
-            scenario_file = str(collisions_df[ collisions_df["base_scenario"] == base_scenario]["scenario_file"].values[0])
+            # Extract the scenario file for the current base scenario
+            scenario_file = str(collisions_df[collisions_df["base_scenario"] == base_scenario]["scenario_file"].values[0])
 
+            # Open scenario file and load the scenario
             crfr = CommonRoadFileReader(scenario_file)
             _scenario: Scenario
             _scenario, _ = crfr.open()
 
+            # Iterate over generators and plot the collisions for each of them
             for generator in generators:
-            
                 per_generator_df = collisions_df[ (collisions_df["base_scenario"] == base_scenario) & (collisions_df["generator"] == generator) ]
         
                 collisions_positions_per_generator_file = os.path.join(collisions_analysis_output_folder, f"collisions_positions_{base_scenario}_{generator}.png")
@@ -582,6 +557,7 @@ def collisions_analysis(requirements_violations_df: pd.DataFrame, collision_sets
                 plt.savefig(collisions_positions_per_generator_file)
                 plt.close(fig)
             
+            # Plot all the collisions together for the current base scenario
             per_scenario_df = collisions_df[collisions_df["base_scenario"] == base_scenario]
 
             # Generate one figure with all the generators together
@@ -595,62 +571,58 @@ def collisions_analysis(requirements_violations_df: pd.DataFrame, collision_sets
 
             ############################
 
-            ########
-
             # What is the distribution of collisions (per scenario)?
             per_scenario_collision_df = collisions_df[ collisions_df["base_scenario"] == base_scenario ]
 
             distribution_of_impact_location_file = os.path.join(collisions_analysis_output_folder, f"impact_locations_{base_scenario}.png")
             fig, ax = plt.subplots(figsize=(8, 4))
             ax = sns.histplot(data=per_scenario_collision_df, x="impact_location", hue="generator")
-            ax.set_xlabel("Impact Location") #, fontsize=20)
-            ax.set_ylabel("Collision Count") #, fontsize=20)
-            # plt.legend(loc='upper left')
+            ax.set_xlabel("Impact Location")
+            ax.set_ylabel("Collision Count")
             # Make sure we do not cut labels
             plt.tight_layout()
             plt.savefig(distribution_of_impact_location_file)
             plt.close(fig)
 
         ########
+
         # What is the distribution of collisions (for all the scenarios)?
         all_collisions_df = collisions_df[ collisions_df["base_scenario"] == "all" ]
         distribution_of_impact_location_file = os.path.join(collisions_analysis_output_folder, f"impact_locations_all.png")
         fig, ax = plt.subplots(figsize=(8, 4))
         ax = sns.histplot(data=all_collisions_df, x="impact_location", hue="generator")
-        ax.set_xlabel("Impact Location") #, fontsize=20)
-        ax.set_ylabel("Collision Count") #, fontsize=20)
-        # plt.legend(loc='upper left')
+        ax.set_xlabel("Impact Location")
+        ax.set_ylabel("Collision Count")
         # Make sure we do not cut labels
         plt.tight_layout()
         plt.savefig(distribution_of_impact_location_file)
         plt.close(fig)
   
-    
-def extend_with_collision_criticality(collision_df_from_db, simulation_folder) -> pd.DataFrame:
+def extend_with_collision_criticality(collision_df_from_db, simulation_folder: str) -> pd.DataFrame:
     """
     For each colliding agent in a scenario collected from the DB we need to extend the DF with data from the corresponding CSV files
     """
-    # Return the collisions folders in the simulation folders (if any)
     collisions_criticality_df = None
 
+    # Iterate over collision folders
     for collisions_folder, _ in collisions_folders(simulation_folder):
-
         module_logger.debug(f"Collecting data from collisions folder {collisions_folder}")
-        
         
         # Collects the data from each agent from its CSV collision file
         for csv_file, csv_file_name in find_csv_files(collisions_folder):
             agent_id = int(csv_file_name.replace(".csv", ""))
             collision_criticality_df = pd.read_csv(csv_file)
-            # Make sure we enable joning on agent id for this scenario (agent_id is not unique overall the executions, but only in a given scenario)
+            # Extract collision criticality data and add the agent id to be able to merge it with the data from the DB
             collision_criticality_df['agent_id'] = agent_id
             if collisions_criticality_df is None:
                 collisions_criticality_df = collision_criticality_df
             else:
-                collisions_criticality_df = pd.concat([collisions_criticality_df, collision_criticality_df], ignore_index=True)
+                collisions_criticality_df = pd.concat([collisions_criticality_df, collision_criticality_df], ignore_index = True)
 
-    return collision_df_from_db.merge(collisions_criticality_df, on='agent_id') if collisions_criticality_df is not None else collision_df_from_db
-
+    if collisions_criticality_df is not None:
+        return collision_df_from_db.merge(collisions_criticality_df, on = 'agent_id')
+    else:
+        return collision_df_from_db
 
 def extend_with_agent_position_at_collision(collision_df_from_db, logs_folder) -> pd.DataFrame:
     """
@@ -658,55 +630,62 @@ def extend_with_agent_position_at_collision(collision_df_from_db, logs_folder) -
     NOTE: will fail if not invoked on a DB with collisions data!
     """
     data = []
+    # Iterate over colliding agents
     for agent_id in collision_df_from_db["agent_id"].unique().tolist():
-        # Note the -1. The reason is that the agent crashes between time_step_of_collision and (time_step_of_collision -1) so at time time_step_of_collision it does not have any trajectory recorded (altough it should be the dummy one made of its position only...)
+        # Note the -1. The reason is that the agent crashes between time_step_of_collision and (time_step_of_collision -1)
+        #  so at time time_step_of_collision it does not have any trajectory recorded (altough it should be the dummy one made of its position only...)
         time_step_of_collision = int(collision_df_from_db[ collision_df_from_db["agent_id"] == agent_id ]["collision_time"].values[0]) - 1
 
+        # Load the csv file containing all the agent's trajectories
         agent_logs_csv_file = os.path.join(logs_folder, f"{agent_id}", "logs.csv")
-        # load the csv file containing all the trajectories
-        agent_trajectory_df = pd.read_csv(agent_logs_csv_file, sep=";")
+        agent_trajectory_df = pd.read_csv(agent_logs_csv_file, sep = ";")
+        # Extract vehicle position at the time of collision and add it to the data to be merged with the data from the DB
         if len(agent_trajectory_df) > 0:
             x = agent_trajectory_df[ agent_trajectory_df["trajectory_number"] == time_step_of_collision]["x_position_vehicle_m"].values[0]
             y = agent_trajectory_df[ agent_trajectory_df["trajectory_number"] == time_step_of_collision]["y_position_vehicle_m"].values[0]
         
             data.append( (int(agent_id), float(x), float(y)) )
         
-    collision_position_df = pd.DataFrame(data, columns=['agent_id', 'x_position', 'y_position'])
-    return collision_df_from_db.merge(collision_position_df, on='agent_id')
+    collision_position_df = pd.DataFrame(data, columns = ['agent_id', 'x_position', 'y_position'])
 
+    return collision_df_from_db.merge(collision_position_df, on = 'agent_id')
 
 def load_detailed_collisions_data(results_folders: List[str]):
+    """
+    For each collision found by the generators we extract as much information as possible about it, such as:
+    - The position of the collision
+    - The RIV of the collision
+    - The impact location of the collision
+    - The time of the collision
+    - The criticality of the collision (harm, pdof, etc.)
+    """
     collisions_df: pd.DataFrame = None
 
+    # Iterate over the results folders and collect the data from each of the runs contained in them
     for results_folder in results_folders:
-
         # Return only the folders that contain valid data
         for run_folder, _ in folders_of_completed_runs(results_folder):
-
             module_logger.debug(f"Collecting collisions data from folder {run_folder}")
 
-            # Generation run
+            # Extract scenario's metadata
             metadata_file = os.path.join(run_folder, "metadata.csv")
             with open(metadata_file, "r") as csvfile:
-                csv_reader = csv.DictReader(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                csv_reader = csv.DictReader(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
                 data = [row for row in csv_reader][0]
                 base_scenario = data["scenario_name"]
-                # Find out which generator - By name + module - TODO Hardcoded
+                # Find out which generator - By name + module
                 generator = data["generator"]
                 # Ensure runs are distinguishable
                 timestamp_id = data["timestamp_id"]
 
-            # module_logger.debug(f"Generator {generator} - Base Scenario {base_scenario}")
-
-            # Collect detailed data about collisions from csv file and DB (RIV)
+            # Collect detailed data about collisions from .csv file and DB (RIV)
             for simulation_folder, scenario_folder_name in simulation_folders(run_folder):
-                
+                # Build scenario's log folder, scenario file path, and DB file path
                 logs_folder = os.path.join(simulation_folder, "logs")
                 scenario_file = os.path.join(simulation_folder, "scenario", f"scenario_{scenario_folder_name}.xml")
-
-                # Contains info about all the agents from the DB
                 db_scenario_file = os.path.join(logs_folder, "simulation.db")
 
+                # Extract the data about collisions from the DB (time of the collision, RIV, and impact location) for each colliding agent
                 collision_df_from_db = get_collisions_details_from_db(db_scenario_file)
 
                 # Further process collisions only if there are any
@@ -741,34 +720,34 @@ def load_detailed_collisions_data(results_folders: List[str]):
             
     return collisions_df
 
-
 def load_detailed_interactions_data(results_folders: List[str]):
+    """
+    For each interaction found by the generators we extract as much information as possible about it
+    """
     interactions_df: pd.DataFrame = None
 
+    # Iterate over the results folders and collect the data from each of the runs contained in them
     for results_folder in results_folders:
-
         # Return only the folders that contain valid data
         for run_folder, _ in folders_of_completed_runs(results_folder):
-
             module_logger.debug(f"Collecting interactions data from folder {run_folder}")
 
-            # Generation run
+            # Extract scenario's metadata
             metadata_file = os.path.join(run_folder, "metadata.csv")
             with open(metadata_file, "r") as csvfile:
-                csv_reader = csv.DictReader(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                csv_reader = csv.DictReader(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
                 data = [row for row in csv_reader][0]
                 base_scenario = data["scenario_name"]
-                # Find out which generator - By name + module - TODO Hardcoded
+                # Find out which generator - By name + module
                 generator = data["generator"]
                 # Ensure runs are distinguishable
                 timestamp_id = data["timestamp_id"]
-
-            # module_logger.critical(f"Generator {generator} - Base Scenario {base_scenario}")
 
             # Load the existing interaction map
             interactions_map_file = os.path.join(run_folder, "interaction_map.npy")
             interaction_map = np.load(interactions_map_file)
 
+            # Merge the interaction map with the metadata
             data = {"base_scenario": [base_scenario],
                     "generator": [generator],
                     "timestamp_id": [timestamp_id],
@@ -776,8 +755,7 @@ def load_detailed_interactions_data(results_folders: List[str]):
             }
             interaction_map_df = pd.DataFrame(data)
 
-            
-
+            # Save the interaction map data with the metadata to the overall df of interactions
             if interactions_df is None:
                 interactions_df = interaction_map_df
             else:
@@ -785,41 +763,37 @@ def load_detailed_interactions_data(results_folders: List[str]):
 
     return interactions_df            
 
-
 def load_detailed_test_generation_data(list_of_results_folders: List[str]):
     """
-    For the moment count how many agents are present in each scenario ("n_agents")
+    Count how many agents are present in each scenario ("n_agents")
     """
     detailed_test_generation_df: pd.DataFrame = None
 
+    # Iterate over the results folders and collect the data from each of the runs contained in them
     for results_folder in list_of_results_folders:
-
         # Return only the folders that contain valid data
         for run_folder, _ in folders_of_completed_runs(results_folder):
-
             module_logger.debug(f"Collecting interactions data from folder {run_folder}")
 
-            # Generation run
+            # Extract scenario's metadata
             metadata_file = os.path.join(run_folder, "metadata.csv")
             with open(metadata_file, "r") as csvfile:
-                csv_reader = csv.DictReader(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                csv_reader = csv.DictReader(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
                 data = [row for row in csv_reader][0]
                 base_scenario = data["scenario_name"]
-                # Find out which generator - By name + module - TODO Hardcoded
+                # Find out which generator - By name + module
                 generator = data["generator"]
                 # Ensure runs are distinguishable
                 timestamp_id = data["timestamp_id"]
 
             # Collect detailed data about collisions from csv file and DB (RIV)
             for simulation_folder, scenario_folder_name in simulation_folders(run_folder):
-                
+                # Build scenario's log folder, scenario file path, and DB file path
                 logs_folder = os.path.join(simulation_folder, "logs")
                 scenario_file = os.path.join(simulation_folder, "scenario", f"scenario_{scenario_folder_name}.xml")
-
-                # Contains info about all the agents from the DB
                 db_scenario_file = os.path.join(logs_folder, "simulation.db")
 
-                # Columns: [ "n_agents" ]
+                # Extract the data about the scenario from the DB (number of agents, time of the first collision, and time of the last collision)
                 scenario_df_from_db = get_scenario_details_from_db(db_scenario_file)
 
                 # Further process collisions only if there are any
@@ -844,30 +818,29 @@ def load_detailed_test_generation_data(list_of_results_folders: List[str]):
                     
     return detailed_test_generation_df            
 
-
-def interactions_analysis(behavior_df, interaction_sets, output_folder, detailed_interaction_df):
-    interactions_analysis_output_folder = os.path.join(output_folder, "interactions_analysis")
-
+def interactions_analysis(behavior_df: pd.DataFrame, interaction_sets: list, output_folder: str, detailed_interaction_df: pd.DataFrame):
+    """
+    Analyze the interactions found by the generators and produce an HTML report with the results of the analysis and the corresponding plots
+    """
     # Prepare the output folder
+    interactions_analysis_output_folder = os.path.join(output_folder, "interactions_analysis")
     os.makedirs(interactions_analysis_output_folder, exist_ok=True)
-
-    # - How many total and unique interactions? Which generator is the best (got more)? Which (unique) interactions are found by which generator?
-    #   - Box plot + p, A12
 
     # Duplicate the metrics for the scenarios and tag them as all scenario
     all_scenarios_df = behavior_df.copy()
     # Replace the base scenarios with the generic "all" label
     all_scenarios_df = all_scenarios_df.assign(base_scenario='all')
-    # Concat the two dataframes
+    # Concatenate the two dataframes
     behavior_df = pd.concat([behavior_df, all_scenarios_df], ignore_index=True)
 
-    # TODO move it outside?
+    # Replace the generator and base scenario names with the more readable ones for the plots and tables
     behavior_df = behavior_df.replace(GENERATORS).replace(BASE_SCENARIOS)
 
+    # Iterate over interaction metrics
     for metric in ["total_interactions", "unique_interactions"]:
         # Select the data and compute the p - A12 for each pair of generators in each base scenario and by aggregating the results across all of the scenarios
         df_metrics= compute_metrics_for(behavior_df, [metric])
-        # Selecte the data and plot a box plot for each scenario and by aggregating the metrics across all the scenarios
+        # Select the data and plot a box plot for each scenario and by aggregating the metrics across all the scenarios
         plot_files = plot_metrics_for(interactions_analysis_output_folder, behavior_df, [metric])
         
         metrics_and_plots = dict()
@@ -876,56 +849,56 @@ def interactions_analysis(behavior_df, interaction_sets, output_folder, detailed
         report_file_html = os.path.join(interactions_analysis_output_folder, f"{metric}.html")
         store_to_html(report_file_html, df_metrics, {metric: plot_files})
 
-    # Which generator finds collision types that other generators did not find?
+    # Plot the venn diagrams for the interaction sets
     plot_venn_diagrams(interactions_analysis_output_folder, interaction_sets, "venn-diagram-interactions")
 
     if detailed_interaction_df is not None:
-        # Plot the interaction map for generator and base_scenario
-
         # Duplicate the metrics for the scenarios and tag them as all scenario
         interactions_all_scenarios_df = detailed_interaction_df.copy()
         # Replace the base scenarios with the generic "all" label
-        interactions_all_scenarios_df = interactions_all_scenarios_df.assign(base_scenario='all')
-        # Concat the two dataframes
-        detailed_interaction_df = pd.concat([detailed_interaction_df, interactions_all_scenarios_df], ignore_index=True)
-        # Plot the position of the vehicles when they crashed for each generator (color) in each scenario (map)
+        interactions_all_scenarios_df = interactions_all_scenarios_df.assign(base_scenario = 'all')
+        # Concatenate the two dataframes
+        detailed_interaction_df = pd.concat([detailed_interaction_df, interactions_all_scenarios_df], ignore_index = True)
 
         # Rename generators and scenarios - Replace does not work if the cell contains a numpy array
         detailed_interaction_df["generator"] = detailed_interaction_df["generator"].replace(GENERATORS)
         detailed_interaction_df["base_scenario"] = detailed_interaction_df["base_scenario"].replace(BASE_SCENARIOS)
 
-        base_scenarios = [ s for s in detailed_interaction_df["base_scenario"].unique().tolist() if str(s) != "all"]
+        base_scenarios = [s for s in detailed_interaction_df["base_scenario"].unique().tolist() if str(s) != "all"]
         generators = detailed_interaction_df["generator"].unique().tolist()
 
+        # Iterate over base scenarios and generators
         for base_scenario in base_scenarios:
             for generator in generators:
+                # Extract the data for the current generator and base scenario
                 interaction_caused_by_generator_in_scenario_df = detailed_interaction_df[(detailed_interaction_df["base_scenario"] == base_scenario) & (detailed_interaction_df["generator"] == generator)]
                 
-                # TODO Sometimes this is an empty dataset
+                # Skip empty dataframes (some combinations of generator and base scenario might not be there)
                 if interaction_caused_by_generator_in_scenario_df.empty:
                     continue
 
+                # Plot interaction map for the current generator and base scenario
                 fig = plot_interaction_map(interaction_caused_by_generator_in_scenario_df, base_scenario, generator)
                 output_interaction_map_file = os.path.join(interactions_analysis_output_folder, f"interactions_map_{base_scenario}_{generator}.png")
                 plt.savefig(output_interaction_map_file)
                 plt.close(fig)
 
-
-
         pass
 
-
-def plot_interaction_map(interaction_map_df, base_scenario, generator):
+def plot_interaction_map(interaction_map_df: pd.DataFrame, base_scenario: str, generator: str):
     """
+    Plot the interaction map for a given generator and base scenario
     """
     import matplotlib.cm as cm
 
     # Map Axes Definition - relies on the common configuration.
     long_bins, lat_bins = get_interaction_map_bins()
     
-    fig, ax = plt.subplots(figsize=(8, 4))
+    # Initialize plot image
+    fig, ax = plt.subplots(figsize = (8, 4))
 
-    interaction_map = np.sum(interaction_map_df["interaction_map"].tolist(), axis=0)
+    # Sum the interaction maps of all the rows in the dataframe to get the overall interaction map for the current generator and base scenario
+    interaction_map = np.sum(interaction_map_df["interaction_map"].tolist(), axis = 0)
 
     # Draw an icon of a vehicle at 0,0 to show direction
     from commonroad.visualization.icons import get_obstacle_icon_patch
@@ -935,82 +908,81 @@ def plot_interaction_map(interaction_map_df, base_scenario, generator):
 
     # Get the colormap and set the under and bad colors
     colMap = cm.inferno_r
-    colMap.set_bad(color='white')
-    colMap.set_under(color='white')
+    colMap.set_bad(color = 'white')
+    colMap.set_under(color = 'white')
 
+    # Replace the 0 values with NaN to make them white in the plot
     masked_data = np.copy(interaction_map)
     masked_data[masked_data == 0 ] = np.nan
-    # im = ax.imshow(interaction_map, cmap=cm.gray_r)
+
+    # Plot data
     try:
-        im = ax.imshow(masked_data, cmap=colMap)
+        im = ax.imshow(masked_data, cmap = colMap)
     except Exception as exc:
-        print("STOP ME")
         raise exc
 
     # Show all ticks and label them with the respective list entries.
-    ax.set_xticks(np.arange(len(long_bins)), labels=[f"{v:.2f}" for v in long_bins])
-    ax.set_yticks(np.arange(len(lat_bins)), labels=[f"{v:.2f}" for v in lat_bins])
+    ax.set_xticks(np.arange(len(long_bins)), labels = [f"{v:.2f}" for v in long_bins])
+    ax.set_yticks(np.arange(len(lat_bins)), labels = [f"{v:.2f}" for v in lat_bins])
 
     # Let the horizontal axes labeling appear on top.
-    ax.tick_params(top=True, bottom=False,
-                   labeltop=True, labelbottom=False)
+    ax.tick_params(top = True, bottom = False, labeltop = True, labelbottom = False)
 
     # Rotate the tick labels and set their alignment.
-    plt.setp(ax.get_xticklabels(), rotation=-30, ha="right",
-             rotation_mode="anchor")
+    plt.setp(ax.get_xticklabels(), rotation = -30, ha = "right", rotation_mode = "anchor")
 
     # Turn spines off and create white grid.
     ax.spines[:].set_visible(False)
 
-    ax.set_xticks(np.arange(len(long_bins)+1)-.5, minor=True)
-    ax.set_yticks(np.arange(len(lat_bins)+1)-.5, minor=True)
-    ax.grid(which="minor", color="w", linestyle='-', linewidth=3)
-    ax.tick_params(which="minor", bottom=False, left=False)
+    ax.set_xticks(np.arange(len(long_bins)+1)-.5, minor = True)
+    ax.set_yticks(np.arange(len(lat_bins)+1)-.5, minor = True)
+    ax.grid(which = "minor", color = "w", linestyle = '-', linewidth = 3)
+    ax.tick_params(which = "minor", bottom = False, left = False)
 
+    # Set title
     ax.set_title(f"Interaction Effects' Map for {generator} in {base_scenario} ")
 
+    # Compute the center of the plot to place the vehicle icon there
     center_x = sum(ax.get_xlim()) * 0.5 - 0.5
     center_y = sum(ax.get_ylim()) * 0.5 - 0.5
 
     icon_patch_list = get_obstacle_icon_patch(ObstacleType.CAR,
-        center_x, # pos_x: Union[int, float],
-        center_y, #pos_y: Union[int, float],
-        0.0, #orientation: Union[int, float],
+        center_x,
+        center_y,
+        0.0,
         config.length * 0.5,
         config.width * 0.5,
-        # zorder=10,
         vehicle_color = (1, 1, 1, 0.6),
         edgecolor = "black",
-        lw=0.5)
+        lw = 0.5)
     
-    patch_col = mpl.collections.PatchCollection(icon_patch_list, match_original=True)
+    patch_col = mpl.collections.PatchCollection(icon_patch_list, match_original = True)
     ax.add_collection(patch_col)
 
     fig.tight_layout()
 
     return fig
 
-
 def test_generation_analysis(performace_df: pd.DataFrame, output_folder, detailed_test_generation_df: pd.DataFrame):
-
-    test_generation_analysis_output_folder = os.path.join(output_folder, "test_generation_analysis")
+    """
+     Analyze the generated tests and produce an HTML report with the results of the analysis and the corresponding plots
+    """
 
     # Prepare the output folder
+    test_generation_analysis_output_folder = os.path.join(output_folder, "test_generation_analysis")
     os.makedirs(test_generation_analysis_output_folder, exist_ok=True)
-
-    # - How many tests ? How many are valid/invalid? How efficiently did they generate the tests?
-    # - Which generator is the best (got more)? Which (unique) interactions are found by which generator?
-    #   - Box plot + p, A12
 
     # Duplicate the metrics for the scenarios and tag them as all scenario
     all_scenarios_df = performace_df.copy()
     # Replace the base scenarios with the generic "all" label
-    all_scenarios_df = all_scenarios_df.assign(base_scenario='all')
-    # Concat the two dataframes
+    all_scenarios_df = all_scenarios_df.assign(base_scenario = 'all')
+    # Concatenate the two dataframes
     performace_df = pd.concat([performace_df, all_scenarios_df], ignore_index=True)
 
+    # Replace the generator and base scenario names with the more readable ones for the plots and tables
     performace_df = performace_df.replace(GENERATORS).replace(BASE_SCENARIOS)
     
+    # Iterate over test generation metrics
     for metric in ["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"]:
         # Select the data and compute the p - A12 for each pair of generators in each base scenario and by aggregating the results across all of the scenarios
         df_metrics= compute_metrics_for(performace_df, [metric])
@@ -1023,11 +995,8 @@ def test_generation_analysis(performace_df: pd.DataFrame, output_folder, detaile
         report_file_html = os.path.join(test_generation_analysis_output_folder, f"{metric}.html")
         store_to_html(report_file_html, df_metrics, {metric: plot_files})
 
-    # TODO Do we need to check in how many of those there's one/two/three collisions?
-
     if detailed_test_generation_df is not None:
-
-        # Do the renaming here once for all!
+        # Rename generators and scenarios
         test_generation_df = detailed_test_generation_df.copy()
         test_generation_df["generator"] = test_generation_df["generator"].replace(GENERATORS)
         test_generation_df["base_scenario"] = test_generation_df["base_scenario"].replace(BASE_SCENARIOS)
@@ -1035,8 +1004,8 @@ def test_generation_analysis(performace_df: pd.DataFrame, output_folder, detaile
         # Duplicate the metrics for the scenarios and tag them as all scenario
         test_generation_all_df = test_generation_df.copy()
         # Replace the base scenarios with the generic "all" label
-        test_generation_all_df = test_generation_all_df.assign(base_scenario='all')
-        # Concat the two dataframes
+        test_generation_all_df = test_generation_all_df.assign(base_scenario = 'all')
+        # Concatenate the two dataframes
         test_generation_df = pd.concat([test_generation_df, test_generation_all_df], ignore_index=True)
 
         # Plot the position of the vehicles when they crashed for each generator (color) in each scenario (map)
@@ -1049,44 +1018,51 @@ def test_generation_analysis(performace_df: pd.DataFrame, output_folder, detaile
 
             distribution_of_scenario_complexity_file = os.path.join(test_generation_analysis_output_folder, f"scenario_complexity_{base_scenario}.png")
 
-            fig, ax = plt.subplots(figsize=(8, 4))
-            ax = sns.histplot(data=per_scenario_test_generation_df, x="n_agents", hue="generator")
-            ax.set_xlabel("# Agents") #, fontsize=20)
-            ax.set_ylabel("# Scenarios") #, fontsize=20)
-            # plt.legend(loc='upper left')
+            fig, ax = plt.subplots(figsize = (8, 4))
+            ax = sns.histplot(data = per_scenario_test_generation_df, x = "n_agents", hue = "generator")
+            ax.set_xlabel("# Agents")
+            ax.set_ylabel("# Scenarios")
             # Make sure we do not cut labels
             plt.tight_layout()
             plt.savefig(distribution_of_scenario_complexity_file)
             plt.close(fig)
 
         ########
+
         # What is the distribution of collisions (for all the scenarios)?
         all_scenario_test_generation_df = test_generation_df[ test_generation_df["base_scenario"] == "all" ]
         distribution_of_scenario_complexity_file = os.path.join(test_generation_analysis_output_folder, f"impact_locations_all.png")
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax = sns.histplot(data=all_scenario_test_generation_df, x="n_agents", hue="generator")
-        ax.set_xlabel("# Agents") #, fontsize=20)
-        ax.set_ylabel("# Scenarios") #, fontsize=20)
-        # plt.legend(loc='upper left')
+        fig, ax = plt.subplots(figsize = (8, 4))
+        ax = sns.histplot(data = all_scenario_test_generation_df, x = "n_agents", hue = "generator")
+        ax.set_xlabel("# Agents")
+        ax.set_ylabel("# Scenarios")
         # Make sure we do not cut labels
         plt.tight_layout()
         plt.savefig(distribution_of_scenario_complexity_file)
         plt.close(fig)
 
-
 @click.command()
-@click.option("--results-folder", 'results_folders', type=click.Path(exists=True), required=False, multiple=True,  default=[RESULTS_FOLDER])
-@click.option("--full", 'perform_full_analysis', is_flag=True, required=False, default=False)
+@click.option("--results-folder", 'results_folders', type = click.Path(exists = True), required = False, multiple = True,  default = [RESULTS_FOLDER])
+@click.option("--full", 'perform_full_analysis', is_flag = True, required = False, default = False)
 @click.pass_context
 def analyse(ctx, results_folders: List, perform_full_analysis: bool):
-    """ Run all the data analyses and by loading data from the given results-folder """
+    """
+    Run all the data analyses and by loading data from the given results-folder
+    """
 
-    debug = ctx.obj["debug"]
-    output_folder = ctx.obj["output_folder"] if "output_folder" in ctx.obj else RESULTS_FOLDER
+    #
+    # ========== Stage 0: Setup ==========
+    #
 
-    # generators: List
-    # base_scenarios: List
+    # Prepare the output folder and ensure it exists
+    if "output_folder" in ctx.obj:
+        output_folder = ctx.obj["output_folder"]
+    else:
+        output_folder = RESULTS_FOLDER
 
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Initialize the data structures to store the loaded data
     requirements_violations_df: pd.DataFrame
     performace_df: pd.DataFrame
     behavior_df: pd.DataFrame
@@ -1098,11 +1074,8 @@ def analyse(ctx, results_folders: List, perform_full_analysis: bool):
     
     # Data structure to build the Venn diagrams
     interaction_sets: dict
-    collision_location_sets: dict
-    collision_location_riv_sets: dict
     collision_location_riv_ria_sets: dict
 
-    # Stage 0: Setup
     def plot_the_banner():
         max_l = max(len(f"Reading input data from {results_folders}"), len(f"Generate output data to {output_folder}"))
         module_logger.critical( "=" * (max_l + 2))
@@ -1110,62 +1083,60 @@ def analyse(ctx, results_folders: List, perform_full_analysis: bool):
         module_logger.critical(f"Generate output data to {output_folder}")
         module_logger.critical( "=" * (max_l + 2))
 
-    
+    # Print the banner with the input and output folders    
     plot_the_banner()
 
-    # Ensure this exists
-    os.makedirs(output_folder, exist_ok=True)
+    #
+    # ========== Stage 1: Load data ==========
+    #
 
-    # Stage 1: Load data
-    # Can we simplify the sets thingy?
-    requirements_violations_df, performace_df, behavior_df,  interaction_sets, collision_location_sets, collision_location_riv_sets, collision_location_riv_ria_sets = _load_data_from_results_folders(results_folders)
+    requirements_violations_df, performace_df, behavior_df, interaction_sets, collision_location_sets, collision_location_riv_sets, collision_location_riv_ria_sets = _load_data_from_results_folders(results_folders)
 
+    # Load detailed data for a detailed analysis of the collisions, interactions, and test generation only if requested
     if perform_full_analysis:
         detailed_collisions_df = load_detailed_collisions_data(results_folders)
         detailed_interaction_df = load_detailed_interactions_data(results_folders)
         detailed_test_generation_df = load_detailed_test_generation_data(results_folders)
 
-    # Stage 2: Perform the various analyses
-
-    # Stage 2.1: Requirement Violation Analysis
-
-    # Stage 2.1.1: Collision analysis
+    #
+    # ========== Stage 2: Perform the various analyses ==========
+    #
+    
+    # ========== Stage 2.1: Requirement Violation Analysis ==========
+    # ========== Stage 2.1.1: Collision analysis ==========
+    
     # For the collision analysis, we use the collision map containing the most detailed information: impact location, RIV, and RIA
-
     collisions_analysis(requirements_violations_df, collision_location_riv_ria_sets, output_folder, detailed_collisions_df)
 
-    # TODO: Other requirement violation include: missed goals, timeouts, disengagements
-    # do_requirements_violation_analysis(generators, base_scenarios,
-    #                                    requirements_violations_df,
-    #                                    collision_location_riv_ria_sets, collision_location_riv_sets, collision_location_sets,
-    #                                    output_folder)
-
-    # Stage 2.2: Interaction/Behavior Analysis
+    # ========== Stage 2.2: Interaction/Behavior Analysis ==========
+    # For the interaction analysis, we use the interaction map containing the most detailed information: 
+    # The interaction map for each scenario and generator
     interactions_analysis(behavior_df, interaction_sets, output_folder, detailed_interaction_df)
 
-    # Stage 2.3: Test Generation Analysis
+    # ========== Stage 2.3: Test Generation Analysis ==========
+    # For the test generation analysis, we use the performance map containing the most detailed information:
+    # number of agents, time of the first collision, and time of the last collision for each scenario and generator
     test_generation_analysis(performace_df, output_folder, detailed_test_generation_df)
 
-    # Stage 3: Correlation analysis?
-    # Do more/more diverse interaction lead to more/more diverse collisions?
-
+    # Print the banner with the input and output folders at the end of the analysis
     plot_the_banner()
 
 def count_collisions(simulation_db) -> int:
-    # Open connection
+    """
+    Count how many unique collisions are stored in the DB
+    """
+    # Open connection with database
     connection = sqlite3.connect(simulation_db)
     try:
         # Count how many unique collisions are stored
         result = connection.execute("select agent_id, has_collided_with from scenario_evaluation WHERE has_collided = 1.0 GROUP BY agent_id, has_collided_with;")
         collisions = set()
 
+        # Iterate over the results and count unique collisions
         for tup in result.fetchall():
-            agent_id = int(tup[0])
-            # Assume those will be always the same in the same collision
+            # Extract the collided vehicles
             collision_group = str(tup[1])
             collisions.add(collision_group)
-            # print(f"Agent {agent_id} has collided with {collision_group}")
-            # print(f"Current collisions {collisions}")
         return len(collisions)
     finally:
         try:
@@ -1174,6 +1145,9 @@ def count_collisions(simulation_db) -> int:
             pass
 
 def _count_from_db(simulation_db, names) -> Tuple:
+    """
+    Count the sum of the given names in the DB
+    """
     # Open connection
     connection = sqlite3.connect(simulation_db)
     try:
@@ -1186,13 +1160,14 @@ def _count_from_db(simulation_db, names) -> Tuple:
             pass
 
 def _agent_ids_from_db(simulation_db) -> List:
+    """
+    Get the list of agent ids from the DB
+    """
     # Open connection
     connection = sqlite3.connect(simulation_db)
     try:
         # Make the query
-        # result = connection.execute("SELECT agent_id, SUM(has_collided) as collisions FROM scenario_evaluation GROUP BY agent_id;")
-        # SUM(has_collided), SUM(has_emergency), SUM(has_disengagement), SUM(has_timeout), SUM(has_missed_goal
-        result = connection.execute(" select agent_ids from meta;")
+        result = connection.execute("select agent_ids from meta;")
         result_as_string = result.fetchone()[0]
         return ast.literal_eval(result_as_string)
     finally:
@@ -1202,12 +1177,13 @@ def _agent_ids_from_db(simulation_db) -> List:
             pass
 
 def _interactions_times_from_db_for_agent(simulation_db, agent_id) -> List[int]:
+    """
+    Get the list of time steps at which the given agent interacted with other agents from the DB
+    """
     # Open connection
     connection = sqlite3.connect(simulation_db)
     try:
         # Make the query
-        # result = connection.execute("SELECT agent_id, SUM(has_collided) as collisions FROM scenario_evaluation GROUP BY agent_id;")
-        # SUM(has_collided), SUM(has_emergency), SUM(has_disengagement), SUM(has_timeout), SUM(has_missed_goal
         result = connection.execute(f"select timestep from scenario_evaluation where agent_id = {agent_id} and is_interacting == 1.0;")
         return [int(t[0]) for t in result.fetchall()]
     finally:
@@ -1217,25 +1193,22 @@ def _interactions_times_from_db_for_agent(simulation_db, agent_id) -> List[int]:
             pass
 
 def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) -> List[Tuple[str, float, float]]:
+    """
+    Get the features of the impacts from the DB, such as the impact location, RIV, and RIA
+    """
     
-    # REFACTOR THIS ONE!!!
-
-    # Open connection
+    # Open connection with database
     connection = sqlite3.connect(simulation_db)
     try:
-        # Check the method recompute all
-        
-        # if len(target_time_steps) == 0: # In case we did not have to recompute
+        # Retrieve collisions data from the DB
+        # Group data by agent_id and has_collided_with to get unique collisions
         result = connection.execute('select MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_location from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
         metrics = result.fetchall()
-
-        # assert 2 * number_of_collisions == len(metrics), f"Wrong number of collisions retrieved from logs {len(metrics)} expected {number_of_collisions}"
 
         collisions = dict()
         impacts = list()
 
-        # If the vehicle collides with the road, there's only one vehiclie in the has_collided_with AND there's no most_critical agent
-
+        # Iterate over extracted collision data
         for time_step, agent_id, most_critical_agent, has_collided_with_str, riv, ria, impact_location in metrics:
             agent_id = int(agent_id)
             time_step = int(time_step)
@@ -1282,14 +1255,12 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
                 if most_critical_agent == "ROAD":
                     collisions[has_collided_with_str]["v2_impact_location"] = "-+" # Default
                     collisions[has_collided_with_str]["v2"] = "ROAD" # Default
-
             else:
                 # Register the data about the impact location of the second vehicle. This cannot be the road
                 collisions[has_collided_with_str]["v2_impact_location"] = impact_location
                 collisions[has_collided_with_str]["v2"] = agent_id
 
         # A this point we need to merge the impact locations together
-        # assert all([ len(c["impact_location"]) == 2 for c in collisions.values()] ), "Wrong data in collision report?"
         for collision in collisions.values():
             collision["impact_location"] = frozenset( (collision["v1_impact_location"], collision["v2_impact_location"]) )
             module_logger.info(f"Register {collision}")
@@ -1301,253 +1272,66 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
         except:
             pass            
 
-def _rebuild_trajectory(_initial_time_step: str, xs: str, ys: str, orientations:str, velocities:str) -> Trajectory:
+def _rebuild_trajectory(initial_time_step: str, xs: str, ys: str, orientations:str, velocities:str) -> Trajectory:
+    """
+    Rebuild the trajectory of an agent from the logs.csv file.
+    The trajectory is represented as a list of states, each containing the time step, position, orientation, and velocity of the agent at that time step
+    """
     state_list = list()
-    initial_time_step = int(_initial_time_step)
+    initial_time_step = int(initial_time_step)
+    # Iterate over the state variables and build the trajectory
     for idx, state_vars, in enumerate(zip(xs.split(","), ys.split(","), orientations.split(","), velocities.split(","))):
+        # Extract position, orientation, and velocity
         x, y = float(state_vars[0]), float(state_vars[1])
         orientation = float(state_vars[2])
         velocity = float(state_vars[3])
+        # Create state object and add it to the list of states
         state = CustomState(time_step = initial_time_step + idx, position=np.array([x, y]), orientation=orientation, velocity=velocity)
         state_list.append(state)
+        
     return Trajectory(initial_time_step, state_list)
 
 def get_interaction_map_bins(n_bins: int = None):
-    # Define the bins of the interaction map
+    """
+    Define the bins of the interaction map
+    """
     from evita.config import ScenarioGeneratorConfig
     scenario_generator_config = ScenarioGeneratorConfig()
-    # scenario_generator_config.length
+
     if n_bins is None:
         n_bins = scenario_generator_config.n_bins
+
     # One car in front/one car behind - How can one retrieve difference in speed/acc?
     long_bins = np.linspace(-scenario_generator_config.length, +scenario_generator_config.length, n_bins)
-    # One lane on the left/right
     # In the United States, the Interstate Highway standards for the Interstate Highway System
-    #  use a 12 ft (3.7 m) standard lane width, while narrower lanes are used on lower classification roads.
+    # use a 12 ft (3.7 m) standard lane width, while narrower lanes are used on lower classification roads.
     lane_width = 3.7
     lat_bins = np.linspace(-lane_width, lane_width, n_bins)
     
     return long_bins, lat_bins
 
-def generate_apollo_report(run_folder: str, _output_to: str = None) -> None:
-    """
-    Generate the "final" reports of the entire generation as csv files.
-    """
-    # Output to the same folder if none passed
-    output_to = _output_to if _output_to else run_folder
-
-    module_logger.critical(f"Generating report for {run_folder} at {output_to}")
-    
-    # Output to output_to
-    requirements_violations = os.path.join(output_to, "requirements_violations.csv")
-    
-    # TODO We'd like to show that increasing the number of interactions improve collisions (coverage/criticality/etc)
-    # TODO Create the collision map including the location of the collision (as set), RIV, and the Pdof/RIA
-    # RIV (0 - 100 km/h) and PDoF (0-180 deg) are binned in 10 bins
-
-    module_logger.critical("Computing Requirement Violation Metrics")
-    with open(requirements_violations, "w", newline="") as csvfile:
-        
-        csv_writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["total_collisions", 
-                             "unique_collisions_only_impact_location", "unique_collisions_impact_location_and_riv", "unique_collisions"])
-
-        # Requirement Violations
-        # - [x] Total Collision Count - counted on the side
-        
-        # - Total Collision Features -> Unique Collision (using the map as filter)
-        #       - Number of vehicles involved ?
-        #       - Angle (RIA)
-        #       - Velocity (RIV)
-        #       - Impact Location
-        
-        # Generate all possible pairs of impact locations
-        impact_location_bins = list()
-        # 
-        # "-+" denotes the road we need two symbols
-
-        for p1 in ["F", "M", "B", "-"]:
-            for s1 in ["L", "C", "R", "+"]:
-                s = f"{p1}{s1}"
-                impact_location_bins.append(s)
-        
-        # NOTE Reused!        
-        n_bins = 10
-
-        riv_bins = np.linspace(0, 100, n_bins)
-        ria_bins = np.linspace(0, 180, n_bins)
-    
-        collision_map_only_impact_location = np.zeros( len(impact_location_bins) )
-        collision_map_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1) )
-        collision_map = np.zeros( (len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1) )
-    
-        for _, simulation_folder in simulation_folders(run_folder):
-            scenarios_folders = os.listdir(os.path.join(run_folder, simulation_folder))
-            for scenario_id in scenarios_folders:
-                module_logger.debug(f"Processing {scenario_id}")
-                
-                collisions_file_path = os.path.join(run_folder, simulation_folder, scenario_id, "collisions.csv").replace("/records/", "/evita-records/")
-
-                local_only_impact_location = np.zeros( len(impact_location_bins) )
-                local_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1) )
-                local_collision_map = np.zeros( (len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1) )
-
-                # Count collisions
-                try:
-                    collisions = pd.read_csv(collisions_file_path)
-                except pd.errors.EmptyDataError:
-                    collisions = pd.DataFrame()
-
-                collisions_count = len(collisions)
-
-                if collisions_count > 0:
-                    for _, row in collisions.iterrows():
-                        ria = row["ria"]
-                        riv = row["riv"]
-                        impact_location = row["impact_position"]
-
-                        impact_location_mapped = impact_location_bins.index(impact_location)
-                        digitized_riv = np.digitize(riv, riv_bins)
-                        digitized_ria = np.digitize(ria, ria_bins)
-
-                        local_only_impact_location[impact_location_mapped] += 1.0
-                        local_impact_location_and_riv[impact_location_mapped][digitized_riv] += 1.0
-                        local_collision_map[impact_location_mapped][digitized_riv][digitized_ria] += 1.0
-            
-                    collision_map_only_impact_location += local_only_impact_location
-                    collision_map_impact_location_and_riv += local_impact_location_and_riv
-                    collision_map += local_collision_map
-
-        # Compute unique
-        unique_collisions_only_impact_location = np.count_nonzero(collision_map_only_impact_location)
-        unique_collisions_impact_location_and_riv = np.count_nonzero(collision_map_impact_location_and_riv)
-        unique_collisions = np.count_nonzero(collision_map)
-
-        values = [collisions_count] + [unique_collisions_only_impact_location, unique_collisions_impact_location_and_riv, unique_collisions]
-
-        csv_writer.writerow([str(v) for v in values])
-    
-    # Behavioral/Interaction Diversity
-    #   - [x] Total time spent in emergency "", total number of  "has_disengagement"
-    #   - Avg emergency/disengagement per vehicle?
-    #     
-    #   - Number of Vehicles/Complexity - NO
-    #   - Initial Positioning of Vehicle  - NO
-    #   - Initial Speed of Vehicles  - NO
-    #   - Position of Goal  - NO
-    #   - Route Complexity (Distance, Number of Lane Switches)  - NO
-    #   - [x] Total Interaction Count
-    #   - [x] Unique Interactions using the efined Interaction Map (10 bins 2 * lane widht, 10bins 2 * vehicle lenght)
-    
-    module_logger.info("Computing Behavior and Interaction Metrics")
-    # Output to output_to
-    behavior = os.path.join(output_to, "behavior.csv")
-    with open(behavior, "w", newline="") as csvfile:
-        
-        csv_writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                
-        csv_writer.writerow(["total_agents", "total_interactions", "unique_interactions"])
-
-        long_bins, lat_bins = get_interaction_map_bins()
-
-        # Include 0 - B[0]:B[9] - 10 and len(bins)
-        rows = len(long_bins) + 2 # 0 <, bins, len(bins) +1 or +2?
-        cols = len(lat_bins) + 2 # 0 <, bins, len(bins)
-
-        interaction_map = np.zeros((rows, cols))
-        total_agents = 0
-
-        for _, simulation_folder in simulation_folders(run_folder):
-            scenarios_folders = os.listdir(os.path.join(run_folder, simulation_folder))
-            for scenario_id in scenarios_folders:
-                module_logger.debug(f"Processing {scenario_id}")
-                
-                interactions_file_path = os.path.join(run_folder, simulation_folder, scenario_id, "interactions.csv").replace("/records/", "/evita-records/")
-
-                if not os.path.exists(interactions_file_path):
-                    continue
-                
-                # Count interactions
-                try:
-                    interactions = pd.read_csv(interactions_file_path)
-                except pd.errors.EmptyDataError:
-                    interactions = pd.DataFrame()
-
-                interactions_count = len(interactions)
-
-                planned_trajectories_file_path = os.path.join(run_folder, simulation_folder, scenario_id, "planned_trajectories.json").replace("/records/", "/evita-records/")
-
-                with open(planned_trajectories_file_path, "r") as f:
-                    data = json.load(f)
-
-                agent_ids = list(data.keys())
-                total_agents = total_agents + len(agent_ids)
-
-                local_interaction_map = np.zeros((rows, cols))
-                
-                for _, row in interactions.iterrows():
-                    diff_long = row["diff_long"]
-                    diff_lat = row["diff_lat"]
-
-                    # If values in x are beyond the bounds of bins, 0 or len(bins) is returned as appropriate.
-                    # Retrieve the trajectories for the interactions and fill up the local map
-                    digitized_long = np.digitize(diff_long, long_bins)
-                    digitized_lat = np.digitize(diff_lat, lat_bins)
-
-                    local_interaction_map[digitized_long][digitized_lat] += 1.0
-
-                # Sum
-                interaction_map = interaction_map + local_interaction_map
-
-        total_interactions = int(np.sum(interaction_map))
-        unique_interactions = np.count_nonzero(interaction_map)
-        merged_results = [total_agents] + [total_interactions, unique_interactions]
-        
-        csv_writer.writerow([str(v) for v in merged_results])
-
-    # Store all the results also as npy files
-    collision_map_only_impact_location_file = os.path.join(output_to, "collision_map_only_impact_location.npy")
-    np.save(collision_map_only_impact_location_file, collision_map_only_impact_location)
-
-    collision_map_impact_location_and_riv_file = os.path.join(output_to, "collision_map_impact_location_and_riv.npy")
-    np.save(collision_map_impact_location_and_riv_file, collision_map_impact_location_and_riv)
-
-    collision_map_file = os.path.join(output_to, "collision_map.npy")
-    np.save(collision_map_file, collision_map)
-
-    interaction_map_file = os.path.join(output_to, "interaction_map.npy")
-    np.save(interaction_map_file, interaction_map)
-
-    
-    # Generation - Those metrics are computed by the orchestrator and stored in peformance.csv
-    # "all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"    
-    # - Validity ratio (Valid/Total + Invalid/Total) - NO (can be computed from the others)
-    # - Average generation time (per valid scenarios) - NO (can be computed from the others)
-
 def generate_report(run_folder: str, _output_to: str = None) -> None:
     """
     Generate the "final" reports of the entire generation as csv files.
     """
-    # Output to the same folder if none passed
-    output_to = _output_to if _output_to else run_folder
+    # Define output folder
+    if _output_to:
+        output_to = _output_to
+    else:
+        output_to = run_folder
 
     module_logger.critical(f"Generating report for {run_folder} at {output_to}")
     
-    # Output to output_to
+    # Build requirement violation report file path
     requirements_violations = os.path.join(output_to, "requirements_violations.csv")
-    
-    # TODO We'd like to show that increasing the number of interactions improve collisions (coverage/criticality/etc)
-    # TODO Create the collision map including the location of the collision (as set), RIV, and the Pdof/RIA
-    # RIV (0 - 100 km/h) and PDoF (0-180 deg) are binned in 10 bins
 
     module_logger.critical("Computing Requirement Violation Metrics")
-    with open(requirements_violations, "w", newline="") as csvfile:
-        
+    with open(requirements_violations, "w", newline = "") as csvfile:
+        # Write the header of the csv file
         csv_writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["total_collisions", "total_timeouts", "total_missed_goals", 
-                             "unique_collisions_only_impact_location", "unique_collisiosn_impact_location_and_riv", "unique_collisions"])
+        csv_writer.writerow(["total_collisions", "total_timeouts", "total_missed_goals", "unique_collisions_only_impact_location", "unique_collisiosn_impact_location_and_riv", "unique_collisions"])
 
-        # For these, there should be only one element per scenario
+        # Define the names of the requirement violations we want to count and initialize the corresponding counters
         requirements_violation_names = ["has_timeout", "has_missed_goal"]
         total_requirements_violation_counts = np.zeros(len(requirements_violation_names) + 1)
         
@@ -1569,7 +1353,6 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
 
         for p1 in ["F", "M", "B", "-"]:
             for s1 in ["L", "C", "R", "+"]:
-
                 for p2 in ["F", "M", "B", "-"]:
                     for s2 in ["L", "C", "R", "+"]:
                         s = frozenset( (f"{p1}{s1}", f"{p2}{s2}") )
@@ -1577,26 +1360,24 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
                         impact_location_bins.append(s)
         
         
-        # NOTE Reused!        
+        # Initialize RIA and RIV bins       
         n_bins = 10
-
         riv_bins = np.linspace(0, 100, n_bins)
         ria_bins = np.linspace(0, 180, n_bins)
     
-        collision_map_only_impact_location = np.zeros( len(impact_location_bins) )
-        collision_map_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1) )
-        collision_map = np.zeros( (len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1) )
+        # Initialize collision maps
+        collision_map_only_impact_location = np.zeros(len(impact_location_bins))
+        collision_map_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1))
+        collision_map = np.zeros((len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1))
     
+        # Iterate over the simulations
         for _, simulation_folder in simulation_folders(run_folder):
             module_logger.debug(f"Processing {simulation_folder}")
             
+            # Build scenario's DB file path
             simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
-            # scenario_file = os.path.join(run_folder, simulation_folder, "scenario", f"scenario_{simulation_folder}.xml")
 
-            # load the scenario
-            # scenario, _ = CommonRoadFileReader(scenario_file).open()
-
-
+            # Initialize local collision maps
             local_only_impact_location = np.zeros( len(impact_location_bins) )
             local_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1) )
             local_collision_map = np.zeros( (len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1) )
@@ -1604,55 +1385,45 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             # Count collisions + timeout/missed goals
             collisions = count_collisions(simulation_db)
             
+            # Get the features of the collisions from the DB
             collision_features = _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder)
 
+            # Count the other requirement violations and update the total counts
             violated_reqs = [collisions] + list(_count_from_db(simulation_db, requirements_violation_names))
-
             requirements_violation_counts = np.array(violated_reqs)
-
             total_requirements_violation_counts = total_requirements_violation_counts + requirements_violation_counts
 
             # It might happen that those features were not stored, in this case we need to recompute them!
-            
-            # compute_RIA, compute_RIV, compute_impact_position
-            
+            # Iterate over the features of the collisions and update the collision maps            
             for impact_location_as_frozenset, riv, ria in collision_features:
-
+                # Check that the impact location is not None
                 assert None not in impact_location_as_frozenset, f"Impact location contains None. Check {simulation_db}!"
 
+                # Map the impact location, RIV, and RIA to the corresponding bins
                 impact_location_mapped = impact_location_bins.index(impact_location_as_frozenset)
                 digitized_riv = np.digitize(riv, riv_bins)
                 digitized_ria = np.digitize(ria, ria_bins)
 
+                # Update local collision maps
                 local_only_impact_location[impact_location_mapped] += 1.0
                 local_impact_location_and_riv[impact_location_mapped][digitized_riv] += 1.0
                 local_collision_map[impact_location_mapped][digitized_riv][digitized_ria] += 1.0
             
-            # print("local_only_impact_location")
-            # print(local_only_impact_location)
-
-            # print("local_impact_location_and_riv")
-            # print(local_impact_location_and_riv)
-
+            # Update collision maps
             collision_map_only_impact_location += local_only_impact_location
             collision_map_impact_location_and_riv += local_impact_location_and_riv
             collision_map += local_collision_map
 
-        # Compute total and unique
+        # Compute total and unique collisions
         total_collisions_double_check = int(np.sum(collision_map_only_impact_location))
-
-        # print("total_only_impact_location")
-        # print(total_only_impact_location)
-
-        # print("total_impact_location_and_riv")
-        # print(total_impact_location_and_riv)
-
         unique_collisions_only_impact_location = np.count_nonzero(collision_map_only_impact_location)
         unique_collisions_impact_location_and_riv = np.count_nonzero(collision_map_impact_location_and_riv)
         unique_collisions = np.count_nonzero(collision_map)
 
+        # Check that the total number of collisions we counted on the side is the same as the one we get from the collision map
         assert total_requirements_violation_counts.tolist()[0] == total_collisions_double_check, f"Reported {total_requirements_violation_counts.tolist()[0]} == {total_collisions_double_check}"
         
+        # Merge all the counts together and write them to the csv file
         values = total_requirements_violation_counts.tolist() + [unique_collisions_only_impact_location, unique_collisions_impact_location_and_riv, unique_collisions]
 
         csv_writer.writerow([str(v) for v in values])
@@ -1670,67 +1441,75 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
     #   - [x] Unique Interactions using the efined Interaction Map (10 bins 2 * lane widht, 10bins 2 * vehicle lenght)
     
     module_logger.info("Computing Behavior and Interaction Metrics")
-    # Output to output_to
+
+    # Build behavior report file path
     behavior = os.path.join(output_to, "behavior.csv")
-    with open(behavior, "w", newline="") as csvfile:
-        
-        csv_writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                
+    with open(behavior, "w", newline = "") as csvfile:
+        # Write the header of the csv file
+        csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
         names = ["has_emergency", "has_disengagement"]
         csv_writer.writerow(["total_emergency", "total_disengagement", "total_agents", "total_interactions", "unique_interactions"])
 
+        # Get the bins of the interaction map
         long_bins, lat_bins = get_interaction_map_bins()
 
         # Include 0 - B[0]:B[9] - 10 and len(bins)
         rows = len(long_bins) + 2 # 0 <, bins, len(bins) +1 or +2?
         cols = len(lat_bins) + 2 # 0 <, bins, len(bins)
 
+        # Initialize the interaction map and the counters for the requirement violations
         interaction_map = np.zeros((rows, cols))
         total_values = np.zeros(len(names))
         total_agents = 0
 
+        # Iterate over the simulations folders
         for _, simulation_folder in simulation_folders(run_folder):
             module_logger.debug(f"Processing {simulation_folder}")
+
+            # Build scenario's DB and scenario's file paths
             simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
             scenario_file = os.path.join(run_folder, simulation_folder, "scenario", f"scenario_{simulation_folder}.xml")
 
-            # load the scenario
+            # Load the scenario
             scenario, _ = CommonRoadFileReader(scenario_file).open()
 
+            # Extract the values of the requirement violations and update the total counts
             values = np.array(_count_from_db(simulation_db, names))
             total_values = total_values + values
 
+            # Extract the agent ids from the DB and update the total count of agents
             agent_ids = _agent_ids_from_db(simulation_db)
             total_agents = total_agents + len(agent_ids)
 
+            # Initialize local interaction map
             local_interaction_map = np.zeros((rows, cols))
             for agent_id in agent_ids:
-
+                # Extract the timesteps at which the agent interacted with other agents
                 interaction_times = _interactions_times_from_db_for_agent(simulation_db, agent_id)
 
+                # Build agent's log file path
                 agent_logs = os.path.join(run_folder, simulation_folder, "logs", str(agent_id), "logs.csv")
-                # trajectory_number -> time_step
-                # x_positions_m
-                # y_positions_m
-                # read csv file to a list of dictionaries
+
                 trajs = list()
                 with open(agent_logs, 'r') as log_csvfile:
-                    csv_reader = csv.DictReader(log_csvfile, delimiter=";", quotechar='"')
+                    csv_reader = csv.DictReader(log_csvfile, delimiter = ";", quotechar = '"')
                     
                     # There's a dictionary for each line, and a line for each time_step
                     data = [row for row in csv_reader]
-                    # Sort by time_step - Reconstruct all the trajectories
+
+                    # Reconstruct all the trajectories
                     for t, xs, ys, ors, vels in sorted([(int(d["trajectory_number"]), d["x_positions_m"], d["y_positions_m"], d["theta_orientations_rad"], d["velocities_mps"] ) for d in data], key= lambda tup: tup[0]):
                         trajs.append(_rebuild_trajectory(t, xs, ys, ors, vels))
 
+                # Iterate over agent's interaction timesteos
                 for t in interaction_times:
                     # Extract the trajectories
-                    # print(f"Interaction for {agent_id} at time {t}")
                     trajectory_at_time_t = trajs[t]
                     assert trajectory_at_time_t.initial_time_step == t, "Wrong initial time step for traj t"
                     trajectory_at_time_t_1 = trajs[t+1]
                     assert trajectory_at_time_t_1.initial_time_step == t+1, "Wrong initial time step for traj t+1"
 
+                    # Compute interaction influence on replanned trajectory
                     try:
                         diff_long, diff_lat = compute_difference_in_cc_space(scenario, trajectory_at_time_t, trajectory_at_time_t_1)
                     except:
@@ -1744,15 +1523,10 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
 
                     local_interaction_map [digitized_long][digitized_lat] = local_interaction_map [digitized_long][digitized_lat] + 1.0
 
-            # print("local_interaction_map")    
-            # print(local_interaction_map)
-
-            # Sum
+            # Update the interaction map with the local interaction map
             interaction_map = interaction_map + local_interaction_map
 
-        # print("interaction_map")
-        # print(interaction_map)
-        
+        # Update the interaction map with the local interaction map
         total_interactions = int(np.sum(interaction_map))
         unique_interactions = np.count_nonzero(interaction_map)
         merged_results = total_values.tolist() + [total_agents] + [total_interactions, unique_interactions]
@@ -1771,199 +1545,3 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
 
     interaction_map_file = os.path.join(output_to, "interaction_map.npy")
     np.save(interaction_map_file, interaction_map)
-
-    
-    # Generation - Those metrics are computed by the orchestrator and stored in peformance.csv
-    # "all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"    
-    # - Validity ratio (Valid/Total + Invalid/Total) - NO (can be computed from the others)
-    # - Average generation time (per valid scenarios) - NO (can be computed from the others)
-
-# def recompute_All():
-# # # TODO: Check if we need to recompute anything
-        # result = connection.execute('select MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_location from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
-        
-        # target_time_steps: set = set ()
-        # collision_dictionary = dict()
-
-        # for time_step, agent_id, most_critical_agent, has_collided_with_str, _, _, _ in result.fetchall():
-        #     time_step = int(time_step)
-        #     has_collided_with_str = has_collided_with_str
-        #     agent_id = int(agent_id)
-
-        #     # We cannot use (time_step, agent) because the db does not contain the data about already collided vehicles that collide again
-        #     collision_dictionary[time_step] = has_collided_with_str
-            
-        #     # print(f"\t Agent {agent_id} collided at time {time_step}")
-
-        #     if most_critical_agent == "None":
-        #         target_time_steps.add(time_step)
-
-        # metrics = list()
-
-        # number_of_collisions = len(collision_dictionary)
-        # TODO This is brittle. Let's keep it on the side for the moment
-        # for target_time_step in sorted(list(target_time_steps), key= lambda x: x):
-        #     module_logger.info(f"Missing collision metrics at time {target_time_step}. Recompute from scratch")
-        #     # Rebuild the trajectory + Dynamic obstacles of the agents
-        #     result = connection.execute('select distinct agent_id from scenario_evaluation;')
-            
-        #     agents: List[DynamicObstacle] = list()
-
-        #     agent_ids = [a[0] for a in result.fetchall()]
-        #     for agent_id in agent_ids:
-        #         # Read the agent logs 
-        #         agent_logs = os.path.join(run_folder, simulation_folder, "logs", str(agent_id), "logs.csv")
-        #         # read csv file to a list of dictionaries
-        #         with open(agent_logs, 'r') as log_csvfile:
-        #             csv_reader = csv.DictReader(log_csvfile, delimiter=";", quotechar='"')
-                    
-        #             # There's a dictionary for each line, and a line for each time_step
-        #             data = [row for row in csv_reader]
-
-        #             # If the vehicle collided at time target_time, there are no trajectories at that time or event after that
-        #             # But we know the vehicle is stopped (collided) so we know any of its future states.
-        #             # so we can build an ad-hoc trajectory with all the same states (but with different time stamps)
-                    
-        #             trajectory = None
-
-        #             if len(data) == target_time_step:
-        #                 # Build a stand still trajectory
-        #                 t = len(data) - 1 # take the last known trajectory
-        #                 xs, ys, ors, vels = data[-1]["x_positions_m"], data[-1]["y_positions_m"], data[-1]["theta_orientations_rad"], data[-1]["velocities_mps"]
-        #                 last_trajectory = _rebuild_trajectory(t, xs, ys, ors, vels)
-        #                 # Pre-Collision
-        #                 initial_state = deepcopy(last_trajectory.state_list[0])
-        #                 # We need to time shift, but ensure t-1 exists!
-        #                 initial_state.time_step = target_time_step - 1
-        #                 # Collision
-        #                 collision_state = deepcopy(last_trajectory.state_list[1])
-        #                 collision_state.time_step = target_time_step
-
-        #                 # Now we add the next 40 (HARDCODED) collision - stand still states!
-        #                 stand_still_state_list = list()
-        #                 stand_still_state_list.append(initial_state) # 0
-        #                 stand_still_state_list.append(collision_state) # 1
-        #                 # At collisions, the speed of the vehicle must be kept, after collision we force it to be zero
-        #                 for t in range(0, 40): # 2 - 41
-        #                     the_state = deepcopy(collision_state)    
-        #                     the_state.time_step = target_time_step + t
-        #                     the_state.velocity = 0.0
-        #                     stand_still_state_list.append(the_state)
-
-        #                 trajectory = Trajectory(initial_time_step=target_time_step - 1, state_list=stand_still_state_list)
-        #             elif len(data) == target_time_step + 1:
-        #                 # Build a stand still trajectory
-        #                 t = len(data) - 1 # take the last known trajectory
-        #                 xs, ys, ors, vels = data[-1]["x_positions_m"], data[-1]["y_positions_m"], data[-1]["theta_orientations_rad"], data[-1]["velocities_mps"]
-        #                 last_trajectory = _rebuild_trajectory(t, xs, ys, ors, vels)
-        #                 # Collision - with speed
-        #                 initial_state = deepcopy(last_trajectory.state_list[1])
-        #                 # We need to time shift, but ensure t-1 exists!
-        #                 initial_state.time_step = target_time_step - 1
-        #                 # Collision - stand still
-        #                 collision_state = last_trajectory.state_list[1]
-        #                 # Now we add the next 40 (HARDCODED) states!
-        #                 stand_still_state_list = list()
-        #                 stand_still_state_list.append(initial_state) # 0
-        #                 # After the collisions, the speed of the vehicle must be kept, after collision we force it to be zero
-        #                 for t in range(0, 41): # 1 - 41
-        #                     the_state = deepcopy(collision_state)    
-        #                     the_state.time_step = target_time_step + t
-        #                     the_state.velocity = 0.0
-        #                     # the_state.acceleration = 0.0
-        #                     # the_state.yaw_rate = 0.0
-        #                     # the_state.slip_angle = 0.0
-
-        #                     stand_still_state_list.append(the_state)
-
-        #                 trajectory = Trajectory(initial_time_step=target_time_step - 1, state_list=stand_still_state_list)
-        #             elif len(data) < target_time_step:
-        #                 # Build a stand still trajectory
-        #                 t = len(data) - 1 # take the last known trajectory
-        #                 xs, ys, ors, vels = data[-1]["x_positions_m"], data[-1]["y_positions_m"], data[-1]["theta_orientations_rad"], data[-1]["velocities_mps"]
-        #                 last_trajectory = _rebuild_trajectory(t, xs, ys, ors, vels)
-        #                 # Keep only the second state of the trajectory, which is the collision one (also the last state)
-        #                 initial_state = deepcopy(last_trajectory.state_list[1])
-        #                 # We need to time shift the collision state and ensure t-1 exists
-        #                 initial_state.time_step = target_time_step - 1
-        #                 # 
-        #                 collision_state = deepcopy(last_trajectory.state_list[1])
-        #                 # Now we add the next 40 (HARDCODED) states!
-        #                 stand_still_state_list = list()
-        #                 stand_still_state_list.append(initial_state)
-        #                 for t in range(0, 41):
-        #                     the_state = deepcopy(collision_state)    
-        #                     the_state.time_step = target_time_step + t
-        #                     the_state.velocity = 0.0
-        #                     # the_state.acceleration = 0.0
-        #                     # the_state.yaw_rate = 0.0
-        #                     # the_state.slip_angle = 0.0
-
-        #                     stand_still_state_list.append(the_state)
-
-        #                 trajectory = Trajectory(initial_time_step=target_time_step - 1, state_list=stand_still_state_list)
-        #             else:
-        #                 # Look up for the right trajectory at target_time_step and rebuild it
-        #                 # Ensure there's t-1
-        #                 t = target_time_step - 1
-        #                 xs, ys, ors, vels = data[t]["x_positions_m"], data[t]["y_positions_m"], data[t]["theta_orientations_rad"], data[t]["velocities_mps"]
-        #                 trajectory = _rebuild_trajectory(t, xs, ys, ors, vels)
-                    
-        #             # At this point a trajectory exists for the agent, we create the DynamicObstacle out of it
-
-        #             scenario_config = ScenarioGeneratorConfig()
-        #             shape = Rectangle(length=scenario_config.length, width=scenario_config.width)
-        #             position = trajectory.state_list[0].position
-        #             orientation = trajectory.state_list[0].orientation
-        #             velocity = trajectory.state_list[0].velocity
-        #             acceleration = 0.0
-        #             yaw_rate = 0.0
-        #             slip_angle = 0.0 
-        #             ini_state = InitialState(t, position, orientation, velocity, acceleration, yaw_rate, slip_angle)
-                    
-        #             agents.append(DynamicObstacle(agent_id, ObstacleType.CAR, shape, ini_state, TrajectoryPrediction(trajectory, shape)))
-            
-        #     # Consider only the agents collided at the exact time step or after to include those that also collided afterward
-        #     for agent in agents:#[ a for a in agents if a.agent_state.status == AgentStatus.COLLIDED and target_time_step >= a.agenst_state.last_timestamp]:
-        #         # At this point we have for each agent its representation at target_time_step
-
-        #         agent_state_at_time_t = agent.state_at_time(target_time_step)
-        #         agent_state_at_time_t_minus_one = agent.state_at_time(target_time_step-1)
-        #         agent_occupancy_at_time_t = agent.occupancy_at_time(target_time_step) 
-
-        #         most_critical_agent = None
-        #         riv = 0.0 
-        #         ria = None
-        #         impact_location = None
-
-        #         for other_agent in [a for a in agents if a.obstacle_id != agent.obstacle_id]: # and a.agent_state.status == AgentStatus.COLLIDED and target_time_step >= a.agenst_state.last_timestamp]:
-
-        #             other_agent_state_at_time_t = other_agent.state_at_time(target_time_step)
-        #             other_agent_state_at_time_t_minus_one = other_agent.state_at_time(target_time_step-1)
-        #             other_agent_occupancy_at_time_t = other_agent.occupancy_at_time(target_time_step)
-
-        #             # if not agent_occupancy_at_time_t.shape.shapely_object.intersects(other_agent_occupancy_at_time_t.shape.shapely_object):
-        #             # 15 cm ? Sometimes the occupancies are wrong or they do not really touch?
-        #             # THIS IS BRITTLE!
-        #             if agent_occupancy_at_time_t.shape.shapely_object.distance(other_agent_occupancy_at_time_t.shape.shapely_object) > 0.15:
-        #                 # print(f"Agent {agent.obstacle_id} does not collide with {other_agent.obstacle_id}")
-        #                 continue
-        #             # else:
-        #                 # print(f"Agent {agent.obstacle_id} collide with {other_agent.obstacle_id}")
-
-        #             current_riv = compute_RIV(agent_state_at_time_t, other_agent_state_at_time_t)
-
-        #             if current_riv > riv:
-        #                 ria = compute_RIA(agent_state_at_time_t, agent_state_at_time_t_minus_one, 
-        #                             other_agent_state_at_time_t, other_agent_state_at_time_t_minus_one)
-                
-        #                 # TODO This seems to be off in some cases?
-        #                 impact_location = compute_impact_position(agent_occupancy_at_time_t, agent_state_at_time_t,
-        #                                                 other_agent_occupancy_at_time_t, other_agent_state_at_time_t)
-        #                 riv = current_riv
-        #                 most_critical_agent = other_agent.obstacle_id
-                
-        #         if most_critical_agent:
-        #             module_logger.debug(f"Found collision details {ria}, {riv}, {impact_location} between {agent.obstacle_id} with {most_critical_agent}")
-        #             has_collided_with = collision_dictionary[target_time_step]
-        #             metrics.append( (target_time_step, agent.obstacle_id, most_critical_agent, has_collided_with, riv, ria, impact_location) )

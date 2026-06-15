@@ -1,6 +1,5 @@
 from ..interfaces import AbstractScenarioEvaluator
 from ..generators.utils import augment_with_danger, augment_with_interactions, augment_with_collisions, augment_with_missed_goals, augment_with_emergencies_and_disengagements
-from typing import Tuple
 
 # import csv
 import os
@@ -9,14 +8,13 @@ import sys
 # import shutil
 import pandas as pd
 
-import traceback
-from datetime import datetime
-
-from cr_scenario_handler.evaluation.simulation_evaluation import evaluate_simulation, Evaluator
+from cr_scenario_handler.evaluation.simulation_evaluation import evaluate_simulation
 from cr_scenario_handler.simulation.simulation import Simulation
 
 class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
-    
+    """
+    This class is responsible for evaluating the simulation using the already implemented metrics, then augment the result with some additional metrics
+    """
     def __init__(self, output_folder:str, **kwargs) -> None:           
         if sys.platform == "darwin":
             os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
@@ -30,9 +28,8 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
         """
         
         # Invoke the original code - this also store the DB
-        # - DCE is broken for colliding vehicles?
         criticality_dataframe = evaluate_simulation(simulation).criticality_dataframe
-        # Extend evaluation with additional metrics for each agent
+        # Extend evaluation with additional metrics for each agent:
         #  - max_danger: at each time, what's the max_danger for each agent
         #  - interaction: at each time, was the agent under some interaction
         # level_0 -> agent_id, level_1 -> time_step

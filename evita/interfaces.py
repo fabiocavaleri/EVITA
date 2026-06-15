@@ -1,11 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Any, List, Tuple, Optional, Dict
-from enum import Enum
-
+from typing import List, Optional, Dict
 import pandas as pd
 
 from cr_scenario_handler.simulation.simulation import Simulation
-from cr_scenario_handler.evaluation.simulation_evaluation import Evaluator
 
 class AbstractFitnessFunction(ABC):
     """

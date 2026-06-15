@@ -1,10 +1,7 @@
 import pandas as pd
-
 from typing import List
 
-
 from .interfaces import AbstractFitnessFunction
-
 
 class MaxDangerFitnessFunction(AbstractFitnessFunction):
 
@@ -36,7 +33,5 @@ class MaxInteractionsFitnessFunction(AbstractFitnessFunction):
         Compute the overall number of times AV changed their trajectory because of a "likely" interaction.
         This is likely to increase with the number of AV, however, increasing the number of AV also leads to an increase of the complexity of generating the scenarios
         """
-        #  agent_interactions_count_df = pd.DataFrame(None, index=list(range(t_start, t_end+1)), columns=["is_interacting", "is_interacting_with"])
-        # agent_interactions_count_df["is_interacting"] = is_interacting
-        # agent_interactions_count_df["is_interacting_with"] = is_interacting_with
+
         return evaluation_data["is_interacting"].sum()

@@ -1,6 +1,7 @@
 # Code taken from here
 # https://github.com/testingautomated-usi/deepatash/blob/96ea0151f508b9155ee62fdeeb9760431f6b867b/BNG/utils.py#L121
 import numpy as np
+
 def _calc_angle_distance(v0, v1):
     at_0 = np.arctan2(v0[1], v0[0])
     at_1 = np.arctan2(v1[1], v1[0])

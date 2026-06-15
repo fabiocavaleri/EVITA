@@ -1,21 +1,17 @@
-import os
-
 from commonroad.scenario.lanelet import LaneletType
 
-
 class ValidationConfig:
-    # Not sure why elements are statically defined in this class..
-
-    # safety_time in seconds will be used to calculate safe distances to other ego cars
-    def __init__(self, safety_time=2) -> None:
-        # time in seconds for a safe distance between two cars
-        self.safety_time = safety_time
-
-    lanelet_types = {LaneletType.HIGHWAY, LaneletType.ACCESS_RAMP,
-                     LaneletType.EXIT_RAMP, LaneletType.URBAN}
-    # this validation is not needed when taking valid scenarios from the online dataset
+    """
+    This class contains the configuration parameters for the scenario validation process.
+    """
+    lanelet_types = {LaneletType.HIGHWAY, LaneletType.ACCESS_RAMP, LaneletType.EXIT_RAMP, LaneletType.URBAN}
+    # This validation is not needed when taking valid scenarios from the online dataset
     validate_lanelet_type_and_direction = False
     lanelet_same_direction_only = False
+
+    def __init__(self, safety_time = 2) -> None:
+        # Time in seconds for a safe distance between two cars
+        self.safety_time = safety_time
 
     # Min distance of 2m seems reasonable. It cannot be 0.0 otherwise they overlap!
     def car_distance_formula(self, speed): return speed * self.safety_time if speed > 1.0 else 2.0
@@ -32,15 +28,18 @@ class ValidationConfig:
 from cr_scenario_handler.utils.configuration import VehicleParameterMapping, VehicleType
 
 class ScenarioGeneratorConfig:
-
+    """
+    This class contains the configuration parameters for the scenario generation process.
+    """
     def __init__(self, scenario_duration: int = 300, max_planning_problems: int = 5):
-        self.dist_to_end = 10.0  # length of goal area at the end of a lanelet
+        # Length of goal area at the end of a lanelet
+        self.dist_to_end = 10.0 
         # CR vehicle type (see commonroad-vehicle-models): #1: Ford Escort, #2: BMW 320i, 3 = VW Vanagon
         self.cr_vehicle_id = 2
-         # get vehicle parameters from CommonRoad vehicle models given cr_vehicle_id
+        # Get vehicle parameters from CommonRoad vehicle models given cr_vehicle_id
         vehicle_parameters = VehicleParameterMapping.from_vehicle_type(VehicleType(self.cr_vehicle_id))
 
-        # get dimensions from given vehicle ID
+        # Get dimensions from given vehicle ID
         self.length = vehicle_parameters.l
         self.width = vehicle_parameters.w
         self.wb_front_axle = vehicle_parameters.a
@@ -48,12 +47,10 @@ class ScenarioGeneratorConfig:
         self.wheelbase = vehicle_parameters.a + vehicle_parameters.b
         self.mass = vehicle_parameters.m
 
-        # self.length = 4.5 #10.0  # ego car dimensions
-        # self.width = 1.8 # 5.0
         self.amount_pp = 1  # initially added planning problems
         #
         self.min_amount_pp = 2 # min amount of planning problems in a scenario
-        self.max_amount_pp = max_planning_problems # 12 is way too big # max amount of planning problems in a scenario
+        self.max_amount_pp = max_planning_problems # max amount of planning problems in a scenario
         #
         self.do_mutations = True  # for debugging
         self.max_position_modifier = 50  # max amount for position mutations; min amount is -max_position_modifier
@@ -63,7 +60,7 @@ class ScenarioGeneratorConfig:
         self.min_init_velocity = 5  # see max_init_velocity
         self.car_distance_formula = ValidationConfig().car_distance_formula
         #
-        self.max_time_step = scenario_duration  # maximum number of steps that each planner can take - 30 seconds?
+        self.max_time_step = scenario_duration  # maximum scenario duration in simulation steps (default: 300 -> 30 seconds)
         self.emergency_slow_down_amount = 5  # how much a car is slowing down for each step it spends in emergency mode
         self.max_emergency_steps = 4
         #

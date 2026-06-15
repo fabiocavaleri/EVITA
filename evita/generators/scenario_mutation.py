@@ -24,32 +24,33 @@ from commonroad.planning.planning_problem import PlanningProblem, PlanningProble
 from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import get_traffic_light_configuration, get_traffic_light_cycle, compute_map_elements_mapping
 
 class EVITAPlanningProblem(PlanningProblem):
+    """
+    Custom class for EVITA planning problems, which includes the path of lanelet ids to reach the goal
+    """
     def __init__(self, planning_problem_id: int, initial_state: InitialState, goal_region: GoalRegion, path: List[int]):
         super().__init__(planning_problem_id, initial_state, goal_region)
         self.path = path
 
-# Ideally, those must be initialized using HO Functions
 def mutate_initial_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario) -> PlanningProblem:
     """
     Mutate the initial position of the given planning problem. Return a new planning problem
     """
     _planning_problem = deepcopy(planning_problem)
 
-    # Get planning problem initial lanelet from staring position
+    # Get planning problem initial lanelet from starting position
     current_position = _planning_problem.initial_state.position
     ll_network = scenario.lanelet_network
     lanelets = ll_network.find_lanelet_by_position([current_position])
     
-    # planning_problem is initially offroad
+    # Skip planning_problem if initial position is offroad
     if not (len(lanelets) != 0 and len(lanelets[0]) != 0):
         if type(_planning_problem) == EVITAPlanningProblem:
             lanelet = ll_network.find_lanelet_by_id(_planning_problem.path[0])
         else:
-            raise ValueError
-    else:
-        # Get starting lanelet center line
-        
-        lanelet: Lanelet = ll_network.find_lanelet_by_id(lanelets[0][0])
+            raise ValueError("Invalid planning problem type")
+
+    # Get initial lanelet center line
+    lanelet: Lanelet = ll_network.find_lanelet_by_id(lanelets[0][0])
     center_line = LineString(lanelet.center_vertices)
     # Randomly sample a new position on the lanelet center line
     position_modifier = random.uniform(-config.max_position_modifier, config.max_position_modifier)
@@ -72,15 +73,10 @@ def mutate_initial_velocity(config: ScenarioGeneratorConfig, planning_problem: P
 
 def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario) -> PlanningProblem:
     """
-    Mutate the position of the Goal Area velocity of the given planning problem. Return a new planning problem ensuring the goal area
-    is reacheable
+    Mutate the position of the Goal Area velocity of the given planning problem
+    Return a new planning problem ensuring the goal area is reacheable
     """
     _planning_problem = deepcopy(planning_problem)
-
-    # Lanelet of the current goal area. # Flattened as a set
-    # Note goal_area.position is a rectangle!
-    # list_of_list_of_lanelet_ids_to_avoid = scenario.lanelet_network.find_lanelet_by_position([s.position for s in planning_problem.goal.state_list])
-    # TODO Why not simply 
     
     # Get the lanelet ids of the goal area
     lanelet_ids_to_avoid = []
@@ -107,12 +103,11 @@ def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem:
     
     if len(exit_points) == 0:
         print("Cannot find a new position of the goal area!")
-        # TODO What to do? nothing for the moment
     else:
-        # Take one at random
+        # Take one lanelet at random
         goal_lanelet = random.choice(list(exit_points))
 
-        # Who provides this?
+        # Compute a new goal area and goal position
         goal_area = generation_utils.get_possible_goal_for_lanelet(config, goal_lanelet)
         goal = generation_utils.generate_goal(config, goal_area)
 
@@ -124,7 +119,7 @@ def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scena
     """
     Return a new PlanningProblemSet containing the same problems plus a random one
     """
-
+    # Copy the scenario and problem set
     _scenario = deepcopy(scenario)
     _problem_set = deepcopy(problem_set)
 
@@ -137,16 +132,18 @@ def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scena
     # Get a random "exit" lanelet reacheable from the selected one or its adjacent lanelets
     full_lanelets = generation_utils.get_successor_lanelets(lanelet, _scenario.lanelet_network)
 
+    # Add the adjacent lanelets successors to the list of possible exit lanelets
     for adjacent in adjacent_lanelets:
         full_lanelets = full_lanelets + generation_utils.get_successor_lanelets(adjacent, _scenario.lanelet_network)
 
-    # Pick one
+    # Pick one randomly
     random_exit_lanelet = random.choice(full_lanelets)
 
+    # Generate a new random goal area and goal position
     goal_area = generation_utils.get_possible_goal_for_lanelet(config, random_exit_lanelet)
     goal = generation_utils.generate_goal(config, goal_area)
 
-    # TODO Ensure that they do not have the same ID is a tricky businness...
+    # Check for planning problem ID uniqueness and generate a new ID
     if _problem_set.planning_problem_dict:
         last_key, pp = max(list(_problem_set.planning_problem_dict.items()))
     else:
@@ -154,6 +151,7 @@ def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scena
         last_key = config.av_base_id
     new_id = last_key + 1
 
+    # Generate a new initial state for the planning problem
     init_state = generation_utils.get_random_init_state(config, random.choice(full_lanelets))
     new_pp = PlanningProblem(new_id, init_state, goal)
     _problem_set.add_planning_problem(new_pp)
@@ -196,11 +194,14 @@ def point_at_distance_with_next(lanelet, s):
 def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet, scenario_map_file_path: str = None) -> PlanningProblemSet:
     """
     Return a new PlanningProblemSet containing the same problems plus a random one
+    This is a custom version of the add_random_planning_problem function that ensures the generated planning problem is compatible with the EVITA + DoppelTest framework
     """
 
+    # Copy the scenario and problem set
     _scenario = deepcopy(scenario)
     _problem_set = deepcopy(problem_set)
 
+    # Retrieve scenario's map name
     scenario_map_path = scenario_map_file_path.removesuffix(".xml")
 
     # Open .json file containing map lanes that are not in an intersection
@@ -208,6 +209,7 @@ def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario:
     with open(lanelets_not_in_junction_file_path, "r") as f:
         lanelets_not_in_junction = json.load(f)
 
+    # Iterate until a valid initial lanelet is found (one that has at least one successor)
     while True:
         # Pick a random lanelet to place the AV 
         initial_lanelet = scenario.lanelet_network.find_lanelet_by_id(random.choice(lanelets_not_in_junction))
@@ -294,14 +296,15 @@ def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario:
 
 def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: EVITAPlanningProblem, scenario: Scenario, scenario_map_file_path: str) -> EVITAPlanningProblem:
     """
-    Mutate the position of the Goal Area velocity of the given planning problem. Return a new planning problem ensuring the goal area
-    is reacheable
+    Mutate the position of the Goal Area velocity of the given planning problem
+    Return a new planning problem ensuring the goal area is reacheable
     """
     _planning_problem = deepcopy(planning_problem)
 
     # Get the lanelet ids of the initial state    
     lanelet_id_of_initial_state = _planning_problem.path[0]
 
+    # Extract scenario's map name
     scenario_map_path = scenario_map_file_path.removesuffix(".xml")
 
     # Open .json file containing map lanes that are not in an intersection
@@ -319,6 +322,7 @@ def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_pr
 
     correct = False
     attempted_paths = []
+    # Iterate until a valid goal lanelet is found (one that is not in a junction, to avoid short routes, and that is different from the initial lanelet, to avoid trivial routes)
     while len(attempted_paths) < len(lanelet_feasible_paths):
         # Pick a random goal lanelet
         random_path = random.choice(lanelet_feasible_paths)
@@ -327,6 +331,7 @@ def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_pr
         if random_path in attempted_paths:
             continue
         
+        # Add the path to the list of attempted paths
         attempted_paths.append(random_path)
         random_exit_lanelet = scenario.lanelet_network.find_lanelet_by_id(random_path[-1])
 

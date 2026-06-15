@@ -5,22 +5,13 @@ import traceback
 
 from copy import deepcopy
 
-from typing import Optional, List, Any, Dict, Tuple
+from typing import Optional, List, Dict, Tuple
 
-##### Doppel Test imports from main_ga.py
+##### DoppelTest imports from main_ga.py
 from copy import deepcopy
-from datetime import datetime
-import pickle
 from random import random, sample, shuffle, randint
-import shutil
 
-from DoppelTest.config import APOLLO_ROOT, HD_MAP_PATH, MAX_ADC_COUNT, MAX_PD_COUNT, RECORDS_DIR, RUN_FOR_HOUR
-# from DoppelTest.apollo.ApolloContainer import ApolloContainer
-
-# Scenario Evaluation
-# from DoppelTest.framework.oracles import RecordAnalyzer
-# from DoppelTest.framework.oracles.ViolationTracker import ViolationTracker
-# from DoppelTest.framework.scenario.ScenarioRunner import ScenarioRunner
+from DoppelTest.config import MAX_ADC_COUNT, MAX_PD_COUNT
 
 from DoppelTest.framework.scenario import Scenario
 from DoppelTest.framework.scenario.tc_config import TCSection
@@ -28,21 +19,17 @@ from DoppelTest.framework.scenario.pd_agents import PDAgent, PDSection
 from DoppelTest.framework.scenario.ad_agents import ADAgent, ADSection
 from DoppelTest.hdmap.MapParser import MapParser
 from deap import base, tools, algorithms
-from DoppelTest.utils import get_logger, remove_record_files
-import os
 import numpy as np
+
 ###
 
-
-from commonroad.planning.planning_problem import PlanningProblemSet, PlanningProblem, GoalRegion, InitialState
+from commonroad.planning.planning_problem import PlanningProblemSet, PlanningProblem, InitialState
 from commonroad.scenario.lanelet import Lanelet
 
-from ..interfaces import AbstractScenarioGenerator, AbstractFitnessFunction
+from ..interfaces import AbstractScenarioGenerator
 
 from . import utils as scenario_generation_utils
-from . import scenario_mutation 
 from ..utils import EVITA_MAIN_LOGGER_NAME
-# TODO Move into utils
 from ..roads import identify_segments
 
 from ..validator import ValidationConfig, ScenarioValidator
@@ -50,16 +37,22 @@ from ..validator import ValidationConfig, ScenarioValidator
 # MUTATION OPERATOR
 
 def mut_ad_section(ind: ADSection):
+    """
+    Mutation operator for the ADSection of the scenario. It can do three types of mutation:
+    - Remove a random AD agent (with a probability of 0.1)
+    - Add a random AD agent (with a probability of 0.3)
+    - Mutate a random AD agent (with a probability of 0.6)
+    """
     mut_pb = random()
 
-    # remove a random 1
+    # Remove a random AD agent with a probability of 10% and only if there are more than 2 AD agents (to avoid removing all AD agents)
     if mut_pb < 0.1 and len(ind.adcs) > 2:
         shuffle(ind.adcs)
         ind.adcs.pop()
         ind.adjust_time()
         return ind
 
-    # add a random 1
+    # Add a random AD agent with a probability of 40% and only if there are less than MAX_ADC_COUNT AD agents (to avoid adding too many AD agents)
     if mut_pb < 0.4 and len(ind.adcs) < MAX_ADC_COUNT:
         while True:
             new_ad = ADAgent.get_one()
@@ -68,7 +61,7 @@ def mut_ad_section(ind: ADSection):
         ind.adjust_time()
         return ind
 
-    # mutate a random agent
+    # Mutate a random AD agent
     index = randint(0, len(ind.adcs) - 1)
     routing = ind.adcs[index].routing
     original_adc = ind.adcs.pop(index)
@@ -84,9 +77,13 @@ def mut_ad_section(ind: ADSection):
     ind.adjust_time()
     return ind
 
-
 def mut_pd_section(ind: PDSection):
-
+    """
+    Mutation operator for the PDSection of the scenario. It can do three types of mutation:
+    - Remove a random PD agent (with a probability of 0.2)
+    - Add a random PD agent (with a probability of 0.2)
+    - Mutate a random PD agent (with a probability of 0.6)
+    """
     # If there are no crosswalk, do nothing
     ma = MapParser.get_instance()
     if len(list(ma.get_crosswalks())) == 0:
