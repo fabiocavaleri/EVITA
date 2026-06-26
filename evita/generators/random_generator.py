@@ -56,7 +56,11 @@ class RandomScenarioGenerator(AbstractScenarioGenerator):
         Return new scenarios (in CommonRoad) format
         """
         # Generate the initial individual
-        scenario, planning_problem_set = self._generate_random_individual()
+        try:
+            scenario, planning_problem_set = self._generate_random_individual()
+        except Exception as exc:
+            self.logger.error(f"Cannot generate any scenario! {exc}")
+            return None
 
         return [(scenario, planning_problem_set)]
 

@@ -128,16 +128,15 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         logs_folder = os.path.join(execution_folder, "logs")
         os.makedirs(logs_folder, exist_ok=False)
 
-
         # Build the simulation configuration and the planner configuration
-        config_sim = ConfigurationBuilder.build_sim_configuration(scenario_name, scenario_folder, root_path=FRENETIX_ROOT, module="simulation")
+        config_sim = ConfigurationBuilder.build_sim_configuration(scenario_name, scenario_folder, root_path = FRENETIX_ROOT, module = "simulation")
         #
         config_sim.simulation.use_multiagent = True
         # Make sure we write the logs in the right folder
         config_sim.simulation.log_path = logs_folder
 
         # Build the planner configuration
-        config_planner = ConfigurationBuilder.build_frenetplanner_configuration(scenario_name, module="frenetix_motion_planner", root_path=FRENETIX_ROOT)
+        config_planner = ConfigurationBuilder.build_frenetplanner_configuration(scenario_name, module = "frenetix_motion_planner", root_path = FRENETIX_ROOT)
         config_planner.debug.use_cpp = True
 
         # Add debugging options if the debug flag is set
@@ -171,7 +170,3 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
                 pass
         
         return simulation
-
-
-   
-

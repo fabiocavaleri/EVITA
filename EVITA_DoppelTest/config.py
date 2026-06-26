@@ -42,7 +42,7 @@ RUN_FOR_HOUR = 12
 """Number of hours you wish to run"""
 MAPS_ROOT_FOLDER = f'{DT_ROOT}/data/maps/'
 """Root folder with all the DoppelTest maps"""
-HD_MAP_PATH = f'{DT_ROOT}/data/maps/shalun/base_map.bin'
+HD_MAP_PATH = f'{DT_ROOT}/data/maps/borregas_ave/base_map.bin'
 """
 The HD map you are currently using
 

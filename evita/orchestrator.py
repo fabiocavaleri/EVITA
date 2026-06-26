@@ -446,6 +446,12 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
         # Generate some scenarios
         generation_start = time.time()
         scenario_tuples = scenario_generator.generate(progress_bar_manager = progress_bar_manager)
+        
+        # If no scenarios were generated, we can skip the rest of the loop and continue to the next iteration
+        if scenario_tuples is None:
+            logger.debug("No scenarios generated. Retrying...")
+            continue
+
         total_generation_time = total_generation_time + (time.time() - generation_start)
 
         # Log generated scenarios

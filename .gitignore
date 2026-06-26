@@ -162,8 +162,11 @@ cython_debug/
 .idea/
 .DS_Store
 
-# Fabio's Folders
+# Extra Folders
 .venv*
 EVITA_DoppelTest/data/records/
 EVITA_DoppelTest/data/evita-records/
+EVITA_DoppelTest/collisions_experiments/
+EVITA_DoppelTest/test
+EVITA_DoppelTest/old-plots
 results/
