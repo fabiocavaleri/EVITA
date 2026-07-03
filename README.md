@@ -26,7 +26,7 @@ The setup uses two Python environments:
 - Python 3.8 for DoppelTest and Apollo-based scripts.
 - Python 3.10 for EVITA and the Frenetix integration.
 
-> The paper was developed with Python 3.8.10 and Python 3.10.14.
+> The paper was developed on an Ubuntu 25.04 with Python 3.8.10 and Python 3.10.14.
 
 The repository also depends on patched upstream projects. The setup script installs those dependencies directly from their source repositories.
 
@@ -290,7 +290,7 @@ To run it invoke:
 
 ```bash
 (.venv310) cd evita
-(.venv310) python generator/nsgaII_search_no_generator.py 10 3 ../base-scenarios/showcase-scenario.xml
+(.venv310) python generators/nsgaII_search_no_generator.py 10 3 ../base-scenarios/showcase-scenario.xml
 ```
 
 ## DoppelTest + Frenetix

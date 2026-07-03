@@ -324,7 +324,7 @@ def is_trajectory_similar(trajectory_a: Trajectory, trajectory_b: Trajectory, to
     """
     # Skip compaison between trajectories of different length, as they are not comparable
     if len(trajectory_a.state_list) != len(trajectory_b.state_list):
-        module_logger.warning(f'Trajectory comparison: Not the same length {len(trajectory_a.state_list)} != {len(trajectory_b.state_list)}')
+        module_logger.debug(f'Trajectory comparison: Not the same length {len(trajectory_a.state_list)} != {len(trajectory_b.state_list)}')
         return False
 
     # Iterate over the two trajectories states and compare the positions of the states with the given tolerance distance
@@ -337,35 +337,36 @@ def is_trajectory_similar(trajectory_a: Trajectory, trajectory_b: Trajectory, to
 
 def list_anyone_nearby(time_step: int, agent, other_agents, min_distance = 10) -> List[int]:
     """
-    List the IDs of the agents that are nearby the given agent at the given time step, i.e., the distance between their shapes is smaller than the given minimum distance    
+    List the IDs of all agents that are nearby the given agent at the given time step
     """
+
     distance = float('inf')
     nearby_agent_ids = []
 
-    # Return empty list if no agents are active at this time step
-    if len([s for s in agent.record_state_list if s.time_step == time_step]) == 0:
-        # The agent is not even there at this time
+    # Check if the agent is active at time `time_step`
+    if len([s for s in agent.prediction.trajectory.state_list if s.time_step == time_step]) == 0:
         return nearby_agent_ids
+    
+    # Get the occupancy of the agent at time `time_step`
+    agent_occupancy_at_time_t = agent.occupancy_at_time(time_step)
 
-    # Extract the occupancy of the agent at time step t
-    agent_occupancy_at_time_t = agent.vehicle_history[time_step].occupancy_at_time(time_step)
-
-    # Extract the other agents that are active at time step t
+    # Extract other active agents at time `time_step`
     other_agents_at_time_t =[]
     for other_agent in other_agents:
-        if len([s for s in other_agent.record_state_list if s.time_step == time_step]) > 0:
+        if len([s for s in other_agent.prediction.trajectory.state_list if s.time_step == time_step]) > 0:
             other_agents_at_time_t.append(other_agent)
 
-    # Iterate over the other active agents
+    # For each other agent, compute the distance to the given agent and check if it is below the minimum distance
     for other_agent in other_agents_at_time_t:
-        # Extract the occupancy of the other agent at time step t
-        other_agent_occupancy_at_time_t = other_agent.vehicle_history[time_step].occupancy_at_time(time_step)
+        # Compute distance of their shapes if possible
+        other_agent_occupancy_at_time_t = other_agent.occupancy_at_time(time_step)
         
-        # If the two agents are active at the same time step, compute the distance between their shapes and check if it is smaller than the minimum distance
         if agent_occupancy_at_time_t and other_agent_occupancy_at_time_t:
             distance = agent_occupancy_at_time_t.shape.shapely_object.distance(other_agent_occupancy_at_time_t.shape.shapely_object)
+            
+            # If the distance is below the minimum distance, add the other agent's ID to the list of nearby agents
             if distance < min_distance:
-                nearby_agent_ids.append(other_agent.id)
+                nearby_agent_ids.append(other_agent.obstacle_id)
         
     return list(set(nearby_agent_ids))
 
@@ -465,7 +466,10 @@ def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFr
             max_danger_at_time_caused_by_agent_id = -1
 
             # Check that the agent is active at this time step, otherwise we skip it
-            assert len([s for s in agent.record_state_list if s.time_step == t]) > 0,  f"Missing a state for agent {agent.id} at time step {t}"
+            if len([s for s in agent.record_state_list if s.time_step == t]) < 1:
+                max_danger[t] = max_danger_at_time
+                max_danger_caused_by[t] = max_danger_at_time_caused_by_agent_id
+                continue
 
             # Extract agent's state at timestep t
             state_of_agent_at_time_t = [s for s in agent.record_state_list if s.time_step == t][0]
@@ -476,6 +480,9 @@ def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFr
 
                 # Check that the other agent is active at this time step, otherwise we skip it
                 if max([s.time_step for s in the_other_agent.record_state_list]) >= t:
+                    if len([s for s in the_other_agent.record_state_list if s.time_step == t]) < 1:
+                        continue
+
                     # Extract the other agent's state at timestep t
                     state_of_other_agent_at_time_t = [s for s in the_other_agent.record_state_list if s.time_step == t][0]
 
@@ -510,7 +517,7 @@ def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFr
     
     return criticality_dataframe
 
-def list_vehicles_involved_in_collision(time_step: int, agent, other_agents: list) -> List[int]:
+def list_vehicles_involved_in_collision(time_step: int, agent, other_agents: list, scenario: Scenario) -> List[int]:
     """
     This function groups vehicles involved in the same collision at the given time_step
     """
@@ -523,12 +530,15 @@ def list_vehicles_involved_in_collision(time_step: int, agent, other_agents: lis
     # As soon as two agents intersect/collided, we merge their sets, i.e., their collisions groups
     for the_agent in collided_agents:
         # Extract the occupancy of the agent at time step t
-        the_agent_occupancy_at_time_t = the_agent.vehicle_history[time_step].occupancy_at_time(time_step)
+        the_agent_occupancy_at_time_t = scenario.obstacle_by_id(the_agent.id).occupancy_at_time(time_step)
         
         # Consider only those that are NOT in the same collision group
         for the_other_agent in [oa for oa in collided_agents if not collisions.connected(the_agent.id, oa.id)]:
             # Extract the occupancy of the other agent at time step t
-            the_other_agent_occupancy_at_time_t = the_other_agent.vehicle_history[time_step].occupancy_at_time(time_step)
+            the_other_agent_occupancy_at_time_t = scenario.obstacle_by_id(the_other_agent.id).occupancy_at_time(time_step)
+
+            if the_agent_occupancy_at_time_t is None or the_other_agent_occupancy_at_time_t is None:
+                continue
 
             # This is somehow subjected to floating point errors and approximation.
             distance = the_agent_occupancy_at_time_t.shape.shapely_object.distance(the_other_agent_occupancy_at_time_t.shape.shapely_object)
@@ -747,7 +757,7 @@ def compute_RIV(agent_state_at_time_t, other_agent_state_at_time_t):
 
     return ( (a_vel_x-b_vel_x) ** 2 + (a_vel_y-b_vel_y) ** 2) ** 0.5
 
-def compute_collision_features(time_step: int, agent, other_agents) -> List[int]:
+def compute_collision_features(time_step: int, agent, other_agents, scenario: Scenario) -> List[int]:
     """
     Compute RIA, RIV, and impact location for the most critical colliding object (e.g., the one for which RIV is max).
     Note: vehicles might not exactly touch each others, so we need to include the case of "nearby" vehicles
@@ -762,16 +772,16 @@ def compute_collision_features(time_step: int, agent, other_agents) -> List[int]
     assert time_step != 0, "Cannot compute collision features at time_step 0"
 
     # Extract the occupancy and state of the agent
-    agent_occupancy_at_time_t = agent.vehicle_history[time_step].occupancy_at_time(time_step)
-    agent_state_at_time_t = agent.vehicle_history[time_step].state_at_time(time_step)
-    agent_state_at_time_t_minus_one = agent.vehicle_history[time_step - 1].state_at_time(time_step - 1)
+    agent_occupancy_at_time_t = scenario.obstacle_by_id(agent.id).occupancy_at_time(time_step)
+    agent_state_at_time_t = scenario.obstacle_by_id(agent.id).state_at_time(time_step)
+    agent_state_at_time_t_minus_one = scenario.obstacle_by_id(agent.id).state_at_time(time_step - 1)
 
     # Find the agent colliding with it. The agent must be COLLISION and must be overlapping to agent
     for other_agent in [oa for oa in other_agents if oa.id != agent.id and oa.agent_state.status == AgentStatus.COLLISION]:
         # Extract the occupancy and state of the other agent at time step t and t - 1
-        other_agent_occupancy_at_time_t = other_agent.vehicle_history[time_step].occupancy_at_time(time_step)
-        other_agent_state_at_time_t = other_agent.vehicle_history[time_step].state_at_time(time_step)
-        other_agent_state_at_time_t_minus_one = other_agent.vehicle_history[time_step - 1].state_at_time(time_step - 1)
+        other_agent_occupancy_at_time_t = scenario.obstacle_by_id(other_agent.id).occupancy_at_time(time_step)
+        other_agent_state_at_time_t = scenario.obstacle_by_id(other_agent.id).state_at_time(time_step)
+        other_agent_state_at_time_t_minus_one = scenario.obstacle_by_id(other_agent.id).state_at_time(time_step - 1)
 
         # Compute distance between the two agents at time step t
         # If they do not touch, we skip them, as they are not involved in the same collision
@@ -926,14 +936,14 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
 
                 # Detect vehicles involved in the collision
                 other_agents = [oa for oa in simulation.agents if oa.id != agent.id]
-                vehicles_involved_in_collision = list_vehicles_involved_in_collision(t, agent, [a for a in simulation.agents if a.id != agent.id])
+                vehicles_involved_in_collision = list_vehicles_involved_in_collision(t, agent, [a for a in simulation.agents if a.id != agent.id], simulation.scenario)
 
                 # Compute the collision features only considering the agents involved in this collision
                 # This generates some spurious entry for those already collided...
                 collided_agents = [ca for ca in other_agents if ca.id in vehicles_involved_in_collision]
 
                 # Compute collision criticality features
-                ria[t], riv[t], impact_position[t], most_critical_agent[t] = compute_collision_features(t, agent, collided_agents)
+                ria[t], riv[t], impact_position[t], most_critical_agent[t] = compute_collision_features(t, agent, collided_agents, simulation.scenario)
                 
                 has_collided_with[t] = vehicles_involved_in_collision
             else:
@@ -969,7 +979,7 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
     
     return criticality_dataframe
 
-def augment_with_interactions(simulation: Simulation, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
     """
     For each agent and time check whether the agent interacted with someone else (i.e., changed its trajectory because of someone else)
     """
@@ -994,20 +1004,28 @@ def augment_with_interactions(simulation: Simulation, criticality_dataframe: pd.
             is_interacting[t] = 0.0
 
         # Iterate over the time steps of the agent's trajectory to check for interactions
-        for t in range(max([s.time_step for s in agent.record_state_list]) - 1):
+        for t in range(t_start, t_end + 1):
             # Since we compare now with the next one, also the next one cannot be a collision otherwise it's trajectory is different
             if agent.agent_state.status == AgentStatus.COLLISION and (t >= agent.agent_state.last_timestep or t + 1 >= agent.agent_state.last_timestep):
                 continue
 
-            # Extract planned trajectory at time t and t + 1
-            trajectory_at_time_t = agent.computed_trajectories[t]
-            trajectory_at_time_t_1 = agent.computed_trajectories[t + 1]
+            trajectory_at_time_t = trajectories.loc[(trajectories['vehicle_id'] == agent_id) & (trajectories['timestep'] == t), 'trajectory']
+            trajectory_at_time_t_1 = trajectories.loc[(trajectories['vehicle_id'] == agent_id) & (trajectories['timestep'] == (t + 1)), 'trajectory']
+
+            if len(trajectory_at_time_t) > 0 and len(trajectory_at_time_t_1) > 0:
+                trajectory_at_time_t = trajectory_at_time_t.values[0]
+                trajectory_at_time_t_1 = trajectory_at_time_t_1.values[0]
+            else:
+                module_logger.debug(f"Missing trajectory at time {t} for agent {agent_id}")
+                continue
 
             # Crop planned trajectories to the same time interval
             cropped_traj_a, cropped_traj_b = crop_trajectories(trajectory_at_time_t, trajectory_at_time_t_1)
 
             # Detect nearby agents at time t that are within the safety distance
-            nearby_agent_ids = list_anyone_nearby(t, agent, [a for a in simulation.agents if a.id != agent_id])
+            obstacle = simulation.scenario.obstacle_by_id(agent_id)
+            other_obstacles = [simulation.scenario.obstacle_by_id(a.id) for a in simulation.agents if a.id != agent_id]
+            nearby_agent_ids = list_anyone_nearby(t, obstacle, other_obstacles)
 
             # Check if the consecutive planned trajectories are different and if there are nearby agents
             # If both conditions are true, we consider that the agent interacted with the nearby agents at time t
@@ -1120,7 +1138,7 @@ def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Tra
         
         raise exc
 
-def compute_interaction_map(simulation: Simulation, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
     """
     Compute the interaction map, which is a 3x3 matrix that counts the number of interactions in each of the 9 possible combinations of longitudinal and lateral differences in the curvilinear space (s, d) between two consecutive planned trajectories that lead to an interaction
     The longitudinal and lateral differences are categorized into three classes: negative, zero, and positive, based on a threshold
@@ -1138,9 +1156,15 @@ def compute_interaction_map(simulation: Simulation, criticality_dataframe: pd.Da
     for agent in sorted(simulation.agents, key = lambda a: a.id):
         # Find all the rows that belong to this agent
         for t in sorted([i[1] for i in index_of_interactions if i[0] == agent.id]):
-            # Take the trajectories that lead to the interaction
-            trajectory_at_time_t = agent.computed_trajectories[t]
-            trajectory_at_time_t_1 = agent.computed_trajectories[t+1]
+            trajectory_at_time_t = trajectories.loc[(trajectories['vehicle_id'] == agent.id) & (trajectories['timestep'] == t), 'trajectory']
+            trajectory_at_time_t_1 = trajectories.loc[(trajectories['vehicle_id'] == agent.id) & (trajectories['timestep'] == (t + 1)), 'trajectory']
+
+            if len(trajectory_at_time_t) > 0 and len(trajectory_at_time_t_1) > 0:
+                trajectory_at_time_t = trajectory_at_time_t.values[0]
+                trajectory_at_time_t_1 = trajectory_at_time_t_1.values[0]
+            else:
+                module_logger.debug(f"Missing trajectory at time {t} for agent {agent.id}")
+                continue
 
             # Compute interaction effect on the planned trajectory
             try:

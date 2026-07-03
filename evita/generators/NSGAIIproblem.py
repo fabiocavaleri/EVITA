@@ -13,6 +13,7 @@ from ..config import ValidationConfig
 from ..generators.utils import compute_interaction_map
 from ..interfaces import AbstractScenarioExecutor, AbstractScenarioEvaluator
 from ..utils import RESULTS_FOLDER, ROOT_DIR, extend_scenario_after_goal_areas, LANELET_EXTENSION, EVITA_MAIN_LOGGER_NAME, time_shift
+from ..data_analysis import _rebuild_trajectory
 from ..validator import ScenarioValidator, EVITAScenarioValidator
 
 import json
@@ -135,6 +136,11 @@ class NSGAIIproblem(ElementwiseProblem):
         # Simulate valide scenarios and skip invalid ones
         if scenario.is_valid:
             simulation_data = self.simulate(scenario, planning_problem_set)
+
+        if simulation_data["agent-data"] is None or simulation_data["evaluation-data"] is None or simulation_data["interaction-map"] is None:
+            out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize]
+            self.invalid_scenarios += 1
+            return
         
         # Evaluate only valid scenario, simulation might invalidate them
         if scenario.is_valid:
@@ -253,8 +259,29 @@ class NSGAIIproblem(ElementwiseProblem):
                 # Restart the time budget for the next scenario evaluation and simulation
                 self.termination_criterion.restart()
             
+                # Retrieve scenario agents
+                agent_ids = simulation.agent_id_list
+
+                # Retrieve the path to the logs folder
+                log_files_folder = simulation.config.simulation.log_path
+
+                # Initialize the DataFrame to store the trajectories
+                trajectories_df = pd.DataFrame(columns = ["vehicle_id", "timestep", "trajectory"])
+
+                for agent_id in agent_ids:
+                    # Open agent's log file
+                    agent_log_file_path = os.path.join(log_files_folder, str(agent_id), "logs.csv")
+                    agent_log = pd.read_csv(agent_log_file_path, sep = ';')
+
+                    # There's a dictionary for each line, and a line for each time_step
+                    data = agent_log.to_dict(orient = "records")
+
+                    # Sort by time_step - Reconstruct all the trajectories
+                    for timestep, xs, ys, orientations, velocities in sorted([(int(d["trajectory_number"]), d["x_positions_m"], d["y_positions_m"], d["theta_orientations_rad"], d["velocities_mps"]) for d in data], key = lambda tup: tup[0]):
+                        trajectories_df.loc[len(trajectories_df)] = [agent_id, timestep, _rebuild_trajectory(timestep, xs, ys, orientations, velocities)]
+
                 # Compute the interaction map for the scenario
-                interaction_map = compute_interaction_map(simulation, criticality_dataframe)
+                interaction_map = compute_interaction_map(simulation, trajectories_df, criticality_dataframe)
             
                 # Return the data required for the fitness computation
                 return {

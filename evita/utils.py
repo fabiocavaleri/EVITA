@@ -262,3 +262,67 @@ def augment_with_delay(planning_problem_set: PlanningProblemSet) -> PlanningProb
         planning_problem_list.append(time_shifted_planning_problem)
 
     return PlanningProblemSet(planning_problem_list)
+
+import json
+from enum import Enum
+
+import numpy as np
+import pandas as pd
+
+
+def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy of `df` containing only SQLite-compatible values.
+
+    Supported output types:
+        - None
+        - int
+        - float
+        - str
+        - bytes
+    """
+
+    def sanitize(value):
+        # Arrays first!
+        if isinstance(value, np.ndarray):
+            return json.dumps(value.tolist())
+
+        # Containers
+        if isinstance(value, (list, tuple, set)):
+            return json.dumps(list(value))
+
+        if isinstance(value, dict):
+            return json.dumps(value)
+
+        # NumPy scalar -> native Python
+        if isinstance(value, np.generic):
+            return value.item()
+
+        # Missing values
+        if pd.isna(value):
+            return None
+
+        # Pandas types
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+
+        if isinstance(value, pd.Timedelta):
+            return value.total_seconds()
+
+        # Enum
+        if isinstance(value, Enum):
+            return value.value
+
+        # Already SQLite-compatible
+        if isinstance(value, (int, float, str, bytes)):
+            return value
+
+        # Fallback
+        return str(value)
+
+    df = df.copy()
+
+    for column in df.columns:
+        df[column] = df[column].apply(sanitize)
+
+    return df

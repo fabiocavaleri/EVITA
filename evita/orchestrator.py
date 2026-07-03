@@ -411,7 +411,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     scenario_validator_configuration = ValidationConfig()
     scenario_validator = ScenarioValidator(scenario_validator_configuration)
 
-    logger.info(f"Outputting results to {output_folder}")        
+    logger.info(f"Outputting results to [{output_folder}]")
     os.makedirs(debug_folder, exist_ok = True)
     
     if debug:
@@ -437,7 +437,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     progress_bar_manager = enlighten.get_manager()
     main_progress_bar = progress_bar_manager.counter(total = int(budget.get_time_budget()), desc = "Time Budget", unit = "seconds", color = "red", leave = False)
     main_progress_bar.update(budget.get_progress())
-
+    
     # Loop until the time budget is over
     while not budget.is_over():
         # Log the remaining time at the beginning of each iteration
@@ -445,11 +445,12 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
         # Generate some scenarios
         generation_start = time.time()
+        logger.info("")
         scenario_tuples = scenario_generator.generate(progress_bar_manager = progress_bar_manager)
         
         # If no scenarios were generated, we can skip the rest of the loop and continue to the next iteration
         if scenario_tuples is None:
-            logger.debug("No scenarios generated. Retrying...")
+            logger.info("No scenarios generated. Retrying...")
             continue
 
         total_generation_time = total_generation_time + (time.time() - generation_start)
@@ -551,8 +552,15 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
                     # Pause the budget while we evaluate the scenario
                     budget.pause()
-                    # Compute the criticality metrics for this scenario and planning problem set
-                    criticality_dataframe = scenario_evaluator.evaluate(simulation)
+                    
+                    try:
+                        # Compute the criticality metrics for this scenario and planning problem set
+                        criticality_dataframe = scenario_evaluator.evaluate(simulation)
+                    finally:
+                        # Perform cleanup ONLY after evaluation is done
+                        simulation.sim_logger.con.close()
+                        simulation.close_processes()
+    
                     # Resume the budget for the next scenario execution
                     budget.resume()
 

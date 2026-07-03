@@ -44,7 +44,7 @@ pip install -q --upgrade pip
 
 echo "Installing EVITA in Python 3.10 virtual environment..."
 
-pip install -qr requirements.txt
+pip install -qr requirements-2.txt
 pip install -qe .
 
 echo "Cloning Frenetix-Motion-Planner repository..."
@@ -54,19 +54,16 @@ git submodule update --remote -q
 cd Frenetix-Motion-Planner/
 git checkout tags/2024.4 -q
 
-# ----- Patch onnxruntime version constraint -----
-# sed -i 's/onnxruntime = "~1.16.3"/onnxruntime = "<=1.18.1"/' pyproject.toml
-
 # ----- Patch config_sim None check -----
-sed -i 's/if config_sim.visualization.ref_path_debug:/if config_sim is not None and config_sim.visualization.ref_path_debug:/' \
-cr_scenario_handler/utils/utils_coordinate_system.py
+sed -i 's/if config_sim.visualization.ref_path_debug:/if config_sim is not None and config_sim.visualization.ref_path_debug:/' cr_scenario_handler/utils/utils_coordinate_system.py
+sed -i 's/evaluate_simulation: False/evaluate_simulation: True/' configurations/simulation/evaluation.yaml
 
 echo "Installing Frenetix-Motion-Planner in Python 3.10 virtual environment..."
 pip install -qe .
 
 # ----- Other fixes -----
 #
-sed -i 's/            setattr(self, subclasses,  SubConfiguration(config\[subclasses\]))/            if config[subclasses] is not None:\n                setattr(self, subclasses,  SubConfiguration(config[subclasses]))/' Frenetix-Motion-Planner/cr_scenario_handler/utils/configuration.py
+# sed -i 's/            setattr(self, subclasses,  SubConfiguration(config\[subclasses\]))/            if config[subclasses] is not None:\n                setattr(self, subclasses,  SubConfiguration(config[subclasses]))/' cr_scenario_handler/utils/configuration.py
 
 #
 # sed -i 's/tr_1 = tr - now_point/tr_1 = np.array(tr) - np.array(now_point)/' .venv310/lib/python3.10/site-packages/prediction/utils/geometry.py

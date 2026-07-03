@@ -181,7 +181,7 @@ class ScenarioMutation(Mutation):
     """
     Mutation operator to mutate scenarios and planning problem sets
     """
-    def __init__(self):
+    def __init__(self, map_file_path: str):
         """
          Initialize the ScenarioMutation operator with:
         - Scenario generator configuration
@@ -201,6 +201,8 @@ class ScenarioMutation(Mutation):
         self.remove_random_planning_problem_prob = 0.3
         self.scenario_validator_configuration = ValidationConfig()
         self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration)
+
+        self.map_file_path = map_file_path
 
     def _do(self, problem, X, **kwargs):
         """
@@ -262,8 +264,12 @@ class ScenarioMutation(Mutation):
                 if len(_planning_problem_set.planning_problem_dict) < self.scenario_generator_configuration.max_amount_pp and \
                         random.random() <= self.add_random_planning_problem_prob:
                     print(f"Mutating {mutated_planning_problem.planning_problem_id} with {self.add_random_planning_problem.__name__}")
-                    _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario,
-                                                                            _planning_problem_set, self.map_file_path)
+                    if isinstance(self, EVITAScenarioMutation):
+                        _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario,
+                                                                                  _planning_problem_set, self.map_file_path)
+                    else:
+                        _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario,
+                                                                                _planning_problem_set)
                     
                 # Possibly remove an existing planning problem - note there's the risk of removing the one we just added
                 # - If we haven't reached the minimum amount of planning problems yet
@@ -295,7 +301,7 @@ class EVITAScenarioMutation(ScenarioMutation):
     """
     def __init__(self, map_file_path: str):
         # Use the parent ScenarioMutation class to initialize the common attributes and mutation operators
-        super().__init__()
+        super().__init__(map_file_path)
 
         # Update the mutation operators to the EVITA ones
         self.traffic_lights_mutation_operators = [scenario_mutation.mutate_tl_initial_configuration,
@@ -307,8 +313,6 @@ class EVITAScenarioMutation(ScenarioMutation):
         
         self.add_random_planning_problem = scenario_mutation.add_evita_random_planning_problem
         
-        self.map_file_path = map_file_path
-
         self.scenario_validator = EVITAScenarioValidator(self.scenario_validator_configuration)
 
 class ScenarioCrossover(Crossover):

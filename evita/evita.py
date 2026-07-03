@@ -37,7 +37,7 @@ def cli(ctx, debug, output_folder_name, output_folder):
 
     # Print a BANNER
     logger = get_main_logger()
-    opening_msg = " EVITA: Starting the execution "
+    opening_msg = "EVITA: Starting the execution "
     logger.info(" " * len(opening_msg))
     logger.info(" " * len(opening_msg))
     logger.info(opening_msg)

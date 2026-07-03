@@ -75,7 +75,7 @@ class RandomScenarioGenerator(AbstractScenarioGenerator):
 
         # Loop until we can generate a valid scenario with the target number of planning problems, or until we reach the minimum number of planning problems
         while target_number_of_planning_problems > self.scenario_generator_configuration.min_amount_pp:
-            self.logger.debug(f"Try to generate a scenario with {target_number_of_planning_problems}")
+            self.logger.info(f"Trying to generate a scenario with {target_number_of_planning_problems}...")
             # Try to generate a valid scenario with the target number of planning problems, retrying if necessary
             for _ in range(0, self.scenario_validator_configuration.retry_generation):
                 try:

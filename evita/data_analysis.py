@@ -1202,7 +1202,7 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
     try:
         # Retrieve collisions data from the DB
         # Group data by agent_id and has_collided_with to get unique collisions
-        result = connection.execute('select MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_location from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
+        result = connection.execute('select MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_position from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
         metrics = result.fetchall()
 
         collisions = dict()
@@ -1384,12 +1384,12 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
 
             # Count collisions + timeout/missed goals
             collisions = count_collisions(simulation_db)
-            
+
             # Get the features of the collisions from the DB
             collision_features = _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder)
 
             # Count the other requirement violations and update the total counts
-            violated_reqs = [collisions] + list(_count_from_db(simulation_db, requirements_violation_names))
+            violated_reqs = [collisions] # + list(_count_from_db(simulation_db, requirements_violation_names))
             requirements_violation_counts = np.array(violated_reqs)
             total_requirements_violation_counts = total_requirements_violation_counts + requirements_violation_counts
 
@@ -1397,7 +1397,9 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             # Iterate over the features of the collisions and update the collision maps            
             for impact_location_as_frozenset, riv, ria in collision_features:
                 # Check that the impact location is not None
-                assert None not in impact_location_as_frozenset, f"Impact location contains None. Check {simulation_db}!"
+                if None in impact_location_as_frozenset:
+                    module_logger.warning(f"Impact location contains None. Check {simulation_db}!")
+                    continue
 
                 # Map the impact location, RIV, and RIA to the corresponding bins
                 impact_location_mapped = impact_location_bins.index(impact_location_as_frozenset)
@@ -1474,8 +1476,8 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             scenario, _ = CommonRoadFileReader(scenario_file).open()
 
             # Extract the values of the requirement violations and update the total counts
-            values = np.array(_count_from_db(simulation_db, names))
-            total_values = total_values + values
+            # values = np.array(_count_from_db(simulation_db, names))
+            # total_values = total_values + values
 
             # Extract the agent ids from the DB and update the total count of agents
             agent_ids = _agent_ids_from_db(simulation_db)

@@ -1,4 +1,6 @@
 import sys
+sys.path.append("../EVITA_DoppelTest")  # Add the path to the EVITA_DoppelTest package to the system path
+
 import logging
 import os
 import csv
@@ -50,7 +52,7 @@ if __name__ == '__main__':
 
     # Initialize the NSGAII algorithm ti generate scenario and the mutation and crossover operators
     sampling = ScenarioSampling(base_scenario, base_planning_problem_set, scenario_generator_configuration)
-    mutation = ScenarioMutation()
+    mutation = ScenarioMutation(commonroad_scenario_seed_file)
     crossover = ScenarioCrossover()
     algorithm = NSGA2(pop_size = population_size, sampling = sampling, mutation = mutation,
                       crossover = crossover,

@@ -1,5 +1,7 @@
 from ..interfaces import AbstractScenarioEvaluator
 from ..generators.utils import augment_with_danger, augment_with_interactions, augment_with_collisions, augment_with_missed_goals, augment_with_emergencies_and_disengagements
+from ..data_analysis import _rebuild_trajectory
+from ..utils import sanitize_dataframe
 
 # import csv
 import os
@@ -20,15 +22,37 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
             os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     
         self.output_folder = output_folder
-
+    
     def evaluate(self, simulation: Simulation) -> pd.DataFrame:
         """
         Evaluate the simulation using the already implemented metrics, then augment the result with
         our additional metrics
         """
-        
+
+        # Retrieve scenario agents
+        agent_ids = simulation.agent_id_list
+
+        # Retrieve the path to the logs folder
+        log_files_folder = simulation.config.simulation.log_path
+
+        # Initialize the DataFrame to store the trajectories
+        trajectories_df = pd.DataFrame(columns = ["vehicle_id", "timestep", "trajectory"])
+
+        for agent_id in agent_ids:
+            # Open agent's log file
+            agent_log_file_path = os.path.join(log_files_folder, str(agent_id), "logs.csv")
+            agent_log = pd.read_csv(agent_log_file_path, sep = ';')
+
+            # There's a dictionary for each line, and a line for each time_step
+            data = agent_log.to_dict(orient = "records")
+
+            # Sort by time_step - Reconstruct all the trajectories
+            for timestep, xs, ys, orientations, velocities in sorted([(int(d["trajectory_number"]), d["x_positions_m"], d["y_positions_m"], d["theta_orientations_rad"], d["velocities_mps"]) for d in data], key = lambda tup: tup[0]):
+                trajectories_df.loc[len(trajectories_df)] = [agent_id, timestep, _rebuild_trajectory(timestep, xs, ys, orientations, velocities)]
+
         # Invoke the original code - this also store the DB
         criticality_dataframe = evaluate_simulation(simulation).criticality_dataframe
+
         # Extend evaluation with additional metrics for each agent:
         #  - max_danger: at each time, what's the max_danger for each agent
         #  - interaction: at each time, was the agent under some interaction
@@ -37,8 +61,8 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
         criticality_dataframe.reset_index(inplace=True)
 
         criticality_dataframe = augment_with_danger(simulation, criticality_dataframe)
-        
-        criticality_dataframe = augment_with_interactions(simulation, criticality_dataframe)
+
+        criticality_dataframe = augment_with_interactions(simulation, trajectories_df, criticality_dataframe)
 
         # Check the data from the collision report
         criticality_dataframe = augment_with_collisions(simulation, criticality_dataframe)
@@ -47,13 +71,28 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
         criticality_dataframe = augment_with_missed_goals(simulation, criticality_dataframe)
 
         # collect data about emergency behaviors and disengagement
-        criticality_dataframe = augment_with_emergencies_and_disengagements(simulation, criticality_dataframe)
+        # criticality_dataframe = augment_with_emergencies_and_disengagements(simulation, criticality_dataframe)
 
         # Replace NaN with None otherwise SQLITE Complains
         criticality_dataframe = criticality_dataframe.replace({float('nan'): None})
 
         criticality_dataframe.rename(columns={'level_0': 'agent', 'level_1': 'time_step'}, inplace=True)
         criticality_dataframe.set_index(["agent", "time_step"], inplace=True)
+
+        criticality_dataframe = sanitize_dataframe(criticality_dataframe)
+
+        # Add missing columns to the database if they don't exist yet
+        con = simulation.sim_logger.con
+
+        existing = {row[1] for row in con.execute("PRAGMA table_info(scenario_evaluation)")}
+
+        for col in criticality_dataframe.columns:
+            if col not in existing:
+                con.execute(f'ALTER TABLE scenario_evaluation ADD COLUMN "{col}" ANY')
+
+        simulation.sim_logger.con.execute("DELETE FROM scenario_evaluation WHERE scenario=?", (simulation.config.simulation.name_scenario,))
+
+        con.commit()
 
         # Make sure we log everything inside the dataframe
         simulation.sim_logger.log_evaluation(criticality_dataframe)
