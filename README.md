@@ -3,6 +3,7 @@
 This repository contains the replication package for the paper *Automatic Testing of Interacting Autonomous Vehicles*.
 We introduce EVITA (EVolutionary Interaction Testing Approach): a scenario-generation approach to automatically generate critical testing scenarios triggering interactions among multiple autonomous vehicles in highway and urban traffic.
 
+![ArXiv-Paper](https://img.shields.io/badge/ArXiv-Paper-red?logo=arXiv&logoColor=red&link=https%3A%2F%2Fdoi.org%2F10.48550%2FarXiv.2607.12452)
 ![Frenetix-Motion-Planner](https://img.shields.io/badge/Frenetix-2024.3-blue?logo=github&link=https%3A%2F%2Fgithub.com%2FTUM-AVS%2FFrenetix-Motion-Planner%2F)
 ![Baidu Apollo](https://img.shields.io/badge/BaiduApollo-7.0-green?logo=github&link=https%3A%2F%2Fgithub.com%2Fapolloauto%2Fapollo)
 ![DoppelTest](https://img.shields.io/badge/DoppelTest-Replication_Package-purple?logo=zenodo&link=https%3A%2F%2Fzenodo.org%2Frecords%2F7657587)
@@ -26,7 +27,7 @@ The setup uses two Python environments:
 - Python 3.8 for DoppelTest and Apollo-based scripts.
 - Python 3.10 for EVITA and the Frenetix integration.
 
-> The paper was developed on an Ubuntu 25.04 with Python 3.8.10 and Python 3.10.14.
+> The paper was developed on an Ubuntu 25.04 machine with Python 3.8.10 and Python 3.10.14.
 
 The repository also depends on patched upstream projects. The setup script installs those dependencies directly from their source repositories.
 
