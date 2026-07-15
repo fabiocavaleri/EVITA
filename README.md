@@ -3,10 +3,10 @@
 This repository contains the replication package for the paper *Automatic Testing of Interacting Autonomous Vehicles*.
 We introduce EVITA (EVolutionary Interaction Testing Approach): a scenario-generation approach to automatically generate critical testing scenarios triggering interactions among multiple autonomous vehicles in highway and urban traffic.
 
-![ArXiv-Paper](https://img.shields.io/badge/ArXiv-Paper-red?logo=arXiv&logoColor=red&link=https%3A%2F%2Fdoi.org%2F10.48550%2FarXiv.2607.12452)
-![Frenetix-Motion-Planner](https://img.shields.io/badge/Frenetix-2024.3-blue?logo=github&link=https%3A%2F%2Fgithub.com%2FTUM-AVS%2FFrenetix-Motion-Planner%2F)
-![Baidu Apollo](https://img.shields.io/badge/BaiduApollo-7.0-green?logo=github&link=https%3A%2F%2Fgithub.com%2Fapolloauto%2Fapollo)
-![DoppelTest](https://img.shields.io/badge/DoppelTest-Replication_Package-purple?logo=zenodo&link=https%3A%2F%2Fzenodo.org%2Frecords%2F7657587)
+[![ArXiv Paper](https://img.shields.io/badge/ArXiv-Paper-red?logo=arXiv&logoColor=red)](https://doi.org/10.48550/arXiv.2607.12452)
+[![Frenetix Motion Planner](https://img.shields.io/badge/Frenetix-2024.3-blue?logo=github)](https://github.com/TUM-AVS/Frenetix-Motion-Planner/)
+[![Baidu Apollo](https://img.shields.io/badge/BaiduApollo-7.0-green?logo=github)](https://github.com/ApolloAuto/apollo)
+[![DoppelTest](https://img.shields.io/badge/DoppelTest-Replication_Package-purple?logo=zenodo)](https://zenodo.org/records/7657587)
 ![Python 3.10](https://img.shields.io/badge/Python-3.10-orange?logo=python)
 ![Python 3.8](https://img.shields.io/badge/Python-3.8-yellow?logo=python)
 
