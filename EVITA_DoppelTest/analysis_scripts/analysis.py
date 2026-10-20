@@ -565,7 +565,6 @@ def apollo_experiments_analysis(experiments_folder_path: str, max_workers = 5):
     save_list(collision_map_only_impact_location, "collision_map_only_impact_location.json")
     save_list(collision_map_impact_location_and_riv, "collision_map_impact_location_and_riv.json")
     save_list(collision_maps, "collision_map.json")
-    save_list(total_unique_collisions, "total_unique_collisions.json")
     save_list(vehicles_number, "vehicles_number.json")
     save_positions(start_positions, "start_positions.csv")
     save_positions(goal_positions, "goal_positions.csv")

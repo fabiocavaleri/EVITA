@@ -427,14 +427,16 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
             print("Error time: " + str(current_time) + " ; " +
                   "In Scenario Timestep: " + current_timestep + " ; " +
                   "CODE ERROR: " + str(e) + error_traceback + "\n\n\n\n")
-            raise e
+            
+            return None
         finally:
-            try:
-                # close sim_logger
-                # simulation.sim_logger.con.close()
-                # close child processes
-                simulation.close_processes()
-            except:
-                pass
+            if simulation is not None:
+                try:
+                    # close sim_logger
+                    # simulation.sim_logger.con.close()
+                    # close child processes
+                    simulation.close_processes()
+                except:
+                    pass
         
         return simulation

@@ -42,15 +42,18 @@ def mutate_initial_position(config: ScenarioGeneratorConfig, planning_problem: P
     ll_network = scenario.lanelet_network
     lanelets = ll_network.find_lanelet_by_position([current_position])
     
-    # Skip planning_problem if initial position is offroad
-    if not (len(lanelets) != 0 and len(lanelets[0]) != 0):
-        if type(_planning_problem) == EVITAPlanningProblem:
-            lanelet = ll_network.find_lanelet_by_id(_planning_problem.path[0])
-        else:
-            raise ValueError("Invalid planning problem type")
-
-    # Get initial lanelet center line
-    lanelet: Lanelet = ll_network.find_lanelet_by_id(lanelets[0][0])
+    # Get initial lanelet
+    if lanelets and lanelets[0]:
+        lanelet = ll_network.find_lanelet_by_id(lanelets[0][0])
+    elif isinstance(_planning_problem, EVITAPlanningProblem):
+        lanelet = ll_network.find_lanelet_by_id(_planning_problem.path[0])
+    else:
+        raise ValueError(
+            f"Could not find lanelet for initial position "
+            f"{current_position} and planning problem type "
+            f"{type(_planning_problem).__name__}"
+        )
+    
     center_line = LineString(lanelet.center_vertices)
     # Randomly sample a new position on the lanelet center line
     position_modifier = random.uniform(-config.max_position_modifier, config.max_position_modifier)

@@ -490,23 +490,23 @@ class CustomTimeTermination(Termination):
          If so, return True to stop the generation
          Otherwise, return False to continue the generation
         """
-        checkpoint_id = int(self.elapsed_time_seconds / ( self.checkpoint_every * 60 ))
-        if not self.apollo and checkpoint_id > 0 and checkpoint_id not in self.checkpoints:
-            try:
-                output_folder = self.problem_ref.output_folder
-                all_scenarios = self.problem_ref.valid_scenarios
-                valid_scenarios = self.problem_ref.valid_scenarios
-                invalid_scenarios = self.problem_ref.invalid_scenarios
-                self.update_elapsed_time()
-                total_generation_time = self.elapsed_time_seconds
+        # checkpoint_id = int(self.elapsed_time_seconds / ( self.checkpoint_every * 60 ))
+        # if not self.apollo and checkpoint_id > 0 and checkpoint_id not in self.checkpoints:
+        #     try:
+        #         output_folder = self.problem_ref.output_folder
+        #         all_scenarios = self.problem_ref.valid_scenarios
+        #         valid_scenarios = self.problem_ref.valid_scenarios
+        #         invalid_scenarios = self.problem_ref.invalid_scenarios
+        #         self.update_elapsed_time()
+        #         total_generation_time = self.elapsed_time_seconds
 
-                checkpoint(checkpoint_id, output_folder,
-                        all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, self.apollo)
-                self.checkpoints.add(checkpoint_id)
-            except Exception as e:
-                # TODO Remove this
-                print(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
-                raise e
+        #         checkpoint(checkpoint_id, output_folder,
+        #                 all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, self.apollo)
+        #         self.checkpoints.add(checkpoint_id)
+        #     except Exception as e:
+        #         # TODO Remove this
+        #         print(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
+        #         raise e
 
             # budget.resume()
 

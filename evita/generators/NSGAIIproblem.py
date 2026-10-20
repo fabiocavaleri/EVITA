@@ -76,7 +76,7 @@ class NSGAIIproblem(ElementwiseProblem):
         2. Maximize the variety of the interaction in the scenario'
         3. Minimize the number of cars in the scenario
     """
-    def __init__(self, map_file, driving_agent_name, pop_size, termination_criterion, **kwargs):
+    def __init__(self, map_file, driving_agent_name, pop_size, termination_criterion, threshold = 1.0, n_bins = None, **kwargs):
         """
         Initialize the NSGA-II problem
         """
@@ -114,6 +114,9 @@ class NSGAIIproblem(ElementwiseProblem):
         self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration)
         self.valid_scenarios = 0
         self.invalid_scenarios = 0
+        
+        self.n_bins = n_bins
+        self.threshold = threshold
 
     def _evaluate(self, x, out, *args, **kwargs):
         """
@@ -254,7 +257,7 @@ class NSGAIIproblem(ElementwiseProblem):
                 self.termination_criterion.update_elapsed_time()
 
                 # Compute the criticality of the scenario using the scenario evaluator
-                criticality_dataframe = scenario_evaluator.evaluate(simulation)
+                criticality_dataframe = scenario_evaluator.evaluate(simulation, self.threshold)
 
                 # Restart the time budget for the next scenario evaluation and simulation
                 self.termination_criterion.restart()
@@ -281,7 +284,7 @@ class NSGAIIproblem(ElementwiseProblem):
                         trajectories_df.loc[len(trajectories_df)] = [agent_id, timestep, _rebuild_trajectory(timestep, xs, ys, orientations, velocities)]
 
                 # Compute the interaction map for the scenario
-                interaction_map = compute_interaction_map(simulation, trajectories_df, criticality_dataframe)
+                interaction_map = compute_interaction_map(simulation, trajectories_df, criticality_dataframe, self.n_bins)
             
                 # Return the data required for the fitness computation
                 return {
@@ -444,6 +447,7 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
                 print(f"===== Started scenario execution with Apollo =====")
                 print(f"===== Record files will be saved at: {os.path.join(self.records_file_path, f'Generation_{current_generation}', f'Scenario_{current_individual}')}")
 
+                raised_exception = False
                 try:
                     # Launch script to run scenario with Apollo
                     # The script also converts the Apollo executed scenario to CommonRoad format and saves collisions, interactions, and perception data
@@ -452,95 +456,104 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
                         check = True,
                     )
                 except subprocess.CalledProcessError as e:
-                    if e.returncode == 10:
-                        raise RecordFileError("Record file issue") from e
+                    if e.returncode == 10 or not os.path.exists(os.path.join(output_folder_path, "executed_scenario.xml")):
+                        out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
+                        self.invalid_scenarios = self.invalid_scenarios + 1
+                        raised_exception = True
+                    #     raise RecordFileError("Record file issue") from e
                     
-                    print("Subprocess failed!")
-                    print("Return code:", e.returncode)
-                    print("stdout:", e.stdout)
-                    print("stderr:", e.stderr)
-                    raise
+                    # print("Subprocess failed!")
+                    # print("Return code:", e.returncode)
+                    # print("stdout:", e.stdout)
+                    # print("stderr:", e.stderr)
+                    # raise
 
-                print(f"===== Completed scenario execution with Apollo =====")
-                print(f"===== CommonRoad executed scenario saved at: {output_folder_path}\n")
-                
-                # Plot the scenario's planning problems and save the plots to file in the output folder
-                planning_problems_plots_folder = os.path.join(output_folder_path, "planning_problems_plots")
-                os.makedirs(planning_problems_plots_folder, exist_ok = True)
-                self.plot_pps(scenario, planning_problem_set._planning_problem_dict.values(), planning_problems_plots_folder)
-                
-                # Open executed scenario
-                executed_scenario_file_path = os.path.join(output_folder_path, "executed_scenario.xml")
-                executed_scenario, _ = XMLFileReader(executed_scenario_file_path).open(lanelet_assignment = True)
-
-                # Open scenario's collisions
-                scenario_collisions_file_path = os.path.join(output_folder_path, "apollo_scenario_collisions.csv")
-                scenario_collisions = pd.read_csv(scenario_collisions_file_path)
-                
-                # Open planned trajectories
-                scenario_planned_trajectories_file_path = os.path.join(output_folder_path, "planned_trajectories.json")
-                with open(scenario_planned_trajectories_file_path, "r") as f:
-                    scenario_planned_trajectories = json.load(f)
-
-                # Convert planned trajectories Dict to a DataFrame
-                scenario_planned_trajectories_df = planned_trajectories_to_df(scenario_planned_trajectories)
-
-                # Compute scenario's collisions
-                collisions_df, issue_rows = augment_with_collisions(executed_scenario, scenario_collisions)
-
-                # Save scenario's collisions
-                scenario_collisions_file_path = os.path.join(output_folder_path, "collisions.csv")
-                collisions_df.to_csv(scenario_collisions_file_path, index = False)
-
-                # Save issue rows
-                if len(issue_rows) > 0:
-                    issue_rows_df = pd.DataFrame(issue_rows, columns = scenario_collisions.columns.tolist() + ["detected_obstacles"])
-                    issue_rows_df.to_csv(os.path.join(output_folder_path, "invalid_collisions.csv"), index = False)
-
-                # Open scenario's vehicles perceptions
-                scenario_vehicles_perceptions_file_path = os.path.join(output_folder_path, "vehicles_perception.csv")
-                scenario_vehicles_perceptions = pd.read_csv(scenario_vehicles_perceptions_file_path)
-
-                # Open scenario's traffic lights perceptions
-                scenario_traffic_lights_perceptions_file_path = os.path.join(output_folder_path, "traffic_lights_perceptions.csv")
-                scenario_traffic_lights_perceptions = pd.read_csv(scenario_traffic_lights_perceptions_file_path)
-                                                                              
-                # Compute scenario's interactions and the interaction map
-                interactions_df, interactions_map = augment_with_interactions(executed_scenario, 
-                                                                              scenario_planned_trajectories_df, 
-                                                                              scenario_vehicles_perceptions, 
-                                                                              scenario_traffic_lights_perceptions,
-                                                                              scenario_collisions
-                                                                            )
-
-                # Save scenario's interactions and interactions map to file
-                interactions_df.to_csv(f"{output_folder_path}/interactions.csv", index = False)
-                interactions_map_df = pd.DataFrame(interactions_map)
-                interactions_map_df.to_csv(f"{output_folder_path}/interactions_map.csv", index = False, header = False)
-
-                # Compute and return scenario's fitness functions values
-                if interactions_df is None or interactions_map is None:
-                    out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
-                    self.invalid_scenarios = self.invalid_scenarios + 1
+                if raised_exception:
+                    print("===== Scenario execution failed due to record file issue =====")
+                    print("===== Scenario marked as invalid, skip to next individual =====")
                 else:
-                    agents_data = executed_scenario.dynamic_obstacles
-                    fitness_num_interactions = interactions_df["is_interacting"].sum()
-                    fitness_num_cars = len(agents_data)
+                    print(f"===== Completed scenario execution with Apollo =====")
+                    print(f"===== CommonRoad executed scenario saved at: {output_folder_path}\n")
                     
-                    min_dist = sys.maxsize
-                    for i in range(1, (self.individual_number - (self.individual_number % self.pop_size)) + 1):
-                        dist = np.linalg.norm(interactions_map - self.interaction_maps.__getitem__(i - 1))
-                        min_dist = min(dist, min_dist)
+                    # Plot the scenario's planning problems and save the plots to file in the output folder
+                    planning_problems_plots_folder = os.path.join(output_folder_path, "planning_problems_plots")
+                    os.makedirs(planning_problems_plots_folder, exist_ok = True)
+                    self.plot_pps(scenario, planning_problem_set._planning_problem_dict.values(), planning_problems_plots_folder)
+                    
+                    # Open executed scenario
+                    executed_scenario_file_path = os.path.join(output_folder_path, "executed_scenario.xml")
+                    executed_scenario, _ = XMLFileReader(executed_scenario_file_path).open(lanelet_assignment = True)
 
-                    self.individual_number += 1
-                    self.interaction_maps.append(interactions_map)
+                    # Open scenario's collisions
+                    scenario_collisions_file_path = os.path.join(output_folder_path, "apollo_scenario_collisions.csv")
+                    scenario_collisions = pd.read_csv(scenario_collisions_file_path)
+                    
+                    # Open planned trajectories
+                    scenario_planned_trajectories_file_path = os.path.join(output_folder_path, "planned_trajectories.json")
+                    with open(scenario_planned_trajectories_file_path, "r") as f:
+                        scenario_planned_trajectories = json.load(f)
 
-                    # maximize number of interactions
-                    # minimise the number of cars
-                    # maximize minimum distance
-                    out["F"] = [-fitness_num_interactions, fitness_num_cars, -min_dist]
-                    self.valid_scenarios = self.valid_scenarios + 1
+                    # Convert planned trajectories Dict to a DataFrame
+                    scenario_planned_trajectories_df = planned_trajectories_to_df(scenario_planned_trajectories)
+
+                    # Compute scenario's collisions
+                    collisions_df, issue_rows = augment_with_collisions(executed_scenario, scenario_collisions)
+
+                    # Save scenario's collisions
+                    scenario_collisions_file_path = os.path.join(output_folder_path, "collisions.csv")
+                    collisions_df.to_csv(scenario_collisions_file_path, index = False)
+
+                    # Save issue rows
+                    if len(issue_rows) > 0:
+                        issue_rows_df = pd.DataFrame(issue_rows, columns = scenario_collisions.columns.tolist() + ["detected_obstacles"])
+                        issue_rows_df.to_csv(os.path.join(output_folder_path, "invalid_collisions.csv"), index = False)
+
+                    # Open scenario's vehicles perceptions
+                    scenario_vehicles_perceptions_file_path = os.path.join(output_folder_path, "vehicles_perception.csv")
+                    scenario_vehicles_perceptions = pd.read_csv(scenario_vehicles_perceptions_file_path)
+
+                    # Open scenario's traffic lights perceptions
+                    scenario_traffic_lights_perceptions_file_path = os.path.join(output_folder_path, "traffic_lights_perceptions.csv")
+                    scenario_traffic_lights_perceptions = pd.read_csv(scenario_traffic_lights_perceptions_file_path)
+                                                                                
+                    # Compute scenario's interactions and the interaction map
+                    interactions_df, interactions_map = augment_with_interactions(executed_scenario, 
+                                                                                scenario_planned_trajectories_df, 
+                                                                                scenario_vehicles_perceptions, 
+                                                                                scenario_traffic_lights_perceptions,
+                                                                                scenario_collisions
+                                                                                )
+
+                    # Save scenario's interactions and interactions map to file
+                    interactions_df.to_csv(f"{output_folder_path}/interactions.csv", index = False)
+                    interactions_map_df = pd.DataFrame(interactions_map)
+                    interactions_map_df.to_csv(f"{output_folder_path}/interactions_map.csv", index = False, header = False)
+
+                    # Compute and return scenario's fitness functions values
+                    if interactions_df is None or interactions_map is None:
+                        out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
+                        self.invalid_scenarios = self.invalid_scenarios + 1
+                    else:
+                        agents_data = executed_scenario.dynamic_obstacles
+                        fitness_num_interactions = interactions_df["is_interacting"].sum()
+                        fitness_num_cars = len(agents_data)
+                        
+                        min_dist = sys.maxsize
+                        for i in range(1, (self.individual_number - (self.individual_number % self.pop_size)) + 1):
+                            dist = np.linalg.norm(interactions_map - self.interaction_maps.__getitem__(i - 1))
+                            min_dist = min(dist, min_dist)
+
+                        self.individual_number += 1
+                        self.interaction_maps.append(interactions_map)
+
+                        # maximize number of interactions
+                        # minimise the number of cars
+                        # maximize minimum distance
+                        # TotalInts + UniqueInts
+                        out["F"] = [-fitness_num_interactions, fitness_num_cars, -min_dist]
+                        self.valid_scenarios = self.valid_scenarios + 1
             except (ValueError, RecordFileError):
+                # TotalInts + UniqueInts
                 out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
                 self.invalid_scenarios = self.invalid_scenarios + 1      
 

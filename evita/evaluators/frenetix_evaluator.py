@@ -23,7 +23,7 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
     
         self.output_folder = output_folder
     
-    def evaluate(self, simulation: Simulation) -> pd.DataFrame:
+    def evaluate(self, simulation: Simulation, threshold) -> pd.DataFrame:
         """
         Evaluate the simulation using the already implemented metrics, then augment the result with
         our additional metrics
@@ -51,6 +51,9 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
                 trajectories_df.loc[len(trajectories_df)] = [agent_id, timestep, _rebuild_trajectory(timestep, xs, ys, orientations, velocities)]
 
         # Invoke the original code - this also store the DB
+        for obstacle in simulation.scenario.obstacles:
+            print(f"Obstacle {obstacle.obstacle_id} has initial state at timestep {obstacle.initial_state.time_step} and final state at timestep {obstacle.prediction.trajectory.state_list[-1].time_step}")
+        # input("Check the obstacles and press Enter to continue...")
         criticality_dataframe = evaluate_simulation(simulation).criticality_dataframe
 
         # Extend evaluation with additional metrics for each agent:
@@ -62,7 +65,7 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
 
         criticality_dataframe = augment_with_danger(simulation, criticality_dataframe)
 
-        criticality_dataframe = augment_with_interactions(simulation, trajectories_df, criticality_dataframe)
+        criticality_dataframe = augment_with_interactions(simulation, trajectories_df, criticality_dataframe, threshold)
 
         # Check the data from the collision report
         criticality_dataframe = augment_with_collisions(simulation, criticality_dataframe)

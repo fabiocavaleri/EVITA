@@ -527,12 +527,23 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     # Both will be available afterwards, but the original shall be used for evolution
                     simulation = scenario_executor.execute(extended_scenario, time_shifted_planning_problem_set)
 
-                    # Run evaluation and postprocessing outside the budget
-                    for agent in simulation.agents:
-                        if agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0:
-                            logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
-                            scenario.is_valid = False
-                            scenario.validation_message = f"Agent {agent.id} could not compute a phyisically possible trajectory since the beginning."
+                    if simulation is None:
+                        scenario.is_valid = False
+                        scenario.validation_message = "Error during the simulation execution"
+
+                        logger.critical(
+                            f"Scenario {scenario.generation_id} failed during "
+                            f"simulation execution. Continuing with next scenario."
+                        )
+
+                    else:
+                        # Run evaluation and postprocessing outside the budget
+                        for agent in simulation.agents:
+                            if (agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0) or \
+                            (agent.planning_problem.initial_state.time_step == agent.agent_state.last_timestep):
+                                logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
+                                scenario.is_valid = False
+                                scenario.validation_message = f"Agent {agent.id} could not compute a phyisically possible trajectory since the beginning."
 
                 except Exception as e:
                     # It might fail, log the error and move on to the next scenario, but mark this one as invalid
@@ -554,8 +565,9 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     budget.pause()
                     
                     try:
+                        threshold = 1.0
                         # Compute the criticality metrics for this scenario and planning problem set
-                        criticality_dataframe = scenario_evaluator.evaluate(simulation)
+                        criticality_dataframe = scenario_evaluator.evaluate(simulation, threshold)
                     finally:
                         # Perform cleanup ONLY after evaluation is done
                         simulation.sim_logger.con.close()
@@ -581,6 +593,9 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     # If an error is triggered during the evaluation, get rid of the scenario
                     # This should take care of those DSE error
                     logger.critical(traceback.format_exc())
+
+                    setattr(scenario, "is_valid", False)
+                    
                     # Try to move any folder away
                     backup_debug(output_folder, debug_folder, scenario, logger)
                     simulation_data.append({
@@ -621,19 +636,19 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
             scenario_generator.evaluate(simulation_data)
 
         # At this point, we have completed a generation epoch, we can check whether we need to checkpoint it
-        elapsed_time = budget.get_elapsed()
-        checkpoint_id = int( elapsed_time / checkpoint_every)
-        if checkpoint_id > 0 and checkpoint_id not in checkpoints:
-            budget.pause()
-            try:
-                checkpoint(checkpoint_id, output_folder,
-                           all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time)
-                checkpoints.add(checkpoint_id)
-            except Exception as e:
-                logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
-                raise e
+        # elapsed_time = budget.get_elapsed()
+        # checkpoint_id = int( elapsed_time / checkpoint_every)
+        # if checkpoint_id > 0 and checkpoint_id not in checkpoints:
+        #     budget.pause()
+        #     try:
+        #         checkpoint(checkpoint_id, output_folder,
+        #                    all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time)
+        #         checkpoints.add(checkpoint_id)
+        #     except Exception as e:
+        #         logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
+        #         raise e
 
-            budget.resume()
+        #     budget.resume()
 
     logger.info(f"Execution of {output_folder} is over ")
 
@@ -645,7 +660,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
         csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"])
         csv_writer.writerow([str(all_scenarios), str(valid_scenarios), str(invalid_scenarios), str(total_generation_time)])
 
+    logger.info("Saved Performance Metrics")
     progress_bar_manager.stop()
 
     # Now analysize the data collected so far and output to the scenario folder
-    generate_report(output_folder)
+    # generate_report(output_folder)

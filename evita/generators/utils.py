@@ -720,22 +720,36 @@ def compute_impact_position(agent_occupancy_at_time_t, agent_state_at_time_t, ot
             origin = (0.0, 0.0),
             use_radians = True)
 
-    # If the vehicles do not touch we need to "guess" the standard_impact_location
+    # Intersect the extended line with the ego vehicle's boundary.
     standard_impact_location = standard_ego_rectangle.boundary.intersection(standard_intersect)
 
-    # Map the position to the labels
-    impact_position = None
+    # Handle different Shapely geometry types.
+    if standard_impact_location.is_empty:
+        # Fallback: use the nearest point on the boundary to the impact line.
+        from shapely.ops import nearest_points
+
+        standard_impact_location = nearest_points(standard_ego_rectangle.boundary, standard_intersect)[0]
+    elif isinstance(standard_impact_location, Point):
+        pass
+    elif isinstance(standard_impact_location, LineString):
+        # The intersection overlaps a boundary segment.
+        # Use its midpoint as a representative impact location.
+        standard_impact_location = standard_impact_location.interpolate(0.5, normalized = True)
+    else:
+        # Handle MultiPoint, GeometryCollection, and other geometries.
+        standard_impact_location = standard_impact_location.representative_point()
+
+    # Classify the impact location.
     if standard_impact_location.y > agent_vehicle_length / 6.0:
         impact_position = "F"
-    # elif -agent_vehicle_length / 6 < standard_impact_location.x <= agent_vehicle_length / 6:
-    elif standard_impact_location.y < - agent_vehicle_length / 6.0:
+    elif standard_impact_location.y < -agent_vehicle_length / 6.0:
         impact_position = "B"
     else:
         impact_position = "M"
-    
+
     if standard_impact_location.x > agent_vehicle_width / 6.0:
         impact_position += "R"
-    elif standard_impact_location.x < - agent_vehicle_width / 6.0:
+    elif standard_impact_location.x < -agent_vehicle_width / 6.0:
         impact_position += "L"
     else:
         impact_position += "C"
@@ -775,6 +789,10 @@ def compute_collision_features(time_step: int, agent, other_agents, scenario: Sc
     agent_occupancy_at_time_t = scenario.obstacle_by_id(agent.id).occupancy_at_time(time_step)
     agent_state_at_time_t = scenario.obstacle_by_id(agent.id).state_at_time(time_step)
     agent_state_at_time_t_minus_one = scenario.obstacle_by_id(agent.id).state_at_time(time_step - 1)
+
+    if agent_occupancy_at_time_t is None or agent_state_at_time_t is None or agent_state_at_time_t_minus_one is None:
+        module_logger.debug(f"Agent {agent.id} has missing state information at time {time_step}")
+        return ria, riv, impact_position, most_critical_agent
 
     # Find the agent colliding with it. The agent must be COLLISION and must be overlapping to agent
     for other_agent in [oa for oa in other_agents if oa.id != agent.id and oa.agent_state.status == AgentStatus.COLLISION]:
@@ -942,10 +960,24 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
                 # This generates some spurious entry for those already collided...
                 collided_agents = [ca for ca in other_agents if ca.id in vehicles_involved_in_collision]
 
-                # Compute collision criticality features
-                ria[t], riv[t], impact_position[t], most_critical_agent[t] = compute_collision_features(t, agent, collided_agents, simulation.scenario)
-                
-                has_collided_with[t] = vehicles_involved_in_collision
+                try:
+                    # Compute collision criticality features
+                    ria[t], riv[t], impact_position[t], most_critical_agent[t] = compute_collision_features(t, agent, collided_agents, simulation.scenario)
+                except Exception as e:
+                    module_logger.error(f"Error computing collision features for agent {agent.id} at time {t}: {e}")
+                    ria[t] = None
+                    riv[t] = None
+                    impact_position[t] = None
+                                    
+                if ria[t] is None or riv[t] is None or impact_position[t] is None or most_critical_agent[t] is None:
+                    has_collided[t] = 0.0
+                    has_collided_with[t] = None
+                    ria[t] = None
+                    riv[t] = None
+                    impact_position[t] = None
+                    most_critical_agent[t] = None
+                else:
+                    has_collided_with[t] = vehicles_involved_in_collision
             else:
                 has_collided[t] = 0.0
                 has_collided_with[t] = None
@@ -979,10 +1011,12 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
     
     return criticality_dataframe
 
-def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, threshold: float = 1.0) -> pd.DataFrame:
     """
     For each agent and time check whether the agent interacted with someone else (i.e., changed its trajectory because of someone else)
     """
+    module_logger.info(f"Current threshold for interaction detection: {threshold}")
+
     interactions_count_df = None
 
     # Iterate over all scenario agents
@@ -998,6 +1032,8 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
         # Initialize the is_interacting and is_interacting_with series with default values (None)
         is_interacting = pd.Series(None, index = list(range(t_start, t_end + 1)))
         is_interacting_with = pd.Series(None, index = list(range(t_start, t_end + 1)), dtype = object)
+        diff_long = pd.Series(None, index = list(range(t_start, t_end + 1)))
+        diff_lat = pd.Series(None, index = list(range(t_start, t_end + 1)))
 
         # Make sure we fill in all the values for this agent
         for t in range(t_start, t_end + 1):
@@ -1029,14 +1065,28 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
 
             # Check if the consecutive planned trajectories are different and if there are nearby agents
             # If both conditions are true, we consider that the agent interacted with the nearby agents at time t
-            if not is_trajectory_similar(cropped_traj_a, cropped_traj_b) and len(nearby_agent_ids) > 0:
+            if not is_trajectory_similar(cropped_traj_a, cropped_traj_b, threshold) and len(nearby_agent_ids) > 0:
+                try:
+                    diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1)
+                except:
+                    # If this fails, we cannot do much
+                    diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1, use_relative_path = True)
+
+                # Skip interaction in case of errors in trajectory difference computation
+                if diff_0 is None or diff_1 is None:
+                    continue
+
                 is_interacting[t] = 1.0
                 is_interacting_with[t] = nearby_agent_ids
+                diff_long[t] = diff_0
+                diff_lat[t] = diff_1
         
         # Save the dataframe for this agent and concatenate with the previous ones
-        agent_interactions_count_df = pd.DataFrame(None, index = list(range(t_start, t_end + 1)), columns = ["is_interacting", "is_interacting_with"])
+        agent_interactions_count_df = pd.DataFrame(None, index = list(range(t_start, t_end + 1)), columns = ["is_interacting", "is_interacting_with", "diff_long", "diff_lat"])
         agent_interactions_count_df["is_interacting"] = is_interacting
         agent_interactions_count_df["is_interacting_with"] = is_interacting_with
+        agent_interactions_count_df["diff_long"] = diff_long
+        agent_interactions_count_df["diff_lat"] = diff_lat
         
         if interactions_count_df is None:
             interactions_count_df = agent_interactions_count_df.set_index([[agent_id] * len(agent_interactions_count_df), agent_interactions_count_df.index])
@@ -1138,11 +1188,48 @@ def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Tra
         
         raise exc
 
-def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, n_bins: int = None) -> pd.DataFrame:
     """
     Compute the interaction map, which is a 3x3 matrix that counts the number of interactions in each of the 9 possible combinations of longitudinal and lateral differences in the curvilinear space (s, d) between two consecutive planned trajectories that lead to an interaction
     The longitudinal and lateral differences are categorized into three classes: negative, zero, and positive, based on a threshold
     The resulting interaction map can be used to analyze the distribution of interactions in terms of their longitudinal and lateral characteristics
+    """
+
+    # Get the bins of the interaction map
+    module_logger.info(f"Computing interaction map with {n_bins} bins")
+    from evita.config import ScenarioGeneratorConfig
+    scenario_generator_config = ScenarioGeneratorConfig()
+
+    n_bins = scenario_generator_config.n_bins
+
+    # One car in front/one car behind - How can one retrieve difference in speed/acc?
+    long_bins = np.linspace(-scenario_generator_config.length, +scenario_generator_config.length, n_bins)
+    # In the United States, the Interstate Highway standards for the Interstate Highway System
+    # use a 12 ft (3.7 m) standard lane width, while narrower lanes are used on lower classification roads.
+    lane_width = 3.7
+    lat_bins = np.linspace(-lane_width, lane_width, n_bins)
+
+    # Include 0 - B[0]:B[9] - 10 and len(bins)
+    rows = len(long_bins) + 2 # 0 <, bins, len(bins) +1 or +2?
+    cols = len(lat_bins) + 2 # 0 <, bins, len(bins)
+
+    # Initialize the interaction map and the counters for the requirement violations
+    interaction_map = np.zeros((rows, cols))
+
+    # List all the places where any interaction occurred
+    interactions = criticality_dataframe[criticality_dataframe["is_interacting"] == 1.0]
+
+    for _, row in interactions.iterrows():
+        diff_long = row["diff_long"]
+        diff_lat = row["diff_lat"]
+
+        # Determine the bin indices for the longitudinal and lateral differences
+        long_bin_index = np.digitize(diff_long, long_bins)
+        lat_bin_index = np.digitize(diff_lat, lat_bins)
+
+        # Increment the corresponding cell in the interaction map
+        interaction_map[long_bin_index][lat_bin_index] += 1
+
     """
     interaction_map = np.zeros((3, 3))
     
@@ -1188,5 +1275,6 @@ def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, 
                 index_1 = 1
 
             interaction_map[index_0][index_1] += 1
+    """
 
     return interaction_map

@@ -6,6 +6,9 @@ import os
 import csv
 from pymoo.algorithms.moo.nsga2 import NSGA2
 
+import random
+import numpy as np
+
 from evita.config import ScenarioGeneratorConfig
 from evita.data_analysis import generate_report
 from evita.generators.NSGAIIproblem import NSGAIIproblem
@@ -42,6 +45,23 @@ if __name__ == '__main__':
     else:
         output_folder_name = None
 
+    if len(sys.argv) > 5:
+        seed = int(sys.argv[5])
+
+        random.seed(seed)
+        np.random.seed(seed)
+
+    if len(sys.argv) > 6:
+        threshold = float(sys.argv[6])
+    else:
+        threshold = 1.0
+
+    if len(sys.argv) > 7:
+        n_bins = int(sys.argv[7])
+    else:
+        n_bins = None
+
+
     # Load the scenario object from the seed file, and leave only the lanelet network
     base_scenario, base_planning_problem_set = scenario_generation_utils.get_base_scenario_from_file(commonroad_scenario_seed_file, remove_obstacles = True, remove_planning_problems = True)
 
@@ -62,7 +82,7 @@ if __name__ == '__main__':
     # By default checkpoint is every 60 minutes after the population evaluation
     termination_criterion = CustomTimeTermination(max_time_minutes)
     
-    problem = NSGAIIproblem(commonroad_scenario_seed_file, driving_agent_name, population_size, termination_criterion, output_folder_name = output_folder_name)
+    problem = NSGAIIproblem(commonroad_scenario_seed_file, driving_agent_name, population_size, termination_criterion, threshold, n_bins, output_folder_name = output_folder_name)
     termination_criterion.problem_ref = problem
 
     algorithm.setup(problem, termination = termination_criterion, save_history = True, verbose = True)
@@ -97,4 +117,23 @@ if __name__ == '__main__':
             [str(all_scenarios), str(valid_scenarios), str(invalid_scenarios), str(total_generation_time)])
 
     # Now analysize the data collected so far and output to the scenario folder
-    generate_report(problem.output_folder)
+    # generate_report(problem.output_folder)
+
+    logger.info("AFTER performance.csv")
+
+    import threading
+    import os
+
+    logger.info("ABOUT TO EXIT")
+    logger.info(f"PID: {os.getpid()}")
+    logger.info(f"Active threads: {threading.enumerate()}")
+
+    for thread in threading.enumerate():
+        logger.info(
+            f"Thread: name={thread.name}, "
+            f"daemon={thread.daemon}, "
+            f"alive={thread.is_alive()}"
+        )
+
+    logger.info("MAIN FUNCTION FINISHED")
+    sys.exit(0)

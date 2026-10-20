@@ -111,7 +111,8 @@ def main(json_file_path: str, generation_number: str, scenario_number: str):
             # Rexecute the scenario if conversion fails (e.g., Record files opening error, all vehicles without history data)
             trials += 1
             if trials >= MAX_TRIALS:
-                raise
+                sys.exit(10)
+                # raise
 
 if __name__ == "__main__":
     # Extract arguments    

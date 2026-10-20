@@ -1,9 +1,14 @@
 import os
-import sys
 import json
+import argparse
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from tqdm import tqdm
+from collections import Counter
+from itertools import combinations
+from statistics import mean, median
+from scipy.stats import mannwhitneyu
 
 import matplotlib as mpl
 import matplotlib.cm as cm
@@ -15,6 +20,28 @@ from commonroad.visualization.icons import get_obstacle_icon_patch
 from commonroad.scenario.obstacle import ObstacleType
 
 from evita.data_analysis import compute_effect_size
+
+N_BINS = 8
+
+MAP_NAMES_MAPPING = {
+    "borregas_ave": "Borregas Ave",
+    "CHN_Cho-2_2_I-1-1": "Cho",
+    "DEU_Cologne-79_2_I-1": "Cologne",
+    "USA_US101-23_1_T-1": "US101-23",
+    "USA_US101-15_2_T-1": "US101-15",
+    "USA_US101-9_1_T-1": "US101-9"
+}
+
+def compute_p_value(data_1: list, data_2: list) -> float:
+    """
+    Computes the p-value of the two-sided Mann-Whitney U test between two samples.
+    Returns None if the test cannot be computed (e.g., identical or degenerate samples).
+    """
+    try:
+        _, p_value = mannwhitneyu(data_1, data_2, alternative = "two-sided")
+        return round(float(p_value), 3)
+    except ValueError:
+        return None
 
 def plot_interaction_map(interaction_map, long_bins, lat_bins, plot_title: str = "Interaction Effects Map"):
     """
@@ -107,74 +134,83 @@ def compute_interaction_maps(experiment_folder: str, long_bins, lat_bins):
         with open(file_path, "w") as f:
             json.dump(clean_data, f, indent = 4)
     
+    os.makedirs(os.path.join(experiment_folder, "csv"), exist_ok = True)
+    os.makedirs(os.path.join(experiment_folder, "plots"), exist_ok = True)
+    
     # ========== STOP SIGNS INTERACTIONS ==========
 
     # Open stop signs interactions file
     stop_signs_interactions_file_path = os.path.join(experiment_folder, "total_stop_signs_interactions.json")
-    with open(stop_signs_interactions_file_path, "r") as f:
-        stop_signs_interactions = json.load(f)
 
-    # Compute interactions map and unique interactions
-    stop_signs_interactions_map, stop_signs_unique_interactions = compute_map(stop_signs_interactions, long_bins, lat_bins)
+    if os.path.exists(stop_signs_interactions_file_path):
+        with open(stop_signs_interactions_file_path, "r") as f:
+            stop_signs_interactions = json.load(f)
 
-    # Save interactions map and unique interactions
-    save_list(stop_signs_unique_interactions, "total_stop_signs_unique_interactions.json")
-    pd.DataFrame(stop_signs_interactions_map).to_csv(
-        os.path.join(experiment_folder, "total_interaction_map.csv"),
-        index = False,
-        header = False
-    )
-    
-    # Plot interactions map
-    fig = plot_interaction_map(stop_signs_interactions_map, long_bins, lat_bins, "Stop Signs Interactions Map")
-    plt.savefig(os.path.join(experiment_folder, "stop_signs_interactions_map.png"), dpi = 500)
-    plt.close(fig)
+        # Compute interactions map and unique interactions
+        stop_signs_interactions_map, stop_signs_unique_interactions = compute_map(stop_signs_interactions, long_bins, lat_bins)
+
+        # Save interactions map and unique interactions
+        save_list(stop_signs_unique_interactions, "total_stop_signs_unique_interactions.json")
+        pd.DataFrame(stop_signs_interactions_map).to_csv(
+            os.path.join(experiment_folder, "csv", "total_interaction_map.csv"),
+            index = False,
+            header = False
+        )
+        
+        # Plot interactions map
+        fig = plot_interaction_map(stop_signs_interactions_map, long_bins, lat_bins, "Stop Signs Interactions Map")
+        plt.savefig(os.path.join(experiment_folder, "plots", "stop_signs_interactions_map.png"), dpi = 500)
+        plt.close(fig)
 
     # ========== TRAFFIC LIGHTS INTERACTIONS ==========
 
     # Open traffic lights interactions file
     traffic_lights_interactions_file_path = os.path.join(experiment_folder, "total_traffic_lights_interactions.json")
-    with open(traffic_lights_interactions_file_path, "r") as f:
-        traffic_lights_interactions = json.load(f)
 
-    # Compute interactions map and unique interactions
-    traffic_lights_interactions_map, traffic_lights_unique_interactions = compute_map(traffic_lights_interactions, long_bins, lat_bins)
+    if os.path.exists(traffic_lights_interactions_file_path):
+        with open(traffic_lights_interactions_file_path, "r") as f:
+            traffic_lights_interactions = json.load(f)
 
-    # Save interactions map and unique interactions
-    save_list(traffic_lights_unique_interactions, "total_traffic_lights_unique_interactions.json")
-    pd.DataFrame(traffic_lights_interactions_map).to_csv(
-        os.path.join(experiment_folder, "total_interaction_map.csv"),
-        index = False,
-        header = False
-    )
+        # Compute interactions map and unique interactions
+        traffic_lights_interactions_map, traffic_lights_unique_interactions = compute_map(traffic_lights_interactions, long_bins, lat_bins)
 
-    # Plot interactions map
-    fig = plot_interaction_map(traffic_lights_interactions_map, long_bins, lat_bins, "Traffic Lights Interactions Map")
-    plt.savefig(os.path.join(experiment_folder, "traffic_lights_interactions_map.png"), dpi = 500)
-    plt.close(fig)
+        # Save interactions map and unique interactions
+        save_list(traffic_lights_unique_interactions, "total_traffic_lights_unique_interactions.json")
+        pd.DataFrame(traffic_lights_interactions_map).to_csv(
+            os.path.join(experiment_folder, "csv", "total_interaction_map.csv"),
+            index = False,
+            header = False
+        )
+
+        # Plot interactions map
+        fig = plot_interaction_map(traffic_lights_interactions_map, long_bins, lat_bins, "Traffic Lights Interactions Map")
+        plt.savefig(os.path.join(experiment_folder, "plots", "traffic_lights_interactions_map.png"), dpi = 500)
+        plt.close(fig)
 
     # ========== VEHICLES INTERACTIONS ==========
 
     # Open vehicles interactions file
     vehicles_interactions_file_path = os.path.join(experiment_folder, "total_vehicles_interactions.json")
-    with open(vehicles_interactions_file_path, "r") as f:
-        vehicles_interactions = json.load(f)
 
-    # Compute interactions map and unique interactions
-    vehicles_interactions_map, vehicles_unique_interactions = compute_map(vehicles_interactions, long_bins, lat_bins)
+    if os.path.exists(traffic_lights_interactions_file_path):
+        with open(vehicles_interactions_file_path, "r") as f:
+            vehicles_interactions = json.load(f)
 
-    # Save interactions map and unique interactions
-    save_list(vehicles_unique_interactions, "total_vehicles_unique_interactions.json")
-    pd.DataFrame(vehicles_interactions_map).to_csv(
-        os.path.join(experiment_folder, "total_interaction_map.csv"),
-        index = False,
-        header = False
-    )
+        # Compute interactions map and unique interactions
+        vehicles_interactions_map, vehicles_unique_interactions = compute_map(vehicles_interactions, long_bins, lat_bins)
 
-    # Plot interactions map
-    fig = plot_interaction_map(vehicles_interactions_map, long_bins, lat_bins, "Vehicles Interactions Map")
-    plt.savefig(os.path.join(experiment_folder, "vehicles_interactions_map.png"), dpi = 500)
-    plt.close(fig)
+        # Save interactions map and unique interactions
+        save_list(vehicles_unique_interactions, "total_vehicles_unique_interactions.json")
+        pd.DataFrame(vehicles_interactions_map).to_csv(
+            os.path.join(experiment_folder, "csv", "total_interaction_map.csv"),
+            index = False,
+            header = False
+        )
+
+        # Plot interactions map
+        fig = plot_interaction_map(vehicles_interactions_map, long_bins, lat_bins, "Vehicles Interactions Map")
+        plt.savefig(os.path.join(experiment_folder, "plots", "vehicles_interactions_map.png"), dpi = 500)
+        plt.close(fig)
 
     # ========== TOTAL INTERACTIONS ==========
 
@@ -189,14 +225,14 @@ def compute_interaction_maps(experiment_folder: str, long_bins, lat_bins):
     # Save interactions map and unique interactions
     save_list(total_unique_interactions, "total_unique_interactions.json")
     pd.DataFrame(total_interactions_map).to_csv(
-        os.path.join(experiment_folder, "total_interaction_map.csv"),
+        os.path.join(experiment_folder, "csv", "total_interaction_map.csv"),
         index = False,
         header = False
     )
 
     # Plot interactions map
     fig = plot_interaction_map(total_interactions_map, long_bins, lat_bins, "Total Interactions Map")
-    plt.savefig(os.path.join(experiment_folder, "total_interactions_map.png"), dpi = 500)
+    plt.savefig(os.path.join(experiment_folder, "plots", "total_interactions_map.png"), dpi = 500)
     plt.close(fig)
 
 def compute_map(interactions: dict, long_bins, lat_bins):
@@ -236,133 +272,6 @@ def compute_map(interactions: dict, long_bins, lat_bins):
 
     return interaction_map, unique_interactions
 
-def generate_comparison_plots(evita_borregas_folder_path: str, doppeltest_borregas_folder_path: str, output_folder_path: str):
-    """
-    Generates the comparison plots between Evita and DoppelTest for the Borregas Ave map and saves the results in the output folder
-    """
-    
-    # Initialize effect size data dictionary
-    effect_size_data = {}
-    # Compute interaction maps bins
-    long_bins, lat_bins = get_interaction_map_bins(8)
-
-    # Compute and plot interaction maps for both Evita and DoppelTest
-    compute_interaction_maps(os.path.join(evita_borregas_folder_path, "experiments_analysis"), long_bins, lat_bins)
-    compute_interaction_maps(os.path.join(doppeltest_borregas_folder_path, "experiments_analysis"), long_bins, lat_bins)
-    print("Generated interactions maps plot")
-
-    # ========== COMPARE TOTAL INTERACTIONS =========
-    borregas_effect_size = interactions_collisions_plots({
-            "Borregas Ave": (
-                os.path.join(evita_borregas_folder_path, "experiments_analysis", "total_interactions_count.json"), 
-                os.path.join(doppeltest_borregas_folder_path, "experiments_analysis", "total_interactions_count.json")
-            ),
-        },
-        os.path.join(output_folder_path, "interactions_comparison.png")
-    )
-
-    effect_size_data["interactions"] = {
-        "borregas_ave": borregas_effect_size,
-    }
-
-    print("Generated interactions comparison plot")
-
-    # ========== COMPARE UNIQUE INTERACTIONS =========
-    borregas_effect_size = interactions_collisions_plots({
-        "Borregas Ave": (
-            os.path.join(evita_borregas_folder_path, "experiments_analysis", "total_unique_interactions.json"), 
-            os.path.join(doppeltest_borregas_folder_path, "experiments_analysis", "total_unique_interactions.json")
-        )
-    },
-    os.path.join(output_folder_path, "unique_interactions_comparison.png")
-    )
-
-    effect_size_data["unique_interactions"] = {
-        "borregas_ave": borregas_effect_size,
-    }
-
-    print("Generated unique interactions comparison plot")
-
-    # ========== COMPARE TOTAL COLLISIONS =========
-    borregas_effect_size = interactions_collisions_plots({
-            "Borregas Ave": (
-                os.path.join(evita_borregas_folder_path, "experiments_analysis", "total_collisions.json"), 
-                os.path.join(doppeltest_borregas_folder_path, "experiments_analysis", "total_collisions.json")
-            )
-        },
-        os.path.join(output_folder_path, "collisions_comparison.png")
-    )
-
-    effect_size_data["collisions"] = {
-        "borregas_ave": borregas_effect_size,
-    }
-
-    print("Generated collisions comparison plot")
-
-    # ========== COMPARE UNIQUE COLLISIONS =========
-    borregas_effect_size = interactions_collisions_plots({
-        "Borregas Ave": (
-            os.path.join(evita_borregas_folder_path, "experiments_analysis", "total_unique_collisions.json"), 
-            os.path.join(doppeltest_borregas_folder_path, "experiments_analysis", "total_unique_collisions.json")
-        ),
-    },
-    os.path.join(output_folder_path, "unique_collisions_comparison.png"),
-    False
-    )
-
-    effect_size_data["unique_collisions"] = {
-        "borregas_ave": borregas_effect_size,
-    }
-
-    print("Generated unique collisions comparison plot")
-
-    # ========== COMPARE VIOLATIONS =========
-    violations_effect_size_data = violations_plots({
-        "Borregas Ave": (
-            os.path.join(evita_borregas_folder_path, "experiments_analysis", "scenario_violations.json"), 
-            os.path.join(doppeltest_borregas_folder_path, "experiments_analysis", "scenario_violations.json")
-        ),
-    },
-    output_folder_path
-    )
-
-    effect_size_data["violations"] = violations_effect_size_data
-
-    print("Generated violations comparison plots")
-
-    # ========== PLOT GENERATION STATISTICS =========
-    generatation_statistics_plots({
-            "generated": (
-                os.path.join(evita_borregas_folder_path, "experiments_analysis", "total_generated_scenarios.json"), 
-            ),
-            "valid": (
-                os.path.join(evita_borregas_folder_path, "experiments_analysis", "total_valid_scenarios.json"), 
-            ),
-            "invalid": (
-                os.path.join(evita_borregas_folder_path, "experiments_analysis", "total_invalid_scenarios.json"), 
-            )
-        },
-        output_folder_path
-    )
-
-    print("Generated generation statistics comparison plots")
-
-    # ========== PLOT AGENTS NUMBER =========
-    agents_number_plots({
-        "borregas": (
-            os.path.join(evita_borregas_folder_path, "experiments_analysis", "vehicles_number.json"), 
-            os.path.join(doppeltest_borregas_folder_path, "experiments_analysis", "vehicles_number.json")
-        ),
-    },
-    output_folder_path
-    )
-
-    print("Generated agents number comparison plots")
-
-    effect_size_data_file_path = os.path.join(output_folder_path, "effect_size_data.json")
-    with open(effect_size_data_file_path, "w") as f:
-        json.dump(effect_size_data, f, indent = 4)
-
 def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: bool = True):
     """
     Generates the comparison plot between Evita and DoppelTest for the interactions or collisions metrics and saves the result in the output folder
@@ -371,33 +280,43 @@ def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: b
     all_data = []
 
     # Iterate over each map and aggregated metric data paths lists
-    for map, paths in data_map.items():
-        # Extract aggregated metrics data paths
-        evita_path, dt_path = paths
-        
-        # Load DoppelTest data
-        doppeltest_data = load_json_data(dt_path, aggregate)
+    for map_name in data_map.keys():
+        map_data = data_map[map_name]
+        for framework, file_path in map_data.items():
+            if file_path is None or not os.path.exists(file_path):
+                print(f"Warning: File not found for framework '{framework}' in map '{map_name}'. Expected at: {file_path}")
+                continue
 
-        # Iterate over the aggregated metrics values for DoppelTest
-        for key, val in doppeltest_data.items():
-            all_data.append({"Map": map, "Metric": val, "Framework": "DoppelTest"})
+            data = load_json_data(file_path, aggregate)
 
-        # Load Evita data
-        evita_data = load_json_data(evita_path, aggregate)
-
-        # Iterate over the aggregated metrics values for EVITA
-        for key, val in evita_data.items():
-            all_data.append({"Map": map, "Metric": val, "Framework": "Evita"})
+            for _, val in data.items():
+                all_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), "Metric": val, "Framework": framework})
 
     # Create DataFrame with the collected data
     df = pd.DataFrame(all_data)
 
+    if df.empty:
+        print("No data available for the provided data map. Skipping plot generation.")
+        return {}
+
+    # Add a virtual map "All" aggregating all maps for each framework
+    if len(df["Map"].unique()) > 1:
+        all_df = df.copy()
+        all_df["Map"] = "All"
+        df = pd.concat([df, all_df], ignore_index = True)
+
     # Initialize the figure and axis for the boxplot
-    fig, ax = plt.subplots(figsize = (6, 5))
+    fig, ax = plt.subplots(figsize = (7, 4))
     sns.set_style("ticks")
-    
-    # Define colors for each framework's data'
-    palette = {"DoppelTest": "#9fcfff", "Evita": "#f19e6e"}
+
+    # Define colors for each framework's data
+    # Generate a color palette from a colormap based on the frameworks considered
+    frameworks = df["Framework"].unique()
+    cmap = plt.get_cmap("tab10")
+    palette = {
+        framework: cmap(i / max(len(frameworks) - 1, 1))
+        for i, framework in enumerate(frameworks)
+    }
     
     # Plot the boxplot
     sns.boxplot(
@@ -408,14 +327,14 @@ def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: b
         palette = palette,
         linewidth = 1,
         fliersize = 4,
-        width = 0.1,
-        gap = 0.1,
+        width = 0.8,
+        gap = 0.2,
         flierprops = {"marker": "o", "markeredgecolor": "gray"},
         ax = ax
     )
 
     # Styling
-    ax.legend(loc = 'upper right')
+    ax.legend(loc = 'best')
     ax.set_xlabel("")
     ax.set_ylabel("")
     sns.despine(top = False, right = False)
@@ -428,37 +347,60 @@ def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: b
     fig.savefig(output_path, dpi = 800)
     plt.close(fig)
 
-    # Compute effect size for Borregas Ave map
-    borregas_doppeltest_data = df[(df["Map"] == "Borregas Ave") & (df["Framework"] == "DoppelTest")]["Metric"].to_list()
-    borregas_evita_data = df[(df["Map"] == "Borregas Ave") & (df["Framework"] == "Evita")]["Metric"].to_list()
-    if len(borregas_doppeltest_data) != 0 and len(borregas_evita_data) != 0:
-        borregas_effect_size = compute_effect_size(borregas_doppeltest_data, borregas_evita_data)
-    else:
-        borregas_effect_size = -1  # Indicating that the effect size cannot be computed due to lack of data
+    # Compute effect size for every pair of frameworks
+    effect_sizes = {}
 
-    return borregas_effect_size
+    # Compute effect size for each map
+    for map_name in data_map.keys():
+        frameworks_data = {}
+        effect_sizes[map_name] = {}
+        for framework in frameworks:
+            data = df[(df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name)) & (df["Framework"] == framework)]["Metric"].to_list()
+
+            if len(data) != 0:
+                frameworks_data[framework] = data
+
+        for framework_1, framework_2 in combinations(frameworks_data.keys(), 2):
+            data_framework_1 = frameworks_data[framework_1]
+            data_framework_2 = frameworks_data[framework_2]
+
+            if len(data_framework_1) != 0 and len(data_framework_2) != 0:
+                effect_size = (*compute_effect_size(data_framework_1, data_framework_2), compute_p_value(data_framework_1, data_framework_2))
+            else:
+                effect_size = (-1, "n/a", None)
+
+            effect_sizes[map_name][f"{framework_1}_{framework_2}"] = effect_size
+
+    return effect_sizes
 
 def load_json_data(file_path: str, aggregate: bool = True) -> dict:
     """
-    Loads JSON data from a file and aggregates data by experiment ID
+    Loads JSON data from a file and optionally aggregates data by experiment ID.
     """
 
     with open(file_path, "r") as f:
         data = json.load(f)
-    
-    aggregated_data = data
-    if aggregate:
-        try:
-            aggregated_data = {
-                experiment: sum(values for values in values if isinstance(values, int))
-                for experiment, values in data.items()
-            }
-        except Exception as exc:
-            raise exc
-    
+
+    if not aggregate:
+        return data
+
+    aggregated_data = {}
+
+    for experiment, values in data.items():
+        if isinstance(values, list):
+            aggregated_data[experiment] = sum(
+                value for value in values
+                if isinstance(value, int) and not isinstance(value, bool)
+            )
+        elif isinstance(values, int) and not isinstance(values, bool):
+            # Handle values that are already aggregated.
+            aggregated_data[experiment] = values
+        else:
+            raise ValueError(f"Unexpected data type for experiment '{experiment}': {type(values).__name__}")
+
     return aggregated_data
 
-def violations_plots(data_map: dict, output_folder_path: str):
+def violations_plots(data_map: dict, output_folder_path: str, aggregate: bool = False):
     """
     Generates the comparison plots between Evita and DoppelTest for the violations metrics
     """
@@ -470,40 +412,48 @@ def violations_plots(data_map: dict, output_folder_path: str):
 
     # Iterate over each violation type
     for i in range(3):
+        violations_effect_size_data[violations[i]] = {}
+
         # Iterate over each map and aggregated metric data paths lists
-        for map, paths in data_map.items():
-            # Extract aggregated metrics data paths
-            evita_path, dt_path = paths
+        for map_name in data_map.keys():
+            map_data = data_map[map_name]
+            for framework, file_path in map_data.items():
+                if file_path is None or not os.path.exists(file_path):
+                    print(f"Warning: File not found for framework '{framework}' in map '{map_name}'. Expected at: {file_path}")
+                    continue
+
+                data = load_json_data(file_path, aggregate)
+
+                for val in data.values():
+                    # Count violation occurrences in the scenario
+                    data_sum = sum(val[violations[i]])
+                    all_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), "Violations": data_sum, "Framework": framework})
             
-            # Load DoppelTest data
-            with open(dt_path, "r") as f:
-                doppeltest_data = json.load(f)
-            
-            # Iterate over the aggregated metrics values for DoppelTest
-            for val in doppeltest_data.values():
-                # Count violation occurrences in the scenario
-                data = sum(val[violations[i]])
-                all_data.append({"Map": map, "Violations": data, "Framework": "DoppelTest"})
-
-            # Load Evita data
-            with open(evita_path, "r") as f:
-                evita_df = json.load(f)
-
-            # Iterate over the aggregated metrics values for EVITA
-            for val in evita_df.values():
-                # Count violation occurrences in the scenario
-                data = sum(val[violations[i]])
-                all_data.append({"Map": map, "Violations": data, "Framework": "Evita"})
-
         # Create DataFrame with the collected data for the current violation type
         df = pd.DataFrame(all_data)
 
+        if df.empty:
+            print("No data available for the provided data map. Skipping plot generation.")
+            return {}
+
+        # Add a virtual map "All" aggregating all maps for each framework
+        if len(df["Map"].unique()) > 1:
+            all_df = df.copy()
+            all_df["Map"] = "All"
+            df = pd.concat([df, all_df], ignore_index = True)
+
         # Initialize the figure and axis for the boxplot
-        fig, ax = plt.subplots(figsize = (6, 5))
+        fig, ax = plt.subplots(figsize = (7, 4))
         sns.set_style("ticks")
         
-        # Define a plotting color for each framework
-        palette = {"DoppelTest": "#9fcfff", "Evita": "#f19e6e"}
+        # Define colors for each framework's data
+        # Generate a color palette from a colormap based on the frameworks considered
+        frameworks = df["Framework"].unique()
+        cmap = plt.get_cmap("tab10")
+        palette = {
+            framework: cmap(i / max(len(frameworks) - 1, 1))
+            for i, framework in enumerate(frameworks)
+        }
         
         # Plot data
         sns.boxplot(
@@ -514,14 +464,14 @@ def violations_plots(data_map: dict, output_folder_path: str):
             palette = palette,
             linewidth = 1,
             fliersize = 4,
-            width = 0.1,
-            gap = 0.1,
+            width = 0.8,
+            gap = 0.2,
             flierprops = {"marker": "o", "markeredgecolor": "gray"},
             ax = ax
         )
 
         # Styling
-        ax.legend(loc = 'upper left')
+        ax.legend(loc = 'best')
         ax.set_xlabel("")
         ax.set_ylabel("")
         sns.despine(top = False, right = False)
@@ -534,49 +484,63 @@ def violations_plots(data_map: dict, output_folder_path: str):
         fig.savefig(os.path.join(output_folder_path, f"scenario_{violations[i]}_violations_comparison.png"), dpi = 800)
         plt.close(fig)
 
-        # Compute effect size for Borregas Ave map
-        doppeltest_borregas_data = df[(df["Map"] == "Borregas Ave") & (df["Framework"] == "DoppelTest")]["Violations"].to_list()
-        evita_borregas_data = df[(df["Map"] == "Borregas Ave") & (df["Framework"] == "Evita")]["Violations"].to_list()
-        if len(doppeltest_borregas_data) != 0 and len(evita_borregas_data) != 0:
-            borregas_effect_size = compute_effect_size(doppeltest_borregas_data, evita_borregas_data)
-        else:
-            borregas_effect_size = -1  # Indicating that the effect size cannot be computed due to lack of data
 
-        violations_effect_size_data[violations[i]] = {
-            "borregas": borregas_effect_size,
-        }
+         # Compute effect size for each map
+        for map_name in data_map.keys():
+            frameworks_data = {}
+            violations_effect_size_data[violations[i]][map_name] = {}
+            for framework in frameworks:
+                data = df[(df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name)) & (df["Framework"] == framework)]["Violations"].to_list()
+    
+                if len(data) != 0:
+                    frameworks_data[framework] = data
+    
+            for framework_1, framework_2 in combinations(frameworks_data.keys(), 2):
+                data_framework_1 = frameworks_data[framework_1]
+                data_framework_2 = frameworks_data[framework_2]
+    
+                if len(data_framework_1) != 0 and len(data_framework_2) != 0:
+                    effect_size = (*compute_effect_size(data_framework_1, data_framework_2), compute_p_value(data_framework_1, data_framework_2))
+                else:
+                    effect_size = (-1, "n/a", None)
+    
+                violations_effect_size_data[violations[i]][map_name][f"{framework_1}_{framework_2}"] = effect_size
 
     return violations_effect_size_data
 
-def generatation_statistics_plots(data_map: dict, output_folder_path: str):
+def generate_statistics_plots(data_map: dict, first_label: str, output_folder_path: str):
     """
     Generates the comparison plots between Evita and DoppelTest for the generation statistics metrics
     """
-    
+    effect_sizes = {}
+
     # Iterate over each generation statistic and corresponding data paths list
-    for statistic, paths in data_map.items():
-        # Initialize data structure
+    for statistic, statistic_data in data_map.items():
         all_data = []
-
-        # Extract EVITA data path 
-        evita_path = paths[0]
         
-        # Load Evita data
-        borregas_data = load_json_data(evita_path)
-
-        # Iterate over the aggregated metrics values for EVITA
-        for _, val in borregas_data.items():
-            all_data.append({"Map": "Borregas Ave", f"{statistic}": val, "Framework": "Evita"})
-
+        for map_name in statistic_data.keys():
+            map_data = statistic_data[map_name]
+            for framework, file_path in map_data.items():
+                data = load_json_data(file_path)
+    
+                for _, val in data.items():
+                    all_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), f"{statistic}": val, "Framework": framework})
+        
         # Create DataFrame with the collected data for the current generation statistic
         df = pd.DataFrame(all_data)
 
         # Initialize the figure and axis for the boxplot
-        fig, ax = plt.subplots(figsize = (6, 5))
+        fig, ax = plt.subplots(figsize = (7, 4))
         sns.set_style("ticks")
         
-        # Define a plotting color for Evita
-        palette = {"Evita": "#f19e6e"}
+        # Define colors for each framework's data
+        # Generate a color palette from a colormap based on the frameworks considered
+        frameworks = df["Framework"].unique()
+        cmap = plt.get_cmap("tab10")
+        palette = {
+            framework: cmap(i / max(len(frameworks) - 1, 1))
+            for i, framework in enumerate(frameworks)
+        }
         
         # Plot data
         sns.boxplot(
@@ -587,14 +551,14 @@ def generatation_statistics_plots(data_map: dict, output_folder_path: str):
             palette = palette,
             linewidth = 1,
             fliersize = 4,
-            width = 0.1,
-            gap = 0.1,
+            width = 0.8,
+            gap = 0.2,
             flierprops = {"marker": "o", "markeredgecolor": "gray"},
             ax = ax
         )
 
         # Styling
-        ax.legend(loc = 'upper left')
+        ax.legend(loc = 'best')
         ax.set_xlabel("")
         ax.set_ylabel("")
         sns.despine(top = False, right = False) 
@@ -609,131 +573,449 @@ def generatation_statistics_plots(data_map: dict, output_folder_path: str):
         
         plt.close(fig)
 
-def agents_number_plots(data_map: dict, output_folder_path: str):
-    """
-    Generates the comparison plots between Evita and DoppelTest for the number of agents in the scenarios
-    """
-
-    # Iterate over each map and corresponding data paths list
-    for map, paths in data_map.items():
-        # Extract data paths
-        evita_path, dt_path = paths
-        
-        # Load DoppelTest data
-        with open(dt_path, "r") as f:
-            data = json.load(f)
-
-        # Aggregate data by experiment ID
-        concatenated_list = []
-        for list in data.values():
-            concatenated_list.extend(list)
-        
-        # Aggregated data for DoppelTest
-        doppeltest_data = pd.DataFrame(concatenated_list, columns = ["vehicles"])
-        doppeltest_data["Framework"] = "DoppelTest"  
-              
-        # Load Evita data
-        with open(evita_path, "r") as f:
-            data = json.load(f)
-
-        # Aggregate data by experiment ID
-        concatenated_list = []
-        for list in data.values():
-            concatenated_list.extend(list)
-
-        # Aggregated data for Evita
-        evita_data = pd.DataFrame(concatenated_list, columns = ["vehicles"])
-        evita_data["Framework"] = "Evita"
-
-        # Combine dataframes
-        combined_df = pd.concat([doppeltest_data, evita_data], ignore_index = True)
-        combined_df = combined_df[combined_df["vehicles"] > 1]  # Filter out scenarios with only 1 vehicle for better visualization
-        
-        # Initialize plot
-        fig, ax = plt.subplots(figsize=(6, 4))
-        sns.set_style("ticks")
-        
-        # Define colors for each framework's data
-        palette = {"DoppelTest": "#9fcfff", "Evita": "#f19e6e"}
-
-        # Generate Stacked Histogram
-        sns.histplot(
-            data = combined_df,
-            x = "vehicles",
-            hue = "Framework",
-            multiple = "stack",
-            discrete = True,
-            shrink = 0.7,      # Adjusts bar width for visual spacing
-            palette = palette,
-            alpha = 0.6,       # Transparency matching the visual style
-            edgecolor = "white",
-            ax = ax
-        )
-        
-        low = 2
-        high = int(combined_df["vehicles"].max())
-        ax.set_xticks(range(low, high + 1))
-
-        # Formatting
-        ax.set_title(map, fontsize = 14, pad = 15)
-        ax.set_xlabel("# Agents")
-        ax.set_ylabel("# Scenarios")
-        
-        # Clean up legend and axes
-        sns.despine()
-        
-        plt.tight_layout()
-
-        # Save plot to file
-        fig.savefig(os.path.join(output_folder_path, f"{map}_scenario_vehicles_comparison.png"), dpi = 500)
-        plt.close(fig)
-
-        #####
-
         # Initialize the figure and axis for the boxplot
-        fig, ax = plt.subplots(figsize = (10, 5))
+        fig, ax = plt.subplots(figsize = (7, 4))
         sns.set_style("ticks")
 
-        # Define colors for each framework's data
-        palette = {"DoppelTest": "#9fcfff", "Evita": "#f19e6e"}
+        # Add a virtual map "All" aggregating all maps for each framework
+        if len(df["Map"].unique()) > 1:
+            all_df = df.copy()
+            all_df["Map"] = "All"
+            df = pd.concat([df, all_df], ignore_index = True)
 
-        # Plot the boxplot
+        # Plot single framework data
         sns.boxplot(
-            data = combined_df,
-            x = "Framework",
-            y = "vehicles",
-            hue = "Framework",
+            data = df[(df["Framework"] == first_label)],
+            x = "Map", 
+            y = f"{statistic}", 
+            hue = "Framework", 
             palette = palette,
             linewidth = 1,
             fliersize = 4,
-            gap = 0.25,
+            width = 0.8,
+            gap = 0.2,
             flierprops = {"marker": "o", "markeredgecolor": "gray"},
             ax = ax
         )
 
-        # Styling (matching your other function)
-        ax.legend(loc='upper left')
+        # Styling
+        ax.legend(loc = 'best')
         ax.set_xlabel("")
-        ax.set_ylabel("# Agents")
+        ax.set_ylabel("")
+        sns.despine(top = False, right = False) 
 
-        sns.despine(top=False, right=False)
+        ax.margins(x = 0.05)
+        
         plt.tight_layout()
-
+        
         # Save boxplot to file
-        fig.savefig(os.path.join(output_folder_path, f"{map}_scenario_vehicles_boxplot.png"), dpi = 500)
+        output_file_path = os.path.join(output_folder_path, f"{first_label}_{statistic}_comparison.png")
+        fig.savefig(output_file_path, dpi = 800)
+        
         plt.close(fig)
 
+        # Compute effect size for every pair of frameworks
+        # Compute effect size for each map
+
+        effect_sizes[statistic] = {}
+
+        for map_name in statistic_data.keys():
+            frameworks_data = {}
+            effect_sizes[statistic][map_name] = {}
+            for framework in frameworks:
+                data = df[(df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name)) & (df["Framework"] == framework)][f"{statistic}"].to_list()
+
+                if len(data) != 0:
+                    frameworks_data[framework] = data
+
+            for framework_1, framework_2 in combinations(frameworks_data.keys(), 2):
+                data_framework_1 = frameworks_data[framework_1]
+                data_framework_2 = frameworks_data[framework_2]
+
+                if len(data_framework_1) != 0 and len(data_framework_2) != 0:
+                    effect_size = (*compute_effect_size(data_framework_1, data_framework_2), compute_p_value(data_framework_1, data_framework_2))
+                else:
+                    effect_size = (-1, "n/a", None)
+
+                effect_sizes[statistic][map_name][f"{framework_1}_{framework_2}"] = effect_size
+
+    return effect_sizes
+
+def generate_percentage_valid_scenarios_plot(valid_data_map: dict, generated_data_map: dict, output_folder_path: str):
+    """
+    Generates the comparison plot between Evita and DoppelTest for the percentage of valid scenarios generated
+    """
+
+    all_valid_data = []
+    all_generated_data = []
+    
+    for map_name in valid_data_map.keys():
+        valid_map_data = valid_data_map[map_name]
+        generated_map_data = generated_data_map[map_name]
+
+        for framework in valid_map_data.keys():
+            valid_file_path = valid_map_data[framework]
+            generated_file_path = generated_map_data[framework]
+
+            valid_data = load_json_data(valid_file_path)
+
+            for _, val in valid_data.items():
+                all_valid_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), "Valid": val, "Framework": framework})
+
+            generated_data = load_json_data(generated_file_path)
+            for _, val in generated_data.items():
+                all_generated_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), "Generated": val, "Framework": framework})
+
+    # Create DataFrame with the collected data
+    valid_df = pd.DataFrame(all_valid_data)
+    generated_df = pd.DataFrame(all_generated_data)
+
+    # Add a virtual map "All" aggregating all maps for each framework
+    if len(valid_df["Map"].unique()) > 1:
+        all_df = valid_df.copy()
+        all_df["Map"] = "All"
+        valid_df = pd.concat([valid_df, all_df], ignore_index = True)
+
+        all_df = generated_df.copy()
+        all_df["Map"] = "All"
+        generated_df = pd.concat([generated_df, all_df], ignore_index = True)
+
+    for framework in valid_df["Framework"].unique():
+        percentage_data = []
+        
+        for map_name in valid_df["Map"].unique():
+            valid_count = valid_df[(valid_df["Framework"] == framework) & (valid_df["Map"] == map_name)]["Valid"].sum()
+            generated_count = generated_df[(generated_df["Framework"] == framework) & (generated_df["Map"] == map_name)]["Generated"].sum()
+
+            if generated_count > 0:
+                percentage_valid = (valid_count / generated_count) * 100
+            else:
+                percentage_valid = 0
+
+            percentage_data.append({
+                "Map": map_name,
+                "Framework": framework,
+                "Percentage": percentage_valid
+                })
+                
+        percentage_df = pd.DataFrame(percentage_data)
+
+        if percentage_df.empty:
+            print(f"No data available for framework: {framework}. Skipping plot generation.")
+            continue
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        sns.set_style("ticks")
+
+        sns.barplot(
+            data = percentage_df,
+            x = "Map",
+            y = "Percentage",
+            dodge = True,
+            errorbar = None,
+            ax = ax
+        )
+
+        ax.set_title(f"{framework}: % Valid Scenarios", fontsize = 14, pad = 15)
+        ax.set_xlabel("Map")
+        ax.set_ylabel("% Scenarios")
+        ax.set_ylim(0, 100)
+
+        for container in ax.containers:
+            labels = [
+                f"{bar.get_height():.1f}%".rstrip("0").rstrip(".")
+                if bar.get_height() > 0
+                else ""
+                for bar in container
+            ]
+
+            ax.bar_label(
+                container,
+                labels = labels,
+                padding = 3,
+                fontsize = 9
+            )
+
+        sns.despine()
+
+        plt.tight_layout()
+
+        fig.savefig(os.path.join(output_folder_path, f"{framework}_valid_scenarios_comparison.png"), dpi = 500, bbox_inches = "tight")
+
+        plt.close(fig)
+        
+def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_folder_path: str):
+    """
+    Generates the comparison plots between Evita and DoppelTest for the number of agents in the scenarios
+    """
+
+    all_valid_data = []
+            
+    for map_name, map_data in valid_data_map.items():
+        for framework, file_path in map_data.items():
+            data = load_json_data(file_path)
+
+            for _, val in data.items():
+                all_valid_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), "Valid": val, "Framework": framework})
+
+    # Create DataFrame with the collected data
+    valid_df = pd.DataFrame(all_valid_data)
+    frameworks = valid_df["Framework"].unique()
+    summed_valid = {}
+    for map_name in valid_data_map.keys():
+        summed_valid[map_name] = {}
+        for framework in frameworks:
+            summed_valid[map_name][framework] = valid_df[(valid_df["Framework"] == framework) & (valid_df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name))]["Valid"].sum()
+
+    all_data = {}
+    statistics = {}
+    
+    # Iterate over each map and aggregated metric data paths lists
+    for map_name, map_data in vehicles_data_map.items():
+        statistics[map_name] = {}
+
+        for framework, file_path in map_data.items():
+            vehicle_count_list = []
+
+            with open(file_path, "r") as f:
+                data = json.load(f)
+
+            for _, val in data.items():
+                vehicle_count_list.extend(val)
+
+            statistics[map_name][framework] = {
+                "Mean": mean(vehicle_count_list),
+                "Median": median(vehicle_count_list)
+            }
+
+            all_data[framework] = dict(Counter(vehicle_count_list))
+
+        percentage_data = []
+
+        for framework in frameworks:
+            # Skip frameworks that don't have vehicle data
+            if framework not in all_data:
+                continue
+
+            scenarios_count = all_data[framework]
+
+            total_valid = summed_valid[map_name][framework]
+
+            # Fallback if generated count is unavailable
+            if total_valid == 0:
+                total_valid = sum(scenarios_count.values())
+
+            for n in sorted(scenarios_count.keys()):
+                # Ignore scenarios with fewer than 2 agents
+                if n < 2 or n > 8:
+                    continue
+                
+                percentage = (scenarios_count[n] / total_valid) * 100
+
+                percentage_data.append({
+                    "Agents": n,
+                    "Framework": framework,
+                    "Percentage": percentage
+                })
+
+        percentage_df = pd.DataFrame(percentage_data)
+
+        if percentage_df.empty:
+            print(f"No data available for map: {map_name}. Skipping plot generation.")
+            continue
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        sns.set_style("ticks")
+
+        sns.barplot(
+            data = percentage_df,
+            x = "Agents",
+            y = "Percentage",
+            hue = "Framework",
+            dodge = True,
+            errorbar = None,
+            ax = ax
+        )
+
+        ax.set_title(map_name, fontsize = 14, pad = 15)
+        ax.set_xlabel("# Agents")
+        ax.set_ylabel("% Scenarios")
+
+        # Make sure all agent counts are shown
+        agent_counts = sorted(percentage_df["Agents"].unique())
+        ax.set_xticks(range(len(agent_counts)))
+        ax.set_xticklabels(agent_counts)
+
+        for container in ax.containers:
+            labels = [
+                f"{bar.get_height():.1f}%".rstrip("0").rstrip(".")
+                if bar.get_height() > 0
+                else ""
+                for bar in container
+            ]
+
+            ax.bar_label(
+                container,
+                labels = labels,
+                padding = 3,
+                fontsize = 9
+            )
+
+        sns.despine()
+
+        ax.legend(title = "Framework", loc = "best")
+
+        plt.tight_layout()
+
+        fig.savefig(os.path.join(output_folder_path, f"{map_name}_scenario_vehicles_comparison.png"), dpi = 500, bbox_inches = "tight")
+
+        plt.close(fig)
+
+    vehicle_number_statistics_file_path = os.path.join(output_folder_path, "vehicle_number_statistics.json")
+    with open(vehicle_number_statistics_file_path, "w") as f:
+        json.dump(statistics, f, indent = 4)
+
+def initialize_effect_size(experiments_folder_paths: list, experiments_labels: list, effect_size_columns: dict, additional_columns: dict) -> tuple:
+    """
+    Initializes the effect size data dictionary with the required structure
+    """
+    effect_size_results = {}
+    effect_size_data = {}
+    maps_folders = None
+
+    for experiment_folder_path in experiments_folder_paths:
+        maps = set([f for f in os.listdir(experiment_folder_path) if os.path.isdir(os.path.join(experiment_folder_path, f)) and f != "interactions_collisions_analysis"])
+
+        if maps_folders is None:
+            maps_folders = maps
+        else:
+            maps_folders &= maps
+
+    for effect_size_column in effect_size_columns.keys():
+        effect_size_results[effect_size_column] = {}
+        effect_size_data[effect_size_column] = {}
+        for map_folder in maps_folders:
+            effect_size_results[effect_size_column][map_folder] = None
+            effect_size_data[effect_size_column][map_folder] = {}
+            for experiment_label in experiments_labels:
+                effect_size_data[effect_size_column][map_folder][experiment_label] = None
+
+    for additional_column in additional_columns.keys():
+        effect_size_data[additional_column] = {}
+        for map_folder in maps_folders:
+            effect_size_data[additional_column][map_folder] = {}
+            for experiment_label in experiments_labels:
+                effect_size_data[additional_column][map_folder][experiment_label] = None
+
+    return effect_size_results, effect_size_data, maps_folders
+
+def generate_comparison_plots(experiments_folder_paths: list, experiments_labels: list, output_folder_path: str):
+    """
+    Generates the comparison plots between Evita and DoppelTest for the Borregas Ave map and saves the results in the output folder
+    """
+    
+    # Initialize effect size dictionary
+    effect_size_columns = {"interactions": "total_interactions_count.json", "unique_interactions": "total_unique_interactions.json", "collisions": "total_collisions.json", "unique_collisions": "total_unique_collisions.json", "violations": "scenario_violations.json"}
+    additional_columns = {"generated": "total_generated_scenarios.json", "valid": "total_valid_scenarios.json", "invalid": "total_invalid_scenarios.json", "vehicles_number": "vehicles_number.json"}
+
+    effect_size_results, effect_size_data, maps_folders = initialize_effect_size(experiments_folder_paths, experiments_labels, effect_size_columns,  additional_columns)
+
+    # Compute interaction maps bins
+    long_bins, lat_bins = get_interaction_map_bins(N_BINS)
+
+    # Compute and plot interaction maps for both experiments and all maps
+    msg = "Processing interaction maps..."
+    print("=" * len(msg))
+    print(msg)
+    print("=" * len(msg))
+
+    for experiment_folder_path, experiment_label in tqdm(zip(experiments_folder_paths, experiments_labels), desc = "Processing experiments"):
+        tqdm.write(f"Processing experiment folder: {experiment_folder_path}")
+        for map_folder in tqdm(maps_folders, desc = "Processing maps", leave = False):
+            tqdm.write(f"Processing map folder: {map_folder}")
+            experiment_analysis_folder_path = os.path.join(experiment_folder_path, map_folder, "experiments_analysis")
+            compute_interaction_maps(experiment_analysis_folder_path, long_bins, lat_bins)
+
+            for effect_size_column in (effect_size_columns | additional_columns):
+                if effect_size_column in additional_columns.keys():
+                    effect_size_file_path = os.path.join(experiment_folder_path, map_folder, "experiments_analysis", additional_columns[effect_size_column])
+                else:
+                    effect_size_file_path = os.path.join(experiment_folder_path, map_folder, "experiments_analysis", effect_size_columns[effect_size_column])
+    
+                if os.path.exists(effect_size_file_path):
+                    effect_size_data[effect_size_column][map_folder][experiment_label] = (effect_size_file_path)
+                else:
+                    print(f"Warning: {effect_size_column} file not found for experiment '{experiment_label}' in map '{map_folder}'. Expected at: {effect_size_file_path}")
+                
+    print("Generated interactions maps plot")
+
+    for effect_size_column in effect_size_columns.keys():
+        files_list = effect_size_data[effect_size_column]
+
+        if effect_size_column == "violations":
+            effect_size_list = violations_plots(files_list, output_folder_path)
+        else:
+            output_path = os.path.join(output_folder_path, f"{effect_size_column}_comparison.png")
+            effect_size_list = interactions_collisions_plots(files_list, output_path)
+
+        print(f"Generated {effect_size_column} comparison plot")
+
+        for map_folder in effect_size_list.keys():
+            effect_size_results[effect_size_column][map_folder] = effect_size_list[map_folder]
+
+
+    # ========== PLOT GENERATION STATISTICS =========
+    data = {
+        "generated": effect_size_data["generated"],
+        "valid": effect_size_data["valid"],
+        "invalid": effect_size_data["invalid"]
+    }
+    
+    effect_size_list = generate_statistics_plots(data, experiments_labels[0], output_folder_path)
+    effect_size_results["generation_statistics"] = effect_size_list
+    generate_percentage_valid_scenarios_plot(effect_size_data["valid"], effect_size_data["generated"], output_folder_path)
+
+    print("Generated generation statistics comparison plots")
+
+    # ========== PLOT AGENTS NUMBER =========
+    agents_number_plots(effect_size_data["vehicles_number"], effect_size_data["valid"], output_folder_path)
+
+    print("Generated agents number comparison plots")
+
+    effect_size_data_file_path = os.path.join(output_folder_path, "effect_size_data.json")
+    with open(effect_size_data_file_path, "w") as f:
+        json.dump(effect_size_results, f, indent = 4)
+
 if __name__ == "__main__":
-    # Check if the correct number of arguments is provided
-    if len(sys.argv) != 4:
-        print("Usage: python generate_plots.py <evita_experiments_folder_path> <doppeltest_experiments_folder_path> <output_folder_path>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description = "Generate comparison plots for multiple experiments.")
 
-    evita_borregas_folder_path = sys.argv[1]
-    doppeltest_borregas_folder_path = sys.argv[2]
-    output_folder_path = sys.argv[3]
+    parser.add_argument(
+        "--experiments",
+        nargs = "+",
+        required = True,
+        help = "Paths to the experiment folders."
+    )
 
-    # Create the output folder
-    os.makedirs(output_folder_path, exist_ok = True)
+    parser.add_argument(
+        "--labels",
+        nargs = "+",
+        required = True,
+        help = "Labels corresponding to each experiment."
+    )
 
-    generate_comparison_plots(evita_borregas_folder_path, doppeltest_borregas_folder_path, output_folder_path)
+    parser.add_argument(
+        "--output",
+        required = True,
+        help = "Output folder path."
+    )
+
+    args = parser.parse_args()
+
+    if len(args.experiments) != len(args.labels):
+        parser.error("The number of experiment folder paths must match the number of experiment labels.")
+
+    os.makedirs(args.output, exist_ok = True)
+
+    generate_comparison_plots(args.experiments, args.labels, args.output)

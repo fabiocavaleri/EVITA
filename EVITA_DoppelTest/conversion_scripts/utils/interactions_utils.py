@@ -664,7 +664,12 @@ def augment_with_collisions(executed_scenario: Scenario, scenario_collisions: pd
                 collided_agent, _ = min(distances, key = lambda x: x[1])
 
         # Compute collision metrics and extend original DataFrame row
-        row["ria"], row["riv"], row["impact_position"] = compute_collision_features(collision_timestep, agent, collided_agent)
+        try:
+            # Compute collision criticality features
+            row["ria"], row["riv"], row["impact_position"] = compute_collision_features(collision_timestep, agent, collided_agent)
+        except Exception as e:
+            row["ria"], row["riv"], row["impact_position"] = None, None, None
+
         if pd.notna(row["impact_position"]):
             extended_collisions_rows.append(row)
 
