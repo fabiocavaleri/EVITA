@@ -38,6 +38,7 @@ def backup_debug(_output_folder, _debug_folder, _scenario, _logger):
     
     execution_folder_name = str(_scenario.generation_id).rjust(5, '0')
     execution_folder = os.path.join(_output_folder, execution_folder_name)
+    
     if os.path.exists(execution_folder):
         os.makedirs(_debug_folder, exist_ok=True)
         shutil.move(execution_folder, _debug_folder)

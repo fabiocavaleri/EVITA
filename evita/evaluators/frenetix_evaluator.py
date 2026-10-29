@@ -17,7 +17,7 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
     """
     This class is responsible for evaluating the simulation using the already implemented metrics, then augment the result with some additional metrics
     """
-    def __init__(self, output_folder:str, **kwargs) -> None:           
+    def __init__(self, output_folder: str, **kwargs) -> None:           
         if sys.platform == "darwin":
             os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     

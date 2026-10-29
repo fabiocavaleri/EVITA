@@ -4,6 +4,9 @@ sys.path.append("../EVITA_DoppelTest")  # Add the path to the EVITA_DoppelTest p
 import logging
 import os
 import csv
+import argparse
+import shutil
+import enlighten
 from pymoo.algorithms.moo.nsga2 import NSGA2
 
 import random
@@ -23,117 +26,157 @@ if __name__ == '__main__':
     This is the main entry point for the NSGAII Search without a generator
     It will generate scenarios by applying mutation and crossover operators to the seed scenario, and evaluate them using the given evaluation pipeline
     The generated scenarios will be stored in the output folder, together with metadata and performance metrics
-    """
-    # Get the debug flag from the environment variable, default to False if not set or if there is an error
-    debug = False
-    try:
-        debug = bool(os.getenv("EVITA_DEBUG", False))
-    except Exception:
-        pass    
+    """  
+    parser = argparse.ArgumentParser(description = "Run NSGAII Search without a generator.")
+
+    # Required arguments
+    parser.add_argument(
+        "--population-size",
+        type = int,
+        required = True,
+        help = "Number of scenarios to generate in each generation."
+    )
+    parser.add_argument(
+        "--time-budget",
+        type = float,
+        required = True,
+        help = "Maximum generation time in minutes."
+    )
+    parser.add_argument(
+        "--scenario-seed-file",
+        type = str,
+        required = True,
+        help = "Path to the CommonRoad scenario seed file."
+    )
+
+    # Optional arguments
+    parser.add_argument(
+        "--output-folder-name",
+        type = str,
+        default = None,
+        help = "Output folder name. Defaults to an automatically generated name."
+    )
+    parser.add_argument(
+        "--seed",
+        type = int,
+        default = None,
+        help = "Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--threshold",
+        type = float,
+        default = 1.0,
+        help = "Evaluation threshold (default: 1.0)."
+    )
+    parser.add_argument(
+        "--n-bins",
+        type = int,
+        default = None,
+        help = "Number of bins (default: None)."
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type = int,
+        default = 60,
+        help = "Checkpoint every N minutes (default: 60)."
+    )
+    parser.add_argument(
+        "--force-max-duration",
+        type = int,
+        default = None,
+        help = "Force the goal time interval of every planning problem to [0, N] (as `evita run --force-max-duration`)."
+    )
+    parser.add_argument(
+        "--debug",
+        action = "store_true",
+        help = "Enable debug logging."
+    )
+
+    args = parser.parse_args()
+
+    # Set the random seed for reproducibility, if provided
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
 
     # Initialize the main logger
-    initialize_main_logger(debug = debug)
+    initialize_main_logger(debug = args.debug)
     logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
-    
-    # Get the parameters from the command line arguments
-    population_size = int(sys.argv[1]) # number of scenarios to generate in each generation
-    max_time_minutes = float(sys.argv[2]) # maximum generation time in minutes
-    commonroad_scenario_seed_file = sys.argv[3] # path to the commonroad scenario seed file, which will be used as the base scenario for generation
-    # Optional output folder name, if not provided, it will be generated based on the timestamp and scenario generator configuration
-    if len(sys.argv) > 4:
-        output_folder_name = sys.argv[4]
-    else:
-        output_folder_name = None
-
-    if len(sys.argv) > 5:
-        seed = int(sys.argv[5])
-
-        random.seed(seed)
-        np.random.seed(seed)
-
-    if len(sys.argv) > 6:
-        threshold = float(sys.argv[6])
-    else:
-        threshold = 1.0
-
-    if len(sys.argv) > 7:
-        n_bins = int(sys.argv[7])
-    else:
-        n_bins = None
-
+    logger.info(30 * "=" + " Start EVITA " + 30 * "=")
 
     # Load the scenario object from the seed file, and leave only the lanelet network
-    base_scenario, base_planning_problem_set = scenario_generation_utils.get_base_scenario_from_file(commonroad_scenario_seed_file, remove_obstacles = True, remove_planning_problems = True)
+    base_scenario, base_planning_problem_set = scenario_generation_utils.get_base_scenario_from_file(args.scenario_seed_file, remove_obstacles = True, remove_planning_problems = True)
 
     # Initialize the scenario generator configuration
     scenario_generator_configuration = ScenarioGeneratorConfig()
 
     driving_agent_name = "frenetix"
 
+    progress_bar_manager = enlighten.get_manager()
+
+    # By default checkpoint is every 60 minutes after the population evaluation
+    termination_criterion = CustomTimeTermination(args.time_budget, checkpoint_every = args.checkpoint_every, progress_bar_manager = progress_bar_manager)
+
     # Initialize the NSGAII algorithm ti generate scenario and the mutation and crossover operators
-    sampling = ScenarioSampling(base_scenario, base_planning_problem_set, scenario_generator_configuration)
-    mutation = ScenarioMutation(commonroad_scenario_seed_file)
-    crossover = ScenarioCrossover()
-    algorithm = NSGA2(pop_size = population_size, sampling = sampling, mutation = mutation,
+    sampling = ScenarioSampling(base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion)
+    mutation = ScenarioMutation(args.scenario_seed_file, scenario_generator_configuration, termination_criterion)
+    crossover = ScenarioCrossover(scenario_generator_configuration, termination_criterion)
+    algorithm = NSGA2(pop_size = args.population_size,
+                      sampling = sampling,
+                      mutation = mutation,
                       crossover = crossover,
                       eliminate_duplicates = ScenarioDuplicateElimination())
-
     
-    # By default checkpoint is every 60 minutes after the population evaluation
-    termination_criterion = CustomTimeTermination(max_time_minutes)
-    
-    problem = NSGAIIproblem(commonroad_scenario_seed_file, driving_agent_name, population_size, termination_criterion, threshold, n_bins, output_folder_name = output_folder_name)
+    problem = NSGAIIproblem(args.scenario_seed_file,
+                            driving_agent_name,
+                            args.population_size,
+                            termination_criterion,
+                            args.threshold,
+                            args.n_bins,
+                            output_folder_name = args.output_folder_name,
+                            debug = args.debug,
+                            force_max_duration = args.force_max_duration
+                        )
     termination_criterion.problem_ref = problem
 
-    algorithm.setup(problem, termination = termination_criterion, save_history = True, verbose = True)
-
-    algorithm.run()
-    result = algorithm.result()
-
-    termination_criterion.update_elapsed_time()
-    total_generation_time = termination_criterion.elapsed_time_seconds
-
-    logger.info(f"Execution of {problem.output_folder} is over ")
+    # Copy the base scenario file in the output folder
+    shutil.copyfile(args.scenario_seed_file, os.path.join(problem.output_folder, os.path.basename(args.scenario_seed_file)))
     
     # Generate metadafile
     metadata_file = os.path.join(problem.output_folder, "metadata.csv")
     with open(metadata_file, "w", newline = "") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
         csv_writer.writerow(["generator", "scenario_name", "time_budget", "timestamp_id"])
-        csv_writer.writerow([f"{problem.scenario_generator_module}.{problem.scenario_generator_class}", str(base_scenario.scenario_id), str(max_time_minutes * 60), str(problem.timestamp_id)])
-    
-    # Log the number of valid and invalid scenarios generated, as well as the total generation time, to a performance file in the output folder
-    all_scenarios = problem.valid_scenarios + problem.invalid_scenarios
-    valid_scenarios = problem.valid_scenarios
-    invalid_scenarios = problem.invalid_scenarios
+        csv_writer.writerow([f"{problem.scenario_generator_module}.{problem.scenario_generator_class}", str(base_scenario.scenario_id), str(args.time_budget * 60), str(problem.timestamp_id)])
 
-    # Log performance metrics right away
+    algorithm.setup(problem, termination = termination_criterion, save_history = False, verbose = True, seed = args.seed)
+
+    # Start the time budget
+    termination_criterion.start()
+
+    try:
+        algorithm.run()
+    finally:
+        # Close the progress bar of the last generation
+        if problem.generation_bar is not None:
+            problem.generation_bar.close(clear = True)
+            problem.generation_bar = None
+ 
+        # Final refresh of the main bar, then restore the terminal
+        termination_criterion.update_main_progress_bar()
+        progress_bar_manager.stop()
+
+    logger.info(f"Execution of {problem.output_folder} is over ")
+    
+    
+    # Log performance metrics
     logger.info("Generation Performance Metrics")
     performance_file = os.path.join(problem.output_folder, "performance.csv")
     with open(performance_file, "w", newline = "") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
         csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"])
-        csv_writer.writerow(
-            [str(all_scenarios), str(valid_scenarios), str(invalid_scenarios), str(total_generation_time)])
+        csv_writer.writerow([str(termination_criterion.all_scenarios), str(termination_criterion.valid_scenarios), str(termination_criterion.invalid_scenarios), str(termination_criterion.total_generation_time)])
+    logger.info("Saved Performance Metrics")
 
     # Now analysize the data collected so far and output to the scenario folder
-    # generate_report(problem.output_folder)
-
-    logger.info("AFTER performance.csv")
-
-    import threading
-    import os
-
-    logger.info("ABOUT TO EXIT")
-    logger.info(f"PID: {os.getpid()}")
-    logger.info(f"Active threads: {threading.enumerate()}")
-
-    for thread in threading.enumerate():
-        logger.info(
-            f"Thread: name={thread.name}, "
-            f"daemon={thread.daemon}, "
-            f"alive={thread.is_alive()}"
-        )
-
-    logger.info("MAIN FUNCTION FINISHED")
-    sys.exit(0)
+    generate_report(problem.output_folder)

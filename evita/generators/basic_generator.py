@@ -32,8 +32,7 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
         # Check that the seed file and fitness function are provided
         assert commonroad_scenario_seed_file, "EA 1+1 Scenario Generation requires a Seed File!"
         assert "fitness" in kwargs, "EA 1+1 Scenario Generation requires a Fitness Function!"
-        assert issubclass(type(kwargs["fitness"]), AbstractFitnessFunction), \
-            f"EA 1+1 Fitness Function an instance of {AbstractFitnessFunction.__name__}, but got {type(kwargs['fitness'])}"
+        assert issubclass(type(kwargs["fitness"]), AbstractFitnessFunction), f"EA 1+1 Fitness Function an instance of {AbstractFitnessFunction.__name__}, but got {type(kwargs['fitness'])}"
 
         # Get the logger
         self.logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)        
@@ -45,7 +44,7 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
         self.logger.info(f"Using fitness function {self.fitness}")
 
         # Load the scenario object from the seed file, and leave only the lanelet network
-        self.base_scenario, self.base_planning_problem_set = scenario_generation_utils.get_base_scenario_from_file(commonroad_scenario_seed_file, remove_obstacles=True, remove_planning_problems=True)
+        self.base_scenario, self.base_planning_problem_set = scenario_generation_utils.get_base_scenario_from_file(commonroad_scenario_seed_file, remove_obstacles = True, remove_planning_problems = True)
         
         # Initialize the scenario generator configuration
         self.scenario_generator_configuration: ScenarioGeneratorConfig
@@ -54,6 +53,7 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
         # Initialize the generation counter, the best individual and its fitness value
         self.generation = 0
         self.best_individual: Tuple[Scenario, PlanningProblemSet] = None
+
         # Maximization problem. We start we a very low fitness value
         self.best_fitness_value = float('-inf')
 
@@ -71,8 +71,9 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
         """
         Return new scenarios (in CommonRoad) format
         """
-        if self.best_individual:
-            # Mutate the best individual
+        # If we have a best individual, we mutate it to generate a new individual.
+        # Otherwise, we generate a new random individual
+        if self.best_individual is not None:
             scenario, planning_problem_set = self._mutate(*self.best_individual)
         else: 
             # Generate the initial individual
@@ -92,7 +93,9 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
         planning_problem_set = deepcopy(self.base_planning_problem_set)
 
         # Introduce a random number of planning problems
-        for _ in range(0, random.randint(self.scenario_generator_configuration.min_amount_pp, self.scenario_generator_configuration.max_amount_pp)):
+        num_planning_problems = random.randint(self.scenario_generator_configuration.min_amount_pp, self.scenario_generator_configuration.max_amount_pp)
+
+        for _ in range(num_planning_problems):
             planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, scenario, planning_problem_set)
 
         return scenario, planning_problem_set
@@ -111,24 +114,23 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
             # Iterate over the mutation operators and apply them with a certain probability
             for planning_problem_mutation_operator in self.planning_problem_mutation_operators:
                 if random.random() <= 1 / len(self.planning_problem_mutation_operators):
-                    print(f"Mutating {mutated_planning_problem} wiht {planning_problem_mutation_operator.__name__}")
+                    print(f"Mutating {mutated_planning_problem} with {planning_problem_mutation_operator.__name__}")
                     mutated_planning_problem = planning_problem_mutation_operator(self.scenario_generator_configuration, mutated_planning_problem, _scenario)
             
             # Update the planning problem set with the mutated planning problem
             _planning_problem_set.planning_problem_dict[key] = mutated_planning_problem
+             
+        # Possibly remove an existing planning problem
+        if len(_planning_problem_set.planning_problem_dict) > self.scenario_generator_configuration.min_amount_pp and random.random() and \
+              random.random() <= self.remove_random_planning_problem_prob:
+             print(f"Mutating {mutated_planning_problem} with {self.remove_random_planning_problem.__name__}")
+             _planning_problem_set = self.remove_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
 
         # Possibly add a new planning problem
         if len(_planning_problem_set.planning_problem_dict) < self.scenario_generator_configuration.max_amount_pp and \
             random.random() <= self.add_random_planning_problem_prob:
-             print(f"Mutating {mutated_planning_problem} wiht {self.add_random_planning_problem.__name__}")
+             print(f"Mutating {mutated_planning_problem} with {self.add_random_planning_problem.__name__}")
              _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
-             
-        # Possibly remove an existing planning problem
-        # NOTE: There's the risk of removing the one we just added
-        if len(_planning_problem_set.planning_problem_dict) > self.scenario_generator_configuration.min_amount_pp and random.random() and \
-              random.random() <= self.remove_random_planning_problem_prob:
-             print(f"Mutating {mutated_planning_problem} wiht {self.remove_random_planning_problem.__name__}")
-             _planning_problem_set = self.remove_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
         
         return _scenario, _planning_problem_set
 
@@ -136,14 +138,13 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
         """
         This algorithm expects only one individual to evaluate
         """
-
         # Extract the scenario, planning problem set, agent data and evaluation data from the simulation data
         simulation_data = list_of_simulation_data[0]
         scenario, planning_problem_set = simulation_data["individual"]
         
         if scenario.is_valid:
             # Increment generation count only for valid individuals                
-            self.generation = 1
+            self.generation += 1
 
             # Extract data about agents and metrics
             agent_data = simulation_data["agent-data"]
@@ -175,7 +176,7 @@ class EAOnePlusOneGenerator_MaxInteractions(AbstractScenarioGenerator):
 
         # Initialize the generator with the given fitness function
         self.wrapped_generator: AbstractScenarioGenerator
-        self.wrapped_generator = EAOnePlusOneGenerator(commonroad_scenario_seed_file=commonroad_scenario_seed_file, fitness = fitness)
+        self.wrapped_generator = EAOnePlusOneGenerator(commonroad_scenario_seed_file = commonroad_scenario_seed_file, fitness = fitness, **kwargs)
 
     def generate(self, **kwargs) -> List:
         return self.wrapped_generator.generate()
@@ -197,7 +198,7 @@ class EAOnePlusOneGenerator_MaxDanger(AbstractScenarioGenerator):
 
         # Initialize the generator with the given fitness function
         self.wrapped_generator: AbstractScenarioGenerator
-        self.wrapped_generator = EAOnePlusOneGenerator(commonroad_scenario_seed_file=commonroad_scenario_seed_file, fitness = fitness)
+        self.wrapped_generator = EAOnePlusOneGenerator(commonroad_scenario_seed_file=commonroad_scenario_seed_file, fitness = fitness, **kwargs)
 
     def generate(self, **kwargs) -> List:
         return self.wrapped_generator.generate()

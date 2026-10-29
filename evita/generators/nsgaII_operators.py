@@ -1,5 +1,8 @@
 import os
 import random
+import logging
+import contextlib
+import enlighten
 from copy import deepcopy
 
 import time
@@ -11,6 +14,7 @@ from pymoo.core.sampling import Sampling
 from pymoo.core.termination import Termination
 
 from evita.config import ValidationConfig, ScenarioGeneratorConfig
+from evita.utils import Budget, EVITA_MAIN_LOGGER_NAME
 from evita.generators import scenario_mutation
 from evita.validator import ScenarioValidator, EVITAScenarioValidator
 from evita.generators import utils as scenario_generation_utils
@@ -19,12 +23,13 @@ import matplotlib.pyplot as plt
 from commonroad.planning.planning_problem import PlanningProblemSet
 from conversion_scripts.utils.conversion_utils import generate_traffic_lights
 
+module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
 class ScenarioSampling(Sampling):
     """
     Sampling operator to generate random scenarios and planning problem sets
     """
-    def __init__(self, base_scenario, base_planning_problem_set, scenario_generator_configuration):
+    def __init__(self, base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion):
         """
         Initialize the ScenarioSampling operator with:
         - Scenario
@@ -43,18 +48,36 @@ class ScenarioSampling(Sampling):
 
         self.scenario_counter = 0
 
+        self.termination_criterion = termination_criterion
+        self.logger = module_logger
+
     def _do(self, problem, n_samples, **kwargs):
         """
         Generate `n_samples` random scenarios and planning problem sets
         """
         X = np.full((n_samples, 2), None, dtype = object)
 
-        for i in range(n_samples):
-            individual = self._generate_random_individual()
-            X[i, 0] = individual[0]
-            X[i, 1] = individual[1]
+        generation_bar = self.termination_criterion.progress_bar_manager.counter(total = n_samples, desc = "Scenario Generation", unit = "scenarios", color = "green", leave = False)
+
+        self.logger.info(" ====== Generating the Initial Population ====== ")
+
+        with self.termination_criterion.generating():
+            for i in range(n_samples):
+                X[i, 0], X[i, 1] = self._generate_random_individual()
+    
+                generation_bar.update()
+                self.termination_criterion.update_main_progress_bar()
+ 
+        generation_bar.close(clear = True)
             
         return X
+
+    def _is_valid(self, scenario, planning_problem_set) -> bool:
+        """
+        Check if the given scenario and planning problem set are valid using the scenario validator.
+        """
+        with self.termination_criterion.paused():
+            return self.scenario_validator.is_scenario_valid(scenario, planning_problem_set)[0]
 
     def _generate_random_individual(self):
         """
@@ -67,29 +90,29 @@ class ScenarioSampling(Sampling):
 
         # Loop until a valid scenario is generated or the target number of planning problems is below the minimum allowed
         while target_number_of_planning_problems >= self.scenario_generator_configuration.min_amount_pp:
-            print(f"Try to generate a scenario with {target_number_of_planning_problems}")
+            self.logger.debug(f"Try to generate a scenario with {target_number_of_planning_problems}")
             
             # Set a loop to manage generation retries in case of failure
-            for _ in range(0, self.scenario_validator_configuration.retry_generation):
+            for _ in range(self.scenario_validator_configuration.retry_generation):
                 try:
                     # Copy base scenario and planning problem
                     _scenario = deepcopy(self.base_scenario)
                     _planning_problem_set = deepcopy(self.base_planning_problem_set)
 
                     # Generate a random planning problem for the target number of AVs
-                    for _ in range(0, target_number_of_planning_problems):
+                    for _ in range(target_number_of_planning_problems):
                         _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
                     
                     # Check if scenario is valid with the generated planning problems
-                    if self.scenario_validator.is_scenario_valid(_scenario, _planning_problem_set)[0]:
+                    if self._is_valid(_scenario, _planning_problem_set):
                         self.scenario_counter += 1
                         
-                        print(f"Scenario {self.scenario_counter} generated with {target_number_of_planning_problems}")
+                        self.logger.debug(f"Scenario {self.scenario_counter} generated with {target_number_of_planning_problems}")
                         setattr(_scenario, "debug_id", self.scenario_counter)
 
                         return _scenario, _planning_problem_set
                 except Exception as exc:
-                    print(f"An exception occurred while generating the scenario. {exc}")
+                    self.logger.debug(f"An exception occurred while generating the scenario. {exc}")
                     pass
 
             # Update the target number of planning problems to generate
@@ -181,7 +204,7 @@ class ScenarioMutation(Mutation):
     """
     Mutation operator to mutate scenarios and planning problem sets
     """
-    def __init__(self, map_file_path: str):
+    def __init__(self, map_file_path: str, scenario_generator_configuration, termination_criterion):
         """
          Initialize the ScenarioMutation operator with:
         - Scenario generator configuration
@@ -189,20 +212,23 @@ class ScenarioMutation(Mutation):
         - Scenario mutation functions and their probabilities of application
         """
         super().__init__()
-        self.scenario_generator_configuration: ScenarioGeneratorConfig
-        self.scenario_generator_configuration = scenario_generation_utils.parse_scenario_generator_configuration_from_kwargs()
-        # Container of enabled mutation operators for this generator
-        self.planning_problem_mutation_operators = [scenario_mutation.mutate_initial_position,
-                                                    scenario_mutation.mutate_initial_velocity,
-                                                    scenario_mutation.mutate_goal_area_position]
+        self.scenario_generator_configuration = scenario_generator_configuration
+
+        self.planning_problem_mutation_operators = [scenario_mutation.mutate_initial_position, scenario_mutation.mutate_initial_velocity, scenario_mutation.mutate_goal_area_position]
+
         self.add_random_planning_problem = scenario_mutation.add_random_planning_problem
         self.add_random_planning_problem_prob = 0.3
+        
         self.remove_random_planning_problem = scenario_mutation.remove_random_planning_problem
         self.remove_random_planning_problem_prob = 0.3
+        
         self.scenario_validator_configuration = ValidationConfig()
         self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration)
 
         self.map_file_path = map_file_path
+
+        self.termination_criterion = termination_criterion
+        self.logger = module_logger
 
     def _do(self, problem, X, **kwargs):
         """
@@ -211,16 +237,14 @@ class ScenarioMutation(Mutation):
          After mutation, the validity of the scenario is checked and the mutated scenario is kept only if it's valid
          Otherwise, the original scenario is kept
         """
-        print(f"\n{'=' * 75} START SCENARIO MUTATION {'=' * 75}")
-
-        # Iterate over each individual (scenario, planning problem set)
-        for i in range(len(X)):
-            try:
+        with self.termination_criterion.generating():
+            # Iterate over each individual (scenario, planning problem set)
+            for i in range(len(X)):
                 # Copy the scenario and planning problem set to mutate them
                 _scenario = deepcopy(X[i, 0])
                 _planning_problem_set = deepcopy(X[i, 1])
 
-                print(f"\n{'-' * 25} Mutation of scenario {_scenario.generation_id} {'-' * 25}\n")
+                self.logger.debug(f"{'-' * 25} Mutation of scenario {_scenario.generation_id} {'-' * 25}")
 
                 # Does the scenario have the is_valid flag?
                 # If so, delete it
@@ -236,12 +260,7 @@ class ScenarioMutation(Mutation):
                         # Apply the mutation operator with a probability of 1 / number of mutation operators
                         if random.random() <= 1 / len(self.planning_problem_mutation_operators):
                             print(f"Mutating Planning Problem {mutated_planning_problem.planning_problem_id} with {planning_problem_mutation_operator.__name__}")
-                            if planning_problem_mutation_operator == scenario_mutation.mutate_evita_goal_area_position:
-                                mutated_planning_problem = planning_problem_mutation_operator(self.scenario_generator_configuration,
-                                                                                              mutated_planning_problem, _scenario, self.map_file_path)
-                            else:
-                                mutated_planning_problem = planning_problem_mutation_operator(self.scenario_generator_configuration,
-                                                                                              mutated_planning_problem, _scenario)
+                            mutated_planning_problem = planning_problem_mutation_operator(self.scenario_generator_configuration, mutated_planning_problem, _scenario)
 
                     # Save mutated planning problem
                     _planning_problem_set.planning_problem_dict[key] = mutated_planning_problem
@@ -253,46 +272,36 @@ class ScenarioMutation(Mutation):
                     for traffic_light_mutation_operator in self.traffic_lights_mutation_operators:
                         if random.random() <= 1 / len(self.traffic_lights_mutation_operators):
                             # Apply the mutation operator with a probability of 1 / number of mutation operators
-                            print(f"Mutating scenario {mutated_scenario.generation_id} with {traffic_light_mutation_operator.__name__}")
+                            self.logger.debug(f"Mutating scenario {getattr(mutated_scenario, 'generation_id', '?')} with {traffic_light_mutation_operator.__name__}")
                             mutated_scenario = traffic_light_mutation_operator(self.scenario_generator_configuration, _scenario, self.map_file_path)
 
                     _scenario = mutated_scenario
-
-                # Possibly add a new planning problem:
-                # - If we haven't reached the maximum amount of planning problems yet
-                # - With a certain probability to avoid always adding a planning problem at each mutation
-                if len(_planning_problem_set.planning_problem_dict) < self.scenario_generator_configuration.max_amount_pp and \
-                        random.random() <= self.add_random_planning_problem_prob:
-                    print(f"Mutating {mutated_planning_problem.planning_problem_id} with {self.add_random_planning_problem.__name__}")
-                    if isinstance(self, EVITAScenarioMutation):
-                        _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario,
-                                                                                  _planning_problem_set, self.map_file_path)
-                    else:
-                        _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario,
-                                                                                _planning_problem_set)
                     
                 # Possibly remove an existing planning problem - note there's the risk of removing the one we just added
                 # - If we haven't reached the minimum amount of planning problems yet
                 # - With a certain probability to avoid always removing a planning problem at each mutation
                 if len(_planning_problem_set.planning_problem_dict) > self.scenario_generator_configuration.min_amount_pp and \
                         random.random() <= self.remove_random_planning_problem_prob:
-                    print(f"Mutating {mutated_planning_problem.planning_problem_id} with {self.remove_random_planning_problem.__name__}")
-                    _planning_problem_set = self.remove_random_planning_problem(self.scenario_generator_configuration,
-                                                                                _scenario, _planning_problem_set)
+                    self.logger.debug(f"Mutating scenario with {self.remove_random_planning_problem.__name__}")
+                    _planning_problem_set = self.remove_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
+
+                # Possibly add a new planning problem:
+                # - If we haven't reached the maximum amount of planning problems yet
+                # - With a certain probability to avoid always adding a planning problem at each mutation
+                if len(_planning_problem_set.planning_problem_dict) < self.scenario_generator_configuration.max_amount_pp and \
+                        random.random() <= self.add_random_planning_problem_prob:
+                    self.logger.debug(f"Mutating scenario with {self.add_random_planning_problem.__name__}")
+                    _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
 
                 # Check mutated scenario validity
-                self.scenario_validator.validate(_scenario, _planning_problem_set)
+                with self.termination_criterion.paused():
+                    self.scenario_validator.validate(_scenario, _planning_problem_set)
 
                 if _scenario.is_valid:
                     X[i, 0] = _scenario
                     X[i, 1] = _planning_problem_set
                 else:
-                    print(f"Scenario {_scenario} is not valid!")
-            
-            except Exception as exc:
-                print(f"Exception while mutating individual. {exc}")
-                raise
-
+                    self.logger.debug(f"Mutated scenario is not valid: {getattr(_scenario, 'validation_message', '')}")
         return X
 
 class EVITAScenarioMutation(ScenarioMutation):
@@ -319,11 +328,16 @@ class ScenarioCrossover(Crossover):
     """
     Crossover operator to crossover scenarios and planning problem sets
     """
-    def __init__(self):
+    def __init__(self, scenario_generator_configuration, termination_criterion):
         # Define the crossover: number of parents and number of offsprings
         super().__init__(2, 2)
         self.scenario_validator_configuration = ValidationConfig()
         self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration)
+
+        self.scenario_generator_configuration = scenario_generator_configuration
+
+        self.termination_criterion = termination_criterion
+        self.logger = module_logger
 
     def _do(self, problem, X, **kwargs):
         # The input has the following shape (n_parents, n_matings, n_var)
@@ -333,57 +347,69 @@ class ScenarioCrossover(Crossover):
         # Because there the number of parents and offsprings are equal it keeps the shape of X
         Y = np.full_like(X, None, dtype=object)
 
-        for k in range(n_matings):
-            parent_1_scen, parent_2_scen, parent_1_planning_problem, parent_2_planning_problem = X[0, k, 0], X[1, k, 0], X[0, k, 1], X[1, k, 1]
+        with self.termination_criterion.generating():
+            for k in range(n_matings):
+                parent_1_scenarios, parent_2_scenarios = X[0, k, 0], X[1, k, 0]
+                parent_1_pps, parent_2_pps = X[0, k, 1], X[1, k, 1]
 
-            # Swap the scenarios objects
-            offspring_1_scen = deepcopy(parent_2_scen)
-            offspring_2_scen = deepcopy(parent_1_scen)
+                # Get the planning problems from both parents and find the shortest length
+                parent_1_planning_problems = list(parent_1_pps.planning_problem_dict.values())
+                parent_2_planning_problems = list(parent_2_pps.planning_problem_dict.values())
+                shortest = min(len(parent_1_planning_problems), len(parent_2_planning_problems))
 
-            # Get the min and max number of planning problems
-            len_parent_1_planning_problem = len(parent_1_planning_problem.planning_problem_dict.values())
-            len_parent_2_planning_problem = len(parent_2_planning_problem.planning_problem_dict.values())
-            min_planning_problem = min(len_parent_1_planning_problem, len_parent_2_planning_problem)
-            max_planning_problem = max(len_parent_1_planning_problem, len_parent_2_planning_problem)
+                # If the shortest length is at least 2, perform crossover by selecting a random cut index and combining the planning problems from both parents
+                if shortest >= 2:
+                    cut_index = random.randint(1, shortest - 1)
 
-            # Randomly choose a cut index between 0 and the minimum number of planning problems
-            cut_index = random.randint(0, min_planning_problem - 1)
-            
-            offspring_1_planning_problem = list()
-            offspring_2_planning_problem = list()
-            # Swap the first `cut_index` planning problems between the two sets
-            for i in range(cut_index):
-                offspring_1_planning_problem.append(list(parent_2_planning_problem._planning_problem_dict.values()).__getitem__(i))
-                offspring_2_planning_problem.append(list(parent_1_planning_problem._planning_problem_dict.values()).__getitem__(i))
-            # For the remaining planning problems, keep the ones from the parent with more planning problems
-            for i in range(cut_index, max_planning_problem):
-                if len_parent_2_planning_problem > i:
-                    offspring_1_planning_problem.append(list(parent_2_planning_problem._planning_problem_dict.values()).__getitem__(i))
-                if len_parent_1_planning_problem > i:
-                    offspring_2_planning_problem.append(list(parent_1_planning_problem._planning_problem_dict.values()).__getitem__(i))
+                    # Create the offspring planning problem sets by combining the planning problems from both parents
+                    offspring_1_planning_problems = parent_1_planning_problems[:cut_index] + parent_2_planning_problems[cut_index:]
+                    offspring_2_planning_problems = parent_2_planning_problems[:cut_index] + parent_1_planning_problems[cut_index:]
+                
+                    # Renumber the planning problems in the offspring to have unique IDs starting from the base ID
+                    base_id = self.scenario_generator_configuration.av_base_id
+                    offspring_1_planning_problems = self._renumber_planning_problems(offspring_1_planning_problems, base_id)
+                    offspring_2_planning_problems = self._renumber_planning_problems(offspring_2_planning_problems, base_id)
 
-            # Create the offspring planning problem sets
-            planningProblemSet_offspring_1 = PlanningProblemSet(offspring_1_planning_problem)
-            planningProblemSet_offspring_2 = PlanningProblemSet(offspring_2_planning_problem)
+                    # Create new PlanningProblemSet objects for the offspring planning problems
+                    offspring_1_scenarios = deepcopy(parent_1_scenarios)
+                    offspring_2_scenarios = deepcopy(parent_2_scenarios)
+                    planningProblemSet_offspring_1 = PlanningProblemSet(offspring_1_planning_problems)
+                    planningProblemSet_offspring_2 = PlanningProblemSet(offspring_2_planning_problems)
 
-            # Check the validity of the offspring scenarios and planning problem sets.
-            self.scenario_validator.validate_all([ (offspring_1_scen, planningProblemSet_offspring_1), (offspring_2_scen, planningProblemSet_offspring_2)])
+                    # Validate the offspring scenarios and planning problem sets
+                    with self.termination_criterion.paused():
+                        self.scenario_validator.validate_all([(offspring_1_scenarios, planningProblemSet_offspring_1), (offspring_2_scenarios, planningProblemSet_offspring_2)])
 
-            # If both offspring are valid, keep them. Otherwise, keep the parents.
-            if offspring_1_scen.is_valid and offspring_2_scen.is_valid:
-                # Return the children
-                Y[0, k, 0] = offspring_1_scen
-                Y[1, k, 0] = offspring_2_scen
-                Y[0, k, 1] = planningProblemSet_offspring_1
-                Y[1, k, 1] = planningProblemSet_offspring_2
-            else:
-                # Return the parents instead
-                Y[0, k, 0] = parent_1_scen
-                Y[1, k, 0] = parent_2_scen
-                Y[0, k, 1] = parent_1_planning_problem
-                Y[1, k, 1] = parent_2_planning_problem
+                    # If both offspring are valid, assign them to the output array Y
+                    if offspring_1_scenarios.is_valid and offspring_2_scenarios.is_valid:
+                        Y[0, k, 0] = offspring_1_scenarios
+                        Y[1, k, 0] = offspring_2_scenarios
+                        
+                        Y[0, k, 1] = planningProblemSet_offspring_1
+                        Y[1, k, 1] = planningProblemSet_offspring_2
+                        continue
+
+                # Otherwise (or if shortest < 2): return the parents
+                Y[0, k, 0] = parent_1_scenarios
+                Y[1, k, 0] = parent_2_scenarios
+                
+                Y[0, k, 1] = parent_1_pps
+                Y[1, k, 1] = parent_2_pps
                 
         return Y
+    
+    def _renumber_planning_problems(self, planning_problems, base_id: int) -> list:
+        """
+        Renumber the planning problems in the list to have unique IDs starting from base_id + 1
+        """
+        renumbered = []
+
+        for index, planning_problem in enumerate(planning_problems):
+            planning_problem_copy = deepcopy(planning_problem)
+            planning_problem_copy._planning_problem_id = base_id + 1 + index
+            renumbered.append(planning_problem_copy)
+        
+        return renumbered
 
 class EVITAScenarioCrossover(ScenarioCrossover):
     """
@@ -406,6 +432,7 @@ from ..data_analysis import generate_report
 import os
 import csv
 
+'''
 def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios:int, valid_scenarios:int, invalid_scenarios:int, total_generation_time:int, apollo: bool) -> None:
     """
     Link all the scenario folders generated so far + compute the results for the generation (aka csv files) to the checkpoint folder.
@@ -449,67 +476,190 @@ def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios:int, valid_
     # Generate the usual report in the checkpoint folder using whatever data is available at this point
     if not apollo:
         generate_report(output_folder, checkpoint_folder)
+'''
 
 class CustomTimeTermination(Termination):
     """
     Termination criterion based on a maximum time budget for the scenario generation
     It also manages the checkpointing of the generation process by creating a checkpoint every `checkpoint_every` minutes.
     """
-    def __init__(self, max_time_minutes: int, checkpoint_every = 60, apollo: bool = False) -> None:
+    def __init__(self, max_time_minutes: int, checkpoint_every: int, progress_bar_manager = None) -> None:
         super().__init__()
 
-        # Do a checkpoint every 60 minutes
-        self.checkpoint_every = checkpoint_every
-        
-        # Force this later! Circular dep, but cannot do otherwise
-        self.problem_ref = None
-        # Already completed checkpoints
+        self.budget = Budget(max_time_minutes * 60)
+ 
+        # Progress bars: one manager shared by all the bars, and the main bar (created by start())
+        if progress_bar_manager is not None:
+            self.progress_bar_manager = progress_bar_manager
+        else:
+            self.progress_bar_manager = enlighten.get_manager()
+
+        self.main_progress_bar = None
+ 
+        # Performance counters
+        self.all_scenarios = 0
+        self.valid_scenarios = 0
+        self.invalid_scenarios = 0
+        self.total_generation_time = 0.0
+ 
+        # Checkpoints (in seconds of elapsed budget time)
+        self.checkpoint_every_seconds = checkpoint_every * 60
         self.checkpoints = set()
+ 
+        # Bookkeeping for nested pauses and for excluding paused time from the generation time
+        self._pause_depth = 0
+        self._pause_started_at = None
+        self._paused_total = 0.0
+ 
+        # Kept for backward compatibility with existing callers
+        self.problem_ref = None
 
-        # This boolean value guides the type of files used to save checkpoints infos
-        self.apollo = apollo
-
-        self.max_time_seconds = max_time_minutes * 60
-        self.elapsed_time_seconds = 0.0
-        self.last_checkpoint = time.time()
-
-    def update_elapsed_time(self):
+    # ========================
+    # Time budget
+    # ========================
+ 
+    def is_started(self) -> bool:
+        return self.budget.get_start_time() is not None
+ 
+    def start(self) -> None:
         """
-        Update the elapsed time since the last checkpoint and update the last checkpoint time
+        Start the time budget and show the main progress bar.
         """
-        new_checkpoint = time.time()
-        self.elapsed_time_seconds = self.elapsed_time_seconds + (new_checkpoint - self.last_checkpoint)
-        self.last_checkpoint = new_checkpoint
+        if self.is_started():
+            return
 
-    def restart(self):
-        self.last_checkpoint = time.time()
+        self.budget.start()
+        self.main_progress_bar = self.progress_bar_manager.counter(total = int(self.budget.get_time_budget()), desc = "Time Budget", unit = "seconds", color = "red", leave = False)
+        self.update_main_progress_bar()
+ 
+    def is_over(self) -> bool:
+        return self.is_started() and self.budget.is_over()
+ 
+    def remaining_time(self) -> float:
+        if self.is_started():
+            return self.budget.get_remaining_real_time()
+        else: 
+            return self.budget.get_time_budget()
 
-    def _update(self, algorithm):
+    @contextlib.contextmanager
+    def paused(self):
         """
-         Check if the elapsed time has reached the maximum time budget for the generation
-         If so, return True to stop the generation
-         Otherwise, return False to continue the generation
+        Exclude the enclosed block from the time budget
         """
-        # checkpoint_id = int(self.elapsed_time_seconds / ( self.checkpoint_every * 60 ))
-        # if not self.apollo and checkpoint_id > 0 and checkpoint_id not in self.checkpoints:
-        #     try:
-        #         output_folder = self.problem_ref.output_folder
-        #         all_scenarios = self.problem_ref.valid_scenarios
-        #         valid_scenarios = self.problem_ref.valid_scenarios
-        #         invalid_scenarios = self.problem_ref.invalid_scenarios
-        #         self.update_elapsed_time()
-        #         total_generation_time = self.elapsed_time_seconds
+        # If this is the outermost pause, record the start time and pause the budget
+        outermost = (self._pause_depth == 0)
+        
+        if outermost:
+            self._pause_started_at = time.perf_counter()
+            if self.is_started():
+                self.budget.pause()
 
-        #         checkpoint(checkpoint_id, output_folder,
-        #                 all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, self.apollo)
-        #         self.checkpoints.add(checkpoint_id)
-        #     except Exception as e:
-        #         # TODO Remove this
-        #         print(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
-        #         raise e
+        self._pause_depth += 1
 
-            # budget.resume()
+        # Yield control to the enclosed block, and then resume the budget and update the paused time when exiting the block
+        try:
+            yield
+        finally:
+            self._pause_depth -= 1
 
+            # If this is the outermost pause, resume the budget and update the paused time
+            if outermost:
+                if self.is_started():
+                    self.budget.resume()
+                
+                self._paused_total += time.perf_counter() - self._pause_started_at
+                self._pause_started_at = None
+ 
+    @property
+    def max_time_seconds(self) -> float:
+        return self.budget.get_time_budget()
+ 
+    @property
+    def elapsed_time_seconds(self) -> float:
+        return self.budget.get_elapsed() if self.is_started() else 0.0
 
-        self.update_elapsed_time()
-        return self.elapsed_time_seconds/self.max_time_seconds
+    # ========================
+    # Monitoring
+    # ========================
+ 
+    @contextlib.contextmanager
+    def generating(self):
+        """
+        Account the enclosed block as scenario generation time
+        Time spent in paused blocks (e.g. validation) inside it is not counted.
+        """
+        wall_start, paused_start = time.perf_counter(), self._paused_total
+
+        # Yield control to the enclosed block, and then update the total generation time when exiting the block
+        try:
+            yield
+        finally:
+            self.total_generation_time += (time.perf_counter() - wall_start) - (self._paused_total - paused_start)
+            self.update_main_progress_bar()
+ 
+    def count(self, scenario) -> None:
+        """
+        Count a processed scenario
+        scenarios skipped because the budget was over are counted as valid
+        """
+        self.all_scenarios += 1
+
+        if getattr(scenario, "is_valid", False) or getattr(scenario, "validation_message", None) == "Timeout is over":
+            self.valid_scenarios += 1
+        else:
+            self.invalid_scenarios += 1
+ 
+    # ========================
+    # Progress bar
+    # ========================
+ 
+    def update_main_progress_bar(self) -> None:
+        """
+        Advance the main bar to the current elapsed (non-paused) budget time
+        """
+        if self.main_progress_bar is None:
+            return
+
+        target = min(self.budget.get_elapsed(), self.main_progress_bar.total)
+        delta = target - self.main_progress_bar.count
+        
+        if delta > 0:
+            self.main_progress_bar.update(delta)
+
+    # ========================
+    # pymoo interface
+    # ========================
+ 
+    def _update(self, algorithm) -> float:
+        """
+        Called by pymoo after each generation. Returns the fraction of the budget used: pymoo stops at 1.0
+        """
+        # Safety net, in case start() was not called before algorithm.run()
+        self.start()
+ 
+        self.update_main_progress_bar()
+        self._checkpoint_if_due(algorithm)
+ 
+        used = self.budget.get_time_budget() - self.budget.get_remaining_real_time()
+        return max(0.0, used / self.budget.get_time_budget())
+
+    def _checkpoint_if_due(self, algorithm) -> None:
+        """
+        Check if a checkpoint is due, and if so, create it
+        """
+        if not self.checkpoint_every_seconds or self.checkpoint_every_seconds <= 0:
+            return
+
+        checkpoint_id = int(self.budget.get_elapsed() / self.checkpoint_every_seconds)
+
+        if checkpoint_id > 0 and checkpoint_id not in self.checkpoints:
+            from evita.orchestrator import checkpoint
+ 
+            with self.paused():
+                try:
+                    checkpoint(checkpoint_id, algorithm.problem.output_folder, self.all_scenarios, self.valid_scenarios, self.invalid_scenarios, self.total_generation_time)
+                    self.checkpoints.add(checkpoint_id)
+                except Exception as e:
+                    module_logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
+                    raise e
+ 

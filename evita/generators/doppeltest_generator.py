@@ -145,7 +145,7 @@ def mut_scenario(ind: Scenario):
     else:
         ind.tc_section = mut_tc_section(ind.tc_section)
     
-    return ind
+    return ind, 
 
 # CROSSOVER OPERATOR
 

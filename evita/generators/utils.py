@@ -35,7 +35,6 @@ from ..config import ScenarioGeneratorConfig
 import logging
 from ..utils import EVITA_MAIN_LOGGER_NAME
 
-main_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
 
 def orientation_by_position(lanelet: Lanelet, position: np.array):
@@ -73,13 +72,15 @@ def get_random_init_state(config: ScenarioGeneratorConfig, lanelet: Lanelet) -> 
     # Extract a random velocity between min and max
     velocity = random.uniform(config.min_init_velocity, config.max_init_velocity)
 
+    # If the lanelet has no predecessor, it means that it is an entry lanelet.
+    # In this case, we need to make sure that the vehicle is not too close to the start of the lanelet
     min_idx = 0
     if not lanelet.predecessor:
-        # This is an entry lanelet, there's nothing before it. So we cannot pick the first centerpoints
-        # Otherwise the vehicle might not be entirely inside the road!
         distance = 0.0
+        
         # 2 is the minimum length to create a LineString
         min_idx = min_idx + 2
+        
         # Loop until we find a point that is at least 3 meters away from the lanelet start, to make sure the vehicle is entirely inside the road
         while distance < 3.0:
             try:
@@ -183,7 +184,7 @@ def parse_scenario_generator_configuration_from_kwargs(**kwargs) -> ScenarioGene
 
 def get_adjacent_lanelets(lanelet: Lanelet, ll_network: LaneletNetwork) -> List[Lanelet]:
     """
-    Recursively find adjacent lanelets with same drving direction
+    Recursively find adjacent lanelets with same driving direction
     """
     adjancet_lanelets = []
     processed_ids = [lanelet.lanelet_id]
@@ -192,6 +193,7 @@ def get_adjacent_lanelets(lanelet: Lanelet, ll_network: LaneletNetwork) -> List[
     # Loop until there are no more lanelets to process
     while len(backlog) != 0:
         the_lanelet = backlog.pop()
+        
         # Check left and right adjacent lanelets, if they exist, have the same driving direction and were not processed yet, add them to the list and to the backlog
         if the_lanelet.adj_left and the_lanelet.adj_left_same_direction and the_lanelet.adj_left not in processed_ids:
             the_left_lanelet = ll_network.find_lanelet_by_id(the_lanelet.adj_left)
@@ -214,29 +216,29 @@ def get_successor_lanelets(lanelet: Lanelet, ll_network: LaneletNetwork) -> List
     """
     full_lanelets = [lanelet]
     processed_ids = [lanelet.lanelet_id]
+
     # Loop until there are no more lanelets to process, i.e., until all the successor lanelets have been merged into the full_lanelet
     while _have_lanelets_successors(full_lanelets, processed_ids):
-        new_full_lls = []
-        for ll in full_lanelets:
-            if len(ll.successor) == 0:
-                new_full_lls.append(ll)
+        new_full_lanelets = []
+        for lanelet in full_lanelets:
+            if len(lanelet.successor) == 0:
+                new_full_lanelets.append(lanelet)
             else:
-                for succ_id in ll.successor:
-                    succ_ll = ll_network.find_lanelet_by_id(succ_id)
-                    full_lanelet = Lanelet.merge_lanelets(ll, succ_ll)
-                    new_full_lls.append(full_lanelet)
-                    processed_ids.append(succ_ll.lanelet_id)
+                for successor_id in lanelet.successor:
+                    successor_lanelet = ll_network.find_lanelet_by_id(successor_id)
+                    full_lanelet = Lanelet.merge_lanelets(lanelet, successor_lanelet)
+                    new_full_lanelets.append(full_lanelet)
+                    processed_ids.append(successor_lanelet.lanelet_id)
 
-        full_lanelets = new_full_lls
+        full_lanelets = new_full_lanelets
 
     return full_lanelets
 
-def _have_lanelets_successors(lanelets: List[Lanelet], visited_ll_ids: List[int]):
+def _have_lanelets_successors(lanelets: List[Lanelet], visited_lanelet_ids: List[int]):
     """
     Check if at least one of the lanelets has a successor that was not visited yet
     """
-    have_successors = any(len(ll.successor) != 0 and any(
-        ll_id not in visited_ll_ids for ll_id in ll.successor) for ll in lanelets)
+    have_successors = any(len(lanelet.successor) != 0 and any(lanelet_id not in visited_lanelet_ids for lanelet_id in lanelet.successor) for lanelet in lanelets)
     
     return have_successors
 
@@ -1196,16 +1198,13 @@ def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Tra
         
         raise exc
 
-def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, n_bins: int = None) -> pd.DataFrame:
+def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, n_bins) -> pd.DataFrame:
     """
-    Compute the interaction map, which is a 3x3 matrix that counts the number of interactions in each of the 9 possible combinations of longitudinal and lateral differences in the curvilinear space (s, d) between two consecutive planned trajectories that lead to an interaction
+    Compute the interaction map, which is a 2D histogram of the longitudinal and lateral differences between consecutive planned trajectories of agents that interacted with others
     The longitudinal and lateral differences are categorized into three classes: negative, zero, and positive, based on a threshold
     The resulting interaction map can be used to analyze the distribution of interactions in terms of their longitudinal and lateral characteristics
     """
-
     # Get the bins of the interaction map
-    module_logger.info(f"Computing interaction map with {n_bins} bins")
-    from evita.config import ScenarioGeneratorConfig
     scenario_generator_config = ScenarioGeneratorConfig()
 
     n_bins = scenario_generator_config.n_bins
@@ -1218,8 +1217,8 @@ def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, 
     lat_bins = np.linspace(-lane_width, lane_width, n_bins)
 
     # Include 0 - B[0]:B[9] - 10 and len(bins)
-    rows = len(long_bins) + 2 # 0 <, bins, len(bins) +1 or +2?
-    cols = len(lat_bins) + 2 # 0 <, bins, len(bins)
+    rows = len(long_bins) + 1
+    cols = len(lat_bins) + 1
 
     # Initialize the interaction map and the counters for the requirement violations
     interaction_map = np.zeros((rows, cols))
@@ -1231,58 +1230,14 @@ def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, 
         diff_long = row["diff_long"]
         diff_lat = row["diff_lat"]
 
+        if diff_long is None or diff_lat is None:
+            continue
+
         # Determine the bin indices for the longitudinal and lateral differences
         long_bin_index = np.digitize(diff_long, long_bins)
         lat_bin_index = np.digitize(diff_lat, lat_bins)
 
         # Increment the corresponding cell in the interaction map
         interaction_map[long_bin_index][lat_bin_index] += 1
-
-    """
-    interaction_map = np.zeros((3, 3))
-    
-    threshold_0 = 0.1
-    threshold_1 = 0.1
-
-    # List all the places where any interaction occurred
-    index_of_interactions = criticality_dataframe[criticality_dataframe["is_interacting"] == 1.0].index
-
-    # Iterate over all scenario agents
-    for agent in sorted(simulation.agents, key = lambda a: a.id):
-        # Find all the rows that belong to this agent
-        for t in sorted([i[1] for i in index_of_interactions if i[0] == agent.id]):
-            trajectory_at_time_t = trajectories.loc[(trajectories['vehicle_id'] == agent.id) & (trajectories['timestep'] == t), 'trajectory']
-            trajectory_at_time_t_1 = trajectories.loc[(trajectories['vehicle_id'] == agent.id) & (trajectories['timestep'] == (t + 1)), 'trajectory']
-
-            if len(trajectory_at_time_t) > 0 and len(trajectory_at_time_t_1) > 0:
-                trajectory_at_time_t = trajectory_at_time_t.values[0]
-                trajectory_at_time_t_1 = trajectory_at_time_t_1.values[0]
-            else:
-                module_logger.debug(f"Missing trajectory at time {t} for agent {agent.id}")
-                continue
-
-            # Compute interaction effect on the planned trajectory
-            try:
-                diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1)
-            except:
-                # If this fails, we cannot do much
-                diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1, use_relative_path = True)
-
-            # Categorize the differences into negative, zero, and positive based on the thresholds and update the interaction map
-            if diff_0 < -threshold_0:
-                index_0 = 0
-            elif diff_0 > threshold_0:
-                index_0 = 2
-            else:
-                index_0 = 1
-            if diff_1 < -threshold_1:
-                index_1 = 0
-            elif diff_1 > threshold_1:
-                index_1 = 2
-            else:
-                index_1 = 1
-
-            interaction_map[index_0][index_1] += 1
-    """
 
     return interaction_map

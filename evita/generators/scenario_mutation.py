@@ -2,6 +2,8 @@
 # Implementation of basic mutation operators. Those are building blocks that can be used to build more complex search operators
 import random
 import numpy as np
+import logging
+from typing import Tuple
 
 from copy import deepcopy
 from shapely.geometry import LineString
@@ -23,6 +25,10 @@ from commonroad.planning.planning_problem import PlanningProblem, PlanningProble
 
 from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import get_traffic_light_configuration, get_traffic_light_cycle, compute_map_elements_mapping
 
+from ..utils import EVITA_MAIN_LOGGER_NAME
+
+module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
+
 class EVITAPlanningProblem(PlanningProblem):
     """
     Custom class for EVITA planning problems, which includes the path of lanelet ids to reach the goal
@@ -33,28 +39,26 @@ class EVITAPlanningProblem(PlanningProblem):
 
 def mutate_initial_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario) -> PlanningProblem:
     """
-    Mutate the initial position of the given planning problem. Return a new planning problem
+    Mutate the initial position of the given planning problem.
+    Return a new planning problem
     """
     _planning_problem = deepcopy(planning_problem)
 
     # Get planning problem initial lanelet from starting position
     current_position = _planning_problem.initial_state.position
-    ll_network = scenario.lanelet_network
-    lanelets = ll_network.find_lanelet_by_position([current_position])
+    lanelet_network = scenario.lanelet_network
+    lanelets = lanelet_network.find_lanelet_by_position([current_position])
     
     # Get initial lanelet
     if lanelets and lanelets[0]:
-        lanelet = ll_network.find_lanelet_by_id(lanelets[0][0])
+        lanelet = lanelet_network.find_lanelet_by_id(lanelets[0][0])
     elif isinstance(_planning_problem, EVITAPlanningProblem):
-        lanelet = ll_network.find_lanelet_by_id(_planning_problem.path[0])
+        lanelet = lanelet_network.find_lanelet_by_id(_planning_problem.path[0])
     else:
-        raise ValueError(
-            f"Could not find lanelet for initial position "
-            f"{current_position} and planning problem type "
-            f"{type(_planning_problem).__name__}"
-        )
+        raise ValueError(f"Could not find lanelet for initial position {current_position} and planning problem type {type(_planning_problem).__name__}")
     
     center_line = LineString(lanelet.center_vertices)
+
     # Randomly sample a new position on the lanelet center line
     position_modifier = random.uniform(-config.max_position_modifier, config.max_position_modifier)
     new_position = center_line.interpolate(position_modifier)
@@ -74,47 +78,62 @@ def mutate_initial_velocity(config: ScenarioGeneratorConfig, planning_problem: P
 
     return _planning_problem
 
+def _routes_with_exit(start_lanelet: Lanelet, ll_network) -> List[Tuple[Lanelet, int]]:
+    """
+    All routes that can be driven forward from start_lanelet, each returned as (merged lanelet of the whole route, id of the exit lanelet where the route ends)
+    """
+    finished = []
+    pending = [(start_lanelet, [start_lanelet.lanelet_id])]
+    
+    while pending:
+        merged, ids = pending.pop()
+        last = ll_network.find_lanelet_by_id(ids[-1])
+        successors = [s for s in last.successor if s not in ids]
+
+        if not successors:
+            finished.append((merged, ids[-1]))
+            continue
+
+        for successor_id in successors:
+            successor = ll_network.find_lanelet_by_id(successor_id)
+            pending.append((Lanelet.merge_lanelets(merged, successor), ids + [successor_id]))
+
+    return finished
+
 def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario) -> PlanningProblem:
     """
-    Mutate the position of the Goal Area velocity of the given planning problem
-    Return a new planning problem ensuring the goal area is reacheable
+    Move the goal area of the planning problem to the end of a different exit lane
+    reachable from the initial lanelet (in the driving direction)
     """
     _planning_problem = deepcopy(planning_problem)
-    
-    # Get the lanelet ids of the goal area
-    lanelet_ids_to_avoid = []
+    ll_network = scenario.lanelet_network
+    initial_state = planning_problem.initial_state
+
+    # Step 1: Lanelets the current goal area lies on
+    goal_lanelet_ids = set()
+    for state in planning_problem.goal.state_list:
+        if hasattr(state, "position"):
+            goal_lanelet_ids.update(ll_network.find_lanelet_by_shape(state.position))
+
     if planning_problem.goal.lanelets_of_goal_position:
-        lanelet_ids_to_avoid = planning_problem.goal.lanelets_of_goal_position
-    else:
-        list_of_list_of_lanelet_ids_to_avoid = [scenario.lanelet_network.find_lanelet_by_shape(s.position) for s in planning_problem.goal.state_list]
-        lanelet_ids_to_avoid = set([item for sublist in list_of_list_of_lanelet_ids_to_avoid for item in sublist])
+        for ids in planning_problem.goal.lanelets_of_goal_position.values():
+            goal_lanelet_ids.update(ids)
 
-    # Get the lanelet ids of the initial state    
-    list_of_list_of_lanelet_ids_of_initial_state = scenario.lanelet_network.find_lanelet_by_position([planning_problem.initial_state.position])
-    lanelet_ids_of_initial_state = set([item for sublist in list_of_list_of_lanelet_ids_of_initial_state for item in sublist])
+    # Step 2: Lanelets under the vehicle that point in its driving direction
+    ids_at_start = ll_network.find_lanelet_by_position([initial_state.position])[0]
+    start_lanelets = [ll for ll in (ll_network.find_lanelet_by_id(i) for i in ids_at_start)]
 
-    # Compute the set of reacheable goal areas from the initial lanelets
-    full_lanelets = []
-    for lanelet in [scenario.lanelet_network.find_lanelet_by_id(lanelet_id) for lanelet_id in lanelet_ids_of_initial_state]:
-        full_lanelets = full_lanelets + generation_utils.get_successor_lanelets(lanelet, scenario.lanelet_network)
+    # Step 3: Reachable routes whose exit lane is NOT the current one
+    candidates = [route for start in start_lanelets for route, exit_id in _routes_with_exit(start, ll_network) if exit_id not in goal_lanelet_ids]
 
-    # Make this a set
-    full_lanelets = set(full_lanelets)
+    # Step 4: Pick one at random, or keep the current goal if there is no alternative exit
+    if not candidates:
+        module_logger.debug(f"No alternative exit lane for planning problem {planning_problem.planning_problem_id}")
 
-    # Remove the ones to avoid
-    exit_points = full_lanelets.difference(lanelet_ids_to_avoid)
-    
-    if len(exit_points) == 0:
-        print("Cannot find a new position of the goal area!")
-    else:
-        # Take one lanelet at random
-        goal_lanelet = random.choice(list(exit_points))
+        return _planning_problem
 
-        # Compute a new goal area and goal position
-        goal_area = generation_utils.get_possible_goal_for_lanelet(config, goal_lanelet)
-        goal = generation_utils.generate_goal(config, goal_area)
-
-        _planning_problem.goal = goal
+    goal_area = generation_utils.get_possible_goal_for_lanelet(config, random.choice(candidates))
+    _planning_problem.goal = generation_utils.generate_goal(config, goal_area)
 
     return _planning_problem
 
@@ -129,17 +148,17 @@ def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scena
     # Pick a random lanelet to place the AV 
     lanelet = random.choice(_scenario.lanelet_network.lanelets)
 
+    # Get all the successor lanelets of the initial lanelet
+    full_lanelets = generation_utils.get_successor_lanelets(lanelet, _scenario.lanelet_network)
+
     # Get any adjacent random lanelet with same direction
     adjacent_lanelets = generation_utils.get_adjacent_lanelets(lanelet, _scenario.lanelet_network)
-
-    # Get a random "exit" lanelet reacheable from the selected one or its adjacent lanelets
-    full_lanelets = generation_utils.get_successor_lanelets(lanelet, _scenario.lanelet_network)
 
     # Add the adjacent lanelets successors to the list of possible exit lanelets
     for adjacent in adjacent_lanelets:
         full_lanelets = full_lanelets + generation_utils.get_successor_lanelets(adjacent, _scenario.lanelet_network)
 
-    # Pick one randomly
+    # Pick one of the exit lanelets at random
     random_exit_lanelet = random.choice(full_lanelets)
 
     # Generate a new random goal area and goal position
@@ -152,6 +171,7 @@ def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scena
     else:
         # Note start with the predefined ID to ensure uniqueness of IDs
         last_key = config.av_base_id
+
     new_id = last_key + 1
 
     # Generate a new initial state for the planning problem
