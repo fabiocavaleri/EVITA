@@ -142,6 +142,7 @@ def create_straight(extension_distance: float, width: float, plot: bool = False)
     The straight primitive is defined by two parallel lines at a given distance and width
     """
     precision = 10
+
     # Create x coordinates for the left and right borders
     x_coordinates = np.linspace(0, extension_distance, precision)
     left_border = {'x': x_coordinates, 'y': [0] * precision}
@@ -180,9 +181,3 @@ def create_curve(curve_angle: float, curve_radius: float, width: float, plot: bo
         plt.show()
 
     return {'left': left_border, 'right': right_border}
-
-def create_three_way_intersection():
-    return None
-
-def create_four_way_intersection():
-    return None

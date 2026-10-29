@@ -104,10 +104,6 @@ def rotate_lanelets(lanelet_network: LaneletNetwork, rotation: float, cx: float,
                                   lanelet_type = lanelet.lanelet_type)
             # Add rotated lanelet to new lanelet network
             new_lanelet_network.add_lanelet(new_lanelet)
-        
-        # Add intersections to new lanelet network
-        for intersection in lanelet_network.intersections:
-            new_lanelet_network.add_intersection(intersection)
 
         return new_lanelet_network
 
@@ -123,16 +119,20 @@ def extend_straight(lanelet: Lanelet, extension_distance: float, extend_rear=Fal
     else:
         connection_line = {'left': [lanelet.left_vertices[0][0], lanelet.left_vertices[0][1]],
                            'right': [lanelet.right_vertices[0][0], lanelet.right_vertices[0][1]]}
+    
+    # Compute lanelet width
     width = np.sqrt(np.power(connection_line['left'][0] - connection_line['right'][0], 2) +
                     np.power(connection_line['left'][1] - connection_line['right'][1], 2))
     
     # Create straight extension
     extension = create_straight(extension_distance, width)
+
     # Translate and rotate extension
     transformed_extension = fit_primitive(extension, connection_line)
     
     left = transformed_extension['left']
     right = transformed_extension['right']
+    
     # Compute center vertices
     center = {'x': [], 'y': []}
     for i in range(len(left['x'])):
@@ -233,7 +233,7 @@ def extend_the_outgoing_lanelets_with_a_straight(lanelet_network: LaneletNetwork
         # Iterate over lanelets and extend the outgoing lanelets by a straight line of the given length
         for lanelet in lanelet_network.lanelets:
             if lanelet in outgoing_lanelets:
-                new_vertices = extend_straight(lanelet, extension_distance, extend_rear=True)
+                new_vertices = extend_straight(lanelet, extension_distance, extend_rear = True)
             
                 new_lanelet = Lanelet(left_vertices = new_vertices['left'],
                                       center_vertices = new_vertices['center'],
@@ -250,10 +250,6 @@ def extend_the_outgoing_lanelets_with_a_straight(lanelet_network: LaneletNetwork
                 new_lanelet_network.add_lanelet(new_lanelet)
             else:
                 new_lanelet_network.add_lanelet(lanelet)
-
-        # Add intersections to new lanelet network
-        for intersection in lanelet_network.intersections:
-            new_lanelet_network.add_intersection(intersection)
 
         return new_lanelet_network
 

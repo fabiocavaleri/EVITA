@@ -148,35 +148,27 @@ class Budget:
 
     def get_time_budget(self):
         return self.time_budget
-    
+
+    def _active_time(self) -> float:
+        """
+        Execution time since start: wall-clock time minus completed pauses and any pause in progress
+        """
+        now = time.perf_counter()
+        paused = self.time_spend_in_pause + ((now - self.start_pause) if self.start_pause is not None else 0)
+        
+        return max(0.0, now - self.start_real_time - paused)
+
     def get_elapsed(self) -> int:
         """
         Return how much "execution" time has passed since the beginning
         """
-        now = time.perf_counter()    
-        
-        real_time_passed_since_beginning = now - self.start_real_time
+        return int(self._active_time())
 
-        time_passed_since_the_beginning = max(0, real_time_passed_since_beginning - self.time_spend_in_pause)
-        
-        return int(time_passed_since_the_beginning)
-    
-    def get_progress(self) :
+    def get_remaining_real_time(self):
         """
-        Return how much "execution" time has passed since the last time we invoked this method
+        Return how much "real" time is left before the budget is over
         """
-        if not self.last_check:
-            # This is the first time we check progress, so we start from the beginning
-            self.last_check = self.get_start_time()
-        
-        now = time.perf_counter()    
-        real_time_passed_since_the_last_time_we_checked = now - self.last_check
-        # Cannot return a negative number!
-        time_passed_since_the_last_time_we_checked = max(0, real_time_passed_since_the_last_time_we_checked - self.time_spend_in_pause)
-        
-        self.last_check = now
-        
-        return int(time_passed_since_the_last_time_we_checked)
+        return self.time_budget - self._active_time()
 
     def start(self):
         self.start_real_time = time.perf_counter()
@@ -188,25 +180,13 @@ class Budget:
         # We need to ensure that we always return the same type of object:
         return {"time-budget": self.get_remaining_real_time()}
 
-    def get_remaining_real_time(self):
-        """
-        Return how much "real" time is left before the budget is over
-        """
-        now = time.perf_counter()
-        passed_time_since_beginning = now - self.start_real_time
-        actual_time_spent_in_doing = passed_time_since_beginning + self.time_spend_in_pause
-
-        remaining_time = self.time_budget - actual_time_spent_in_doing
-        
-        return remaining_time
-
     def pause(self):
         # Start the counter only if not yet started
         if self.start_pause is None:
             self.start_pause = time.perf_counter()
     
     def resume(self):
-        if self.start_pause:
+        if self.start_pause is not None:
             now = time.perf_counter()
             self.time_spend_in_pause = self.time_spend_in_pause + (now - self.start_pause)
             self.start_pause = None
@@ -235,7 +215,6 @@ def time_shift(scenario: Scenario, planning_problem_set: PlanningProblemSet) -> 
     """
     Shift the time of all the agents in the scenario so that the earliest one starts at time == 0
     Make sure that at least one agent starts at time == 0.
-    NOTE: This works ONLY if there are not obstacles!
     """
     assert len(scenario.obstacles) == 0, "Cannot time shift if there are obstacles (Not yet supported)"
 

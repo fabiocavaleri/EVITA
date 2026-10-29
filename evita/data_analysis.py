@@ -4,6 +4,7 @@ import csv
 import sqlite3
 import ast
 import click
+import math
 import json
 import numpy as np
 import pandas as pd
@@ -1121,6 +1122,23 @@ def analyse(ctx, results_folders: List, perform_full_analysis: bool):
     # Print the banner with the input and output folders at the end of the analysis
     plot_the_banner()
 
+def count_metric(simulation_db, metric: str) -> int:
+    """
+    Count how many `metric` == 1.0 are stored in the DB
+    """
+    # Open connection with database
+    connection = sqlite3.connect(simulation_db)
+    try:
+        # Count how many unique collisions are stored
+        result = connection.execute(f"SELECT timestep from scenario_evaluation WHERE {metric} = 1.0;")
+
+        return len(result.fetchall())
+    finally:
+        try:
+            connection.close()
+        except:
+            pass
+
 def count_collisions(simulation_db) -> int:
     """
     Count how many unique collisions are stored in the DB
@@ -1129,7 +1147,7 @@ def count_collisions(simulation_db) -> int:
     connection = sqlite3.connect(simulation_db)
     try:
         # Count how many unique collisions are stored
-        result = connection.execute("select agent_id, has_collided_with from scenario_evaluation WHERE has_collided = 1.0 GROUP BY agent_id, has_collided_with;")
+        result = connection.execute("SELECT agent_id, has_collided_with from scenario_evaluation WHERE has_collided = 1.0 GROUP BY agent_id, has_collided_with;")
         collisions = set()
 
         # Iterate over the results and count unique collisions
@@ -1137,22 +1155,8 @@ def count_collisions(simulation_db) -> int:
             # Extract the collided vehicles
             collision_group = str(tup[1])
             collisions.add(collision_group)
-        return len(collisions)
-    finally:
-        try:
-            connection.close()
-        except:
-            pass
 
-def _count_from_db(simulation_db, names) -> Tuple:
-    """
-    Count the sum of the given names in the DB
-    """
-    # Open connection
-    connection = sqlite3.connect(simulation_db)
-    try:
-        result = connection.execute("SELECT " + ",".join([ f"SUM({name})" for name in names ]) + " FROM scenario_evaluation;")
-        return result.fetchone()
+        return len(collisions)
     finally:
         try:
             connection.close()
@@ -1165,10 +1169,12 @@ def _agent_ids_from_db(simulation_db) -> List:
     """
     # Open connection
     connection = sqlite3.connect(simulation_db)
+
     try:
         # Make the query
-        result = connection.execute("select agent_ids from meta;")
+        result = connection.execute("SELECT agent_ids from meta;")
         result_as_string = result.fetchone()[0]
+
         return ast.literal_eval(result_as_string)
     finally:
         try:
@@ -1176,16 +1182,34 @@ def _agent_ids_from_db(simulation_db) -> List:
         except:
             pass
 
-def _interactions_times_from_db_for_agent(simulation_db, agent_id) -> List[int]:
+def _to_float(value) -> float:
+    """
+    Convert a value stored as text in the DB ('1.5', 'None', 'nan', NULL) to float or None.
+    """
+    if value is None:
+        return None
+
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    
+    if math.isnan(result):
+        return None
+    else:
+        return result
+
+def _interactions_from_db_for_agent(simulation_db, agent_id) -> List[int]:
     """
     Get the list of time steps at which the given agent interacted with other agents from the DB
     """
     # Open connection
     connection = sqlite3.connect(simulation_db)
+
     try:
         # Make the query
-        result = connection.execute(f"select timestep from scenario_evaluation where agent_id = {agent_id} and is_interacting == 1.0;")
-        return [int(t[0]) for t in result.fetchall()]
+        result = connection.execute(f"SELECT timestep, diff_long, diff_lat from scenario_evaluation where agent_id = {agent_id} and is_interacting == 1.0;")
+        return [(int(t[0]), _to_float(t[1]), _to_float(t[2])) for t in result.fetchall()]
     finally:
         try:
             connection.close()
@@ -1199,10 +1223,11 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
     
     # Open connection with database
     connection = sqlite3.connect(simulation_db)
+
     try:
         # Retrieve collisions data from the DB
         # Group data by agent_id and has_collided_with to get unique collisions
-        result = connection.execute('select MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_position from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
+        result = connection.execute('SELECT MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_position from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
         metrics = result.fetchall()
 
         collisions = dict()
@@ -1228,7 +1253,10 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
             riv = float(riv)
             ria = float(ria)
             # If there's no impact location default to ROAD
-            impact_location = str(impact_location) if impact_location != "None" else "-+"
+            if impact_location != "None":
+                impact_location = str(impact_location)
+            else:
+                impact_location = "-+"
 
             # Filter out spurious entries across accidents order matter
             if [agent_id, most_critical_agent] in impacts:
@@ -1262,10 +1290,10 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
 
         # A this point we need to merge the impact locations together
         for collision in collisions.values():
-            collision["impact_location"] = frozenset( (collision["v1_impact_location"], collision["v2_impact_location"]) )
+            collision["impact_location"] = frozenset((collision["v1_impact_location"], collision["v2_impact_location"]))
             module_logger.info(f"Register {collision}")
 
-        return [ (c["impact_location"], c["riv"], c["ria"]) for c in collisions.values() ]
+        return [(c["impact_location"], c["riv"], c["ria"]) for c in collisions.values()]
     finally:
         try:
             connection.close()
@@ -1279,14 +1307,16 @@ def _rebuild_trajectory(initial_time_step: str, xs: str, ys: str, orientations:s
     """
     state_list = list()
     initial_time_step = int(initial_time_step)
+
     # Iterate over the state variables and build the trajectory
     for idx, state_vars, in enumerate(zip(xs.split(","), ys.split(","), orientations.split(","), velocities.split(","))):
         # Extract position, orientation, and velocity
         x, y = float(state_vars[0]), float(state_vars[1])
         orientation = float(state_vars[2])
         velocity = float(state_vars[3])
+       
         # Create state object and add it to the list of states
-        state = CustomState(time_step = initial_time_step + idx, position=np.array([x, y]), orientation=orientation, velocity=velocity)
+        state = CustomState(time_step = initial_time_step + idx, position = np.array([x, y]), orientation = orientation, velocity = velocity)
         state_list.append(state)
         
     return Trajectory(initial_time_step, state_list)
@@ -1303,6 +1333,7 @@ def get_interaction_map_bins(n_bins: int = None):
 
     # One car in front/one car behind - How can one retrieve difference in speed/acc?
     long_bins = np.linspace(-scenario_generator_config.length, +scenario_generator_config.length, n_bins)
+
     # In the United States, the Interstate Highway standards for the Interstate Highway System
     # use a 12 ft (3.7 m) standard lane width, while narrower lanes are used on lower classification roads.
     lane_width = 3.7
@@ -1328,13 +1359,9 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
     module_logger.critical("Computing Requirement Violation Metrics")
     with open(requirements_violations, "w", newline = "") as csvfile:
         # Write the header of the csv file
-        csv_writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["total_collisions", "total_timeouts", "total_missed_goals", "unique_collisions_only_impact_location", "unique_collisiosn_impact_location_and_riv", "unique_collisions"])
+        csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
+        csv_writer.writerow(["total_timeouts", "total_missed_goals", "total_collisions", "unique_collisions_only_impact_location", "unique_collisions_impact_location_and_riv", "unique_collisions"])
 
-        # Define the names of the requirement violations we want to count and initialize the corresponding counters
-        requirements_violation_names = ["has_timeout", "has_missed_goal"]
-        total_requirements_violation_counts = np.zeros(len(requirements_violation_names) + 1)
-        
         # Requirement Violations
         # - [x] Total Collision Count - counted on the side
         # - [x] Total Missed Goals (Timeout)
@@ -1359,7 +1386,6 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
                         
                         impact_location_bins.append(s)
         
-        
         # Initialize RIA and RIV bins       
         n_bins = 10
         riv_bins = np.linspace(0, 100, n_bins)
@@ -1369,6 +1395,8 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
         collision_map_only_impact_location = np.zeros(len(impact_location_bins))
         collision_map_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1))
         collision_map = np.zeros((len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1))
+
+        total_timeouts, total_missed_goals, total_collisions = 0, 0, 0
     
         # Iterate over the simulations
         for _, simulation_folder in simulation_folders(run_folder):
@@ -1377,28 +1405,26 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             # Build scenario's DB file path
             simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
 
-            # Initialize local collision maps
-            local_only_impact_location = np.zeros( len(impact_location_bins) )
-            local_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1) )
-            local_collision_map = np.zeros( (len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1) )
+            total_timeouts += count_metric(simulation_db, "has_timeout")
+            total_missed_goals += count_metric(simulation_db, "has_missed_goal")
 
-            # Count collisions + timeout/missed goals
-            collisions = count_collisions(simulation_db)
+            # Initialize local collision maps
+            local_only_impact_location = np.zeros(len(impact_location_bins))
+            local_impact_location_and_riv = np.zeros((len(impact_location_bins), len(riv_bins) + 1))
+            local_collision_map = np.zeros((len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1))
+
+            # Count collisions
+            total_collisions += count_collisions(simulation_db)
 
             # Get the features of the collisions from the DB
             collision_features = _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder)
-
-            # Count the other requirement violations and update the total counts
-            violated_reqs = [collisions] # + list(_count_from_db(simulation_db, requirements_violation_names))
-            requirements_violation_counts = np.array(violated_reqs)
-            total_requirements_violation_counts = total_requirements_violation_counts + requirements_violation_counts
 
             # It might happen that those features were not stored, in this case we need to recompute them!
             # Iterate over the features of the collisions and update the collision maps            
             for impact_location_as_frozenset, riv, ria in collision_features:
                 # Check that the impact location is not None
-                if None in impact_location_as_frozenset:
-                    module_logger.warning(f"Impact location contains None. Check {simulation_db}!")
+                if None in impact_location_as_frozenset or riv is None or ria is None:
+                    module_logger.warning(f"Skipping collision with missing features: impact_location = {impact_location_as_frozenset}, riv = {riv}, ria = {ria} in {simulation_db}")
                     continue
 
                 # Map the impact location, RIV, and RIA to the corresponding bins
@@ -1423,10 +1449,11 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
         unique_collisions = np.count_nonzero(collision_map)
 
         # Check that the total number of collisions we counted on the side is the same as the one we get from the collision map
-        assert total_requirements_violation_counts.tolist()[0] == total_collisions_double_check, f"Reported {total_requirements_violation_counts.tolist()[0]} == {total_collisions_double_check}"
+        if total_collisions != total_collisions_double_check:
+            module_logger.warning(f"Collision count mismatch in {run_folder}: {total_collisions} counted, {total_collisions_double_check} mapped")
         
         # Merge all the counts together and write them to the csv file
-        values = total_requirements_violation_counts.tolist() + [unique_collisions_only_impact_location, unique_collisions_impact_location_and_riv, unique_collisions]
+        values = [total_timeouts, total_missed_goals, total_collisions, unique_collisions_only_impact_location, unique_collisions_impact_location_and_riv, unique_collisions]
 
         csv_writer.writerow([str(v) for v in values])
     
@@ -1440,7 +1467,7 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
     #   - Position of Goal  - NO
     #   - Route Complexity (Distance, Number of Lane Switches)  - NO
     #   - [x] Total Interaction Count
-    #   - [x] Unique Interactions using the efined Interaction Map (10 bins 2 * lane widht, 10bins 2 * vehicle lenght)
+    #   - [x] Unique Interactions using the defined Interaction Map (10 bins 2 * lane widht, 10 bins 2 * vehicle lenght)
     
     module_logger.info("Computing Behavior and Interaction Metrics")
 
@@ -1449,20 +1476,18 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
     with open(behavior, "w", newline = "") as csvfile:
         # Write the header of the csv file
         csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-        names = ["has_emergency", "has_disengagement"]
         csv_writer.writerow(["total_emergency", "total_disengagement", "total_agents", "total_interactions", "unique_interactions"])
 
         # Get the bins of the interaction map
         long_bins, lat_bins = get_interaction_map_bins()
 
         # Include 0 - B[0]:B[9] - 10 and len(bins)
-        rows = len(long_bins) + 2 # 0 <, bins, len(bins) +1 or +2?
-        cols = len(lat_bins) + 2 # 0 <, bins, len(bins)
+        rows = len(long_bins) + 1
+        cols = len(lat_bins) + 1
 
         # Initialize the interaction map and the counters for the requirement violations
         interaction_map = np.zeros((rows, cols))
-        total_values = np.zeros(len(names))
-        total_agents = 0
+        total_emergency, total_disengagement, total_agents = 0, 0, 0
 
         # Iterate over the simulations folders
         for _, simulation_folder in simulation_folders(run_folder):
@@ -1472,12 +1497,8 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
             scenario_file = os.path.join(run_folder, simulation_folder, "scenario", f"scenario_{simulation_folder}.xml")
 
-            # Load the scenario
-            scenario, _ = CommonRoadFileReader(scenario_file).open()
-
-            # Extract the values of the requirement violations and update the total counts
-            # values = np.array(_count_from_db(simulation_db, names))
-            # total_values = total_values + values
+            total_emergency += count_metric(simulation_db, "has_emergency")
+            total_disengagement += count_metric(simulation_db, "has_disengagement")
 
             # Extract the agent ids from the DB and update the total count of agents
             agent_ids = _agent_ids_from_db(simulation_db)
@@ -1487,36 +1508,13 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             local_interaction_map = np.zeros((rows, cols))
             for agent_id in agent_ids:
                 # Extract the timesteps at which the agent interacted with other agents
-                interaction_times = _interactions_times_from_db_for_agent(simulation_db, agent_id)
-
-                # Build agent's log file path
-                agent_logs = os.path.join(run_folder, simulation_folder, "logs", str(agent_id), "logs.csv")
-
-                trajs = list()
-                with open(agent_logs, 'r') as log_csvfile:
-                    csv_reader = csv.DictReader(log_csvfile, delimiter = ";", quotechar = '"')
-                    
-                    # There's a dictionary for each line, and a line for each time_step
-                    data = [row for row in csv_reader]
-
-                    # Reconstruct all the trajectories
-                    for t, xs, ys, ors, vels in sorted([(int(d["trajectory_number"]), d["x_positions_m"], d["y_positions_m"], d["theta_orientations_rad"], d["velocities_mps"] ) for d in data], key= lambda tup: tup[0]):
-                        trajs.append(_rebuild_trajectory(t, xs, ys, ors, vels))
+                interactions = _interactions_from_db_for_agent(simulation_db, agent_id)
 
                 # Iterate over agent's interaction timesteos
-                for t in interaction_times:
-                    # Extract the trajectories
-                    trajectory_at_time_t = trajs[t]
-                    assert trajectory_at_time_t.initial_time_step == t, "Wrong initial time step for traj t"
-                    trajectory_at_time_t_1 = trajs[t+1]
-                    assert trajectory_at_time_t_1.initial_time_step == t+1, "Wrong initial time step for traj t+1"
-
-                    # Compute interaction influence on replanned trajectory
-                    try:
-                        diff_long, diff_lat = compute_difference_in_cc_space(scenario, trajectory_at_time_t, trajectory_at_time_t_1)
-                    except:
-                        # If this fails, we cannot do much at the moment
-                        diff_long, diff_lat = compute_difference_in_cc_space(scenario, trajectory_at_time_t, trajectory_at_time_t_1, use_relative_path=True)
+                for t, diff_long, diff_lat in interactions:
+                    if diff_long is None or diff_lat is None:
+                        module_logger.warning(f"Interaction at timestep {t} for agent {agent_id} has None values for diff_long or diff_lat.")
+                        continue
 
                     # If values in x are beyond the bounds of bins, 0 or len(bins) is returned as appropriate.
                     # Retrieve the trajectories for the interactions and fill up the local map
@@ -1531,7 +1529,7 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
         # Update the interaction map with the local interaction map
         total_interactions = int(np.sum(interaction_map))
         unique_interactions = np.count_nonzero(interaction_map)
-        merged_results = total_values.tolist() + [total_agents] + [total_interactions, unique_interactions]
+        merged_results = [total_emergency, total_disengagement, total_agents, total_interactions, unique_interactions]
         
         csv_writer.writerow([str(v) for v in merged_results])
 

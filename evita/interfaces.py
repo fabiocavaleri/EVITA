@@ -39,8 +39,6 @@ class AbstractScenarioGenerator(ABC):
         """
         pass
 
-
-    # original_scenario, simulated_scenario, av_data
     @abstractmethod
     def evaluate(self, simulation_data: List[Dict]) -> None:
         """

@@ -1,12 +1,15 @@
 # Contains Utility Methods to Generate and Evolve the Scenarios
 import math
 import random
+import geopandas
 import numpy as np
+import pandas as pd
+from enum import Enum
 
 from typing import List, Optional, Tuple
 
 from commonroad.scenario.scenario import Scenario
-from commonroad.scenario.state import InitialState
+from commonroad.scenario.state import CustomState, InitialState
 from commonroad.scenario.lanelet import Lanelet, LaneletNetwork
 from commonroad.geometry.shape import Rectangle
 from commonroad.planning.goal import GoalRegion, Interval
@@ -14,6 +17,7 @@ from commonroad.common.file_reader import CommonRoadFileReader
 
 from scipy.cluster.hierarchy import DisjointSet
 
+from cr_scenario_handler.simulation.simulation import Simulation
 from cr_scenario_handler.utils.agent_status import AgentStatus
 from cr_scenario_handler.utils.utils_coordinate_system import CoordinateSystem
 
@@ -24,8 +28,6 @@ from shapely.affinity import rotate, translate, scale
 from shapely.geometry import LineString, Point, Polygon
 
 from commonroad_dc.geometry.util import resample_polyline
-
-import geopandas
 
 from ..config import ScenarioGeneratorConfig
 
@@ -43,12 +45,15 @@ def orientation_by_position(lanelet: Lanelet, position: np.array):
     """
     # Extract lanelet center vertices and resample them to have a point every 1 meter
     center_vertices = lanelet.center_vertices
-    center_vertices = resample_polyline(center_vertices, step=1.0)
+    center_vertices = resample_polyline(center_vertices, step = 1.0)
 
     # Find the closest two vertices of the lanelet centerline to the given position
-    position_diff_square = np.sum((center_vertices - position) ** 2, axis=1)
+    position_diff_square = np.sum((center_vertices - position) ** 2, axis = 1)
     closest_vertex_index = np.argmin(position_diff_square)
 
+    # Determine the two closest vertices to compute the orientation
+    # If the closest vertex is the last one, we take the previous vertex and the closest vertex
+    # Otherwise, we take the closest vertex and the next vertex
     if closest_vertex_index == len(center_vertices) - 1:
         vertex1 = center_vertices[closest_vertex_index - 1, :]
         vertex2 = center_vertices[closest_vertex_index, :]
@@ -56,6 +61,7 @@ def orientation_by_position(lanelet: Lanelet, position: np.array):
         vertex1 = center_vertices[closest_vertex_index, :]
         vertex2 = center_vertices[closest_vertex_index + 1, :]
 
+    # Compute the direction vector between the two vertices and calculate the orientation using arctan2
     direction_vector = vertex2 - vertex1
 
     return np.arctan2(direction_vector[1], direction_vector[0])
@@ -103,8 +109,9 @@ def get_random_init_state(config: ScenarioGeneratorConfig, lanelet: Lanelet) -> 
     slip_angle = 0.0
 
     # Randomply pick a time step between 0 and the max wait time, to make sure that not all the vehicles start at the same time step
-    from EVITA_DoppelTest.config import INSTANCE_MAX_WAIT_TIME
-    initial_time_step = random.randint(0, INSTANCE_MAX_WAIT_TIME)
+    # from EVITA_DoppelTest.config import INSTANCE_MAX_WAIT_TIME
+    # initial_time_step = random.randint(0, INSTANCE_MAX_WAIT_TIME)
+    initial_time_step = 0
     
     return InitialState(time_step = initial_time_step, 
                         position = position,
@@ -134,7 +141,8 @@ def generate_goal(config: ScenarioGeneratorConfig, goal_area: Rectangle) -> Goal
     Return a well formed Goal State object from the rectangle.
     By default, AV must reach the goal area before the end of the scenario
     """
-    goal_state_list = [CustomState(position = goal_area, time_step=Interval(0, config.max_time_step))]
+    goal_state_list = [CustomState(position = goal_area, time_step = Interval(0, config.max_time_step))]
+    
     return GoalRegion(goal_state_list)
 
 def get_base_scenario_from_file(commonroad_scenario_file: str, remove_obstacles: bool, remove_planning_problems: bool) -> Scenario:
@@ -276,6 +284,7 @@ def crop_trajectories(trajectory_before: Trajectory, trajectory_after: Trajector
     # Skip if the trajectory_after starts earlier than trajectory_before
     if trajectory_after.initial_time_step < trajectory_before.initial_time_step:
         raise Exception('trajectory_b has a larger time_step and therefore can not be cropped to trajectory_a')
+
     # Compute time delta between the two trajectories and crop the trajectory_after to the trajectory_before
     time_step_diff = trajectory_after.initial_time_step - trajectory_before.initial_time_step
     cut_trajectory_a = get_cut_trajectory_end(trajectory_after, time_step_diff)
@@ -303,33 +312,32 @@ def get_cut_trajectory_start(trajectory: Trajectory, amount: int) -> Trajectory:
     return Trajectory(states[0].time_step, states)
 
 # ========== Evaluation methods ==========
-from enum import Enum
 
-def is_position_similar(pos_a: Tuple[float, float], pos_b: Tuple[float, float], tolerance_distance: int = 1) -> bool:
+def is_position_similar(pos_a: Tuple[float, float], pos_b: Tuple[float, float], trajectory_difference_threshold: float) -> bool:
     """
     Compare two positions with a given tolerance distance
     If the euclidean distance between the two positions is smaller than the tolerance distance, they are considered similar
     """
     euclidean_distance = compute_euclidean_distance(pos_a, pos_b)
 
-    if euclidean_distance < tolerance_distance:
+    if euclidean_distance < trajectory_difference_threshold:
         return True
     else:
         return False
     
-def is_trajectory_similar(trajectory_a: Trajectory, trajectory_b: Trajectory, tolerance_distance: int = 1):
+def is_trajectory_similar(trajectory_a: Trajectory, trajectory_b: Trajectory, trajectory_difference_threshold: float) -> bool:
     """
     Compare two trajectories with a given tolerance distance
     If the euclidean distance between the two trajectories is smaller than the tolerance distance, they are considered similar
     """
-    # Skip compaison between trajectories of different length, as they are not comparable
+    # Skip comparison between trajectories of different length, as they are not comparable
     if len(trajectory_a.state_list) != len(trajectory_b.state_list):
         module_logger.debug(f'Trajectory comparison: Not the same length {len(trajectory_a.state_list)} != {len(trajectory_b.state_list)}')
         return False
 
     # Iterate over the two trajectories states and compare the positions of the states with the given tolerance distance
     for state_a, state_b in zip(trajectory_a.state_list, trajectory_b.state_list):
-        is_pos_equal = is_position_similar(state_a.position, state_b.position, tolerance_distance)
+        is_pos_equal = is_position_similar(state_a.position, state_b.position, trajectory_difference_threshold)
         if not is_pos_equal:
             return False
         
@@ -344,7 +352,7 @@ def list_anyone_nearby(time_step: int, agent, other_agents, min_distance = 10) -
     nearby_agent_ids = []
 
     # Check if the agent is active at time `time_step`
-    if len([s for s in agent.prediction.trajectory.state_list if s.time_step == time_step]) == 0:
+    if len([state for state in agent.prediction.trajectory.state_list if state.time_step == time_step]) == 0:
         return nearby_agent_ids
     
     # Get the occupancy of the agent at time `time_step`
@@ -353,7 +361,7 @@ def list_anyone_nearby(time_step: int, agent, other_agents, min_distance = 10) -
     # Extract other active agents at time `time_step`
     other_agents_at_time_t =[]
     for other_agent in other_agents:
-        if len([s for s in other_agent.prediction.trajectory.state_list if s.time_step == time_step]) > 0:
+        if len([state for state in other_agent.prediction.trajectory.state_list if state.time_step == time_step]) > 0:
             other_agents_at_time_t.append(other_agent)
 
     # For each other agent, compute the distance to the given agent and check if it is below the minimum distance
@@ -370,17 +378,6 @@ def list_anyone_nearby(time_step: int, agent, other_agents, min_distance = 10) -
         
     return list(set(nearby_agent_ids))
 
-def evaluate_trajectories(trajectory_map, pp_id, index):
-    """
-    Evaluate the similarity of two trajectories of the same planning problem at two different time steps
-    """
-    # subtract -1 and -2 because list starts at 0 but simulation step starts at 1
-    trajectory_new = trajectory_map[pp_id][index - 1]
-    trajectory_old = trajectory_map[pp_id][index - 2]
-    cropped_traj_a, cropped_traj_b = crop_trajectories(trajectory_new, trajectory_old)
-    
-    return not is_trajectory_similar(cropped_traj_a, cropped_traj_b)
-
 def compute_euclidean_distance(pos_a: Tuple[float, float], pos_b: Tuple[float, float]):
     """
     Compute the euclidean distance between two positions
@@ -388,10 +385,6 @@ def compute_euclidean_distance(pos_a: Tuple[float, float], pos_b: Tuple[float, f
     position_diff = (pos_b[0] - pos_a[0]) ** 2 + (pos_b[1] - pos_a[1]) ** 2
     
     return math.sqrt(position_diff)
-
-import pandas as pd
-from cr_scenario_handler.simulation.simulation import Simulation
-from commonroad.scenario.state import CustomState, InitialState
 
 def compute_2D_velocity_vectors(velocity: float, sin, cos):
     """
@@ -418,9 +411,11 @@ def compute_danger_for_states(state_a: CustomState, state_b: CustomState):
     # Compute sin and cos of the two states' orientations
     sin_a, cos_a = compute_sin_cos_from_orientation(state_a.orientation)
     sin_b, cos_b = compute_sin_cos_from_orientation(state_b.orientation)
+
     # Compute the 2D velocity vectors of the two states
     velocity_x_a, velocity_y_a = compute_2D_velocity_vectors(state_a.velocity, sin_a, cos_a)
     velocity_x_b, velocity_y_b = compute_2D_velocity_vectors(state_b.velocity, sin_b, cos_b)
+    
     # Compute the relative velocity between the two states
     diff_x = velocity_x_a - velocity_x_b
     diff_y = velocity_y_a - velocity_y_b
@@ -452,8 +447,8 @@ def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFr
         module_logger.debug(f"Evaluate agent {agent_id} - DANGER")
         
         # Initialize the max danger and the agent causing it with default values (0 and -1 respectively)
-        max_danger = pd.Series(None, index = list(range(t_start, t_end+1)))
-        max_danger_caused_by = pd.Series(None, index = list(range(t_start, t_end+1)))
+        max_danger = pd.Series(None, index = list(range(t_start, t_end + 1)))
+        max_danger_caused_by = pd.Series(None, index = list(range(t_start, t_end + 1)))
 
         # Make sure we fill in all the values for this agent
         for t in range(t_start, t_end + 1):
@@ -466,25 +461,25 @@ def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFr
             max_danger_at_time_caused_by_agent_id = -1
 
             # Check that the agent is active at this time step, otherwise we skip it
-            if len([s for s in agent.record_state_list if s.time_step == t]) < 1:
+            if len([state for state in agent.record_state_list if state.time_step == t]) < 1:
                 max_danger[t] = max_danger_at_time
                 max_danger_caused_by[t] = max_danger_at_time_caused_by_agent_id
                 continue
 
             # Extract agent's state at timestep t
-            state_of_agent_at_time_t = [s for s in agent.record_state_list if s.time_step == t][0]
+            state_of_agent_at_time_t = [state for state in agent.record_state_list if state.time_step == t][0]
 
             # Iterate over the other scenario agents
-            for the_other_agent in [a for a in simulation.agents if a.id != agent_id]:
+            for the_other_agent in [other_agent for other_agent in simulation.agents if other_agent.id != agent_id]:
                 the_other_agent_id = the_other_agent.id
 
                 # Check that the other agent is active at this time step, otherwise we skip it
-                if max([s.time_step for s in the_other_agent.record_state_list]) >= t:
+                if max([state.time_step for state in the_other_agent.record_state_list]) >= t:
                     if len([s for s in the_other_agent.record_state_list if s.time_step == t]) < 1:
                         continue
 
                     # Extract the other agent's state at timestep t
-                    state_of_other_agent_at_time_t = [s for s in the_other_agent.record_state_list if s.time_step == t][0]
+                    state_of_other_agent_at_time_t = [state for state in the_other_agent.record_state_list if state.time_step == t][0]
 
                     # Compute danger for the two states
                     danger = compute_danger_for_states(state_of_agent_at_time_t, state_of_other_agent_at_time_t) 
@@ -503,6 +498,7 @@ def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFr
         agent_danger_df["max_danger"] = max_danger
         agent_danger_df["max_danger_caused_by_agent"] = max_danger_caused_by
         
+        # Concatenate the agent df with the previous ones
         if danger_df is None:
             danger_df = agent_danger_df.set_index([[agent_id] * len(agent_danger_df), agent_danger_df.index])
         else:
@@ -510,7 +506,7 @@ def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFr
             danger_df = pd.concat([danger_df, agent_danger_df])
 
     # At this point danger_df should be organized exactly as criticality_dataframe so they can be merged so we reset the index
-    danger_df.reset_index(inplace=True)
+    danger_df.reset_index(inplace = True)
     
     # We merge the criticality dataframe
     criticality_dataframe = pd.merge(criticality_dataframe, danger_df)
@@ -525,7 +521,7 @@ def list_vehicles_involved_in_collision(time_step: int, agent, other_agents: lis
     collided_agents = [a for a in [agent] + other_agents if a.agent_state.status == AgentStatus.COLLISION and time_step >= a.agent_state.last_timestep]
     
     # Group the collided agents by distance. Initially everybody is its own group
-    collisions = DisjointSet([a.id for a in collided_agents])
+    collisions = DisjointSet([agent.id for agent in collided_agents])
 
     # As soon as two agents intersect/collided, we merge their sets, i.e., their collisions groups
     for the_agent in collided_agents:
@@ -533,7 +529,7 @@ def list_vehicles_involved_in_collision(time_step: int, agent, other_agents: lis
         the_agent_occupancy_at_time_t = scenario.obstacle_by_id(the_agent.id).occupancy_at_time(time_step)
         
         # Consider only those that are NOT in the same collision group
-        for the_other_agent in [oa for oa in collided_agents if not collisions.connected(the_agent.id, oa.id)]:
+        for the_other_agent in [other_agent for other_agent in collided_agents if not collisions.connected(the_agent.id, other_agent.id)]:
             # Extract the occupancy of the other agent at time step t
             the_other_agent_occupancy_at_time_t = scenario.obstacle_by_id(the_other_agent.id).occupancy_at_time(time_step)
 
@@ -643,19 +639,20 @@ def compute_impact_position(agent_occupancy_at_time_t, agent_state_at_time_t, ot
 
     # Build agents shape at time t
     agent_rectangle = agent_occupancy_at_time_t.shape.shapely_object
-    npc_rectangle = other_agent_occupancy_at_time_t.shape.shapely_object
+    other_agent_rectangle = other_agent_occupancy_at_time_t.shape.shapely_object
 
     # Sometimes the vehicles are very close but do not touch. In that case, we replace their rectangle with a slightly bigger one
-    if not agent_rectangle.intersects(npc_rectangle):
+    if not agent_rectangle.intersects(other_agent_rectangle):
         agent_rectangle = agent_occupancy_at_time_t.shape.shapely_object.buffer(MIN_DISTANCE_FOR_COLLISION)
-        npc_rectangle = other_agent_occupancy_at_time_t.shape.shapely_object.buffer(MIN_DISTANCE_FOR_COLLISION)
+        other_agent_rectangle = other_agent_occupancy_at_time_t.shape.shapely_object.buffer(MIN_DISTANCE_FOR_COLLISION)
 
-        assert agent_rectangle.intersects(npc_rectangle), f"The colliding vehicles do not touch also after increasing their size by {MIN_DISTANCE_FOR_COLLISION}"
+        assert agent_rectangle.intersects(other_agent_rectangle), f"The colliding vehicles do not touch also after increasing their size by {MIN_DISTANCE_FOR_COLLISION}"
 
     crash_intersection_points = []
     try:
-        crash_intersection_points = crash_intersection(agent_rectangle, npc_rectangle)
-    except AttributeError: # 'LineString' object has no attribute 'geoms'. Did you mean: '_geom'?:
+        crash_intersection_points = crash_intersection(agent_rectangle, other_agent_rectangle)
+    except AttributeError: 
+        # 'LineString' object has no attribute 'geoms'. Did you mean: '_geom'?:
         # The vehicles are very closed but their geometries do not touch.
         # Approximate the impact by simulating the movement of the vehicles in less than 0.1 steps
         for t in np.linspace(0.0, 2.0, 20):
@@ -670,8 +667,8 @@ def compute_impact_position(agent_occupancy_at_time_t, agent_state_at_time_t, ot
             other_distance = other_agent_velocity * t
 
             # Approximate the next position of the two vehicles at time t and check if they intersect
-            next_position_agent = translate(agent_rectangle, xoff=agent_distance*math.cos(agent_orientation), yoff=agent_distance*math.sin(agent_orientation))
-            next_position_other = translate(npc_rectangle, xoff=other_distance*math.cos(other_orientation), yoff=other_distance*math.sin(other_orientation))
+            next_position_agent = translate(agent_rectangle, xoff = agent_distance * math.cos(agent_orientation), yoff = agent_distance * math.sin(agent_orientation))
+            next_position_other = translate(other_agent_rectangle, xoff = other_distance * math.cos(other_orientation), yoff = other_distance * math.sin(other_orientation))
 
             # Check if the two vehicles intersect at their next position
             if next_position_agent.intersects(next_position_other):
@@ -681,7 +678,8 @@ def compute_impact_position(agent_occupancy_at_time_t, agent_state_at_time_t, ot
     # At this point if there's no intersection we need to guess based on the closed points
     if len(crash_intersection_points) == 0:
         from shapely.ops import nearest_points
-        point1, point2 = nearest_points(agent_rectangle, npc_rectangle)
+
+        point1, point2 = nearest_points(agent_rectangle, other_agent_rectangle)
         crash_intersection_points = [point1.x, point1.y, point2.x, point2.y]
 
     # Coordinate must be expressed in relation to the Bounding Box of the vehicle
@@ -690,14 +688,14 @@ def compute_impact_position(agent_occupancy_at_time_t, agent_state_at_time_t, ot
     # We compute the intersection between the line connecting the center of the ego vehicle and the impact point, and the boundary of the ego vehicle
     ego_vehicle_center_point = Point(agent_vehicle_center)
     impact_point = None # Absolute coordinates
+
     if len(crash_intersection_points) == 2:
         # One contact point
         impact_point = Point(crash_intersection_points)
         pass
     elif len(crash_intersection_points) == 4:
         # Average position. This is NOT on the boundary of the vehicle
-        impact_point = Point( [(crash_intersection_points[0] + crash_intersection_points[2] ) * 0.5,
-            (crash_intersection_points[1] + crash_intersection_points[3]) * 0.5])
+        impact_point = Point([(crash_intersection_points[0] + crash_intersection_points[2] ) * 0.5, (crash_intersection_points[1] + crash_intersection_points[3]) * 0.5])
     else:
         raise AssertionError(f"Too many intersection points at crash {(len(crash_intersection_points) /2)}")
     
@@ -795,7 +793,7 @@ def compute_collision_features(time_step: int, agent, other_agents, scenario: Sc
         return ria, riv, impact_position, most_critical_agent
 
     # Find the agent colliding with it. The agent must be COLLISION and must be overlapping to agent
-    for other_agent in [oa for oa in other_agents if oa.id != agent.id and oa.agent_state.status == AgentStatus.COLLISION]:
+    for other_agent in [other_agent for other_agent in other_agents if other_agent.id != agent.id and other_agent.agent_state.status == AgentStatus.COLLISION]:
         # Extract the occupancy and state of the other agent at time step t and t - 1
         other_agent_occupancy_at_time_t = scenario.obstacle_by_id(other_agent.id).occupancy_at_time(time_step)
         other_agent_state_at_time_t = scenario.obstacle_by_id(other_agent.id).state_at_time(time_step)
@@ -844,6 +842,7 @@ def augment_with_emergencies_and_disengagements(simulation: Simulation, critical
 
     t_start = 0
     t_end = -1
+
     # Compute the scenario final timestep
     for agent in sorted(simulation.agents, key = lambda a: a.id):
         t_end = max(t_end, simulation.scenario.obstacle_by_id(agent.id).prediction.final_time_step)
@@ -856,8 +855,15 @@ def augment_with_emergencies_and_disengagements(simulation: Simulation, critical
 
         # Fill in the has_emergency and has_disengagement series with 1.0 for the time steps where the agent triggered an emergency behavior or a disengagement
         for t in range(t_start, t_end + 1):
-            has_emergency[t] = 1.0 if t in agent.record_emergency else 0.0
-            has_disengagement[t] = 1.0 if t in agent.record_disengagement else 0.0
+            if t in agent.record_emergency:
+                has_emergency[t] = 1.0
+            else:
+                has_emergency[t] = 0.0
+
+            if t in agent.record_disengagement:
+                has_disengagement[t] = 1.0
+            else:
+                has_disengagement[t] = 0.0
 
         # Save the dataframe for this agent and concatenate with the previous ones
         agent_missed_goal_df = pd.DataFrame(None, index = list(range(t_start, t_end + 1)), columns = ["has_emergency", "has_disengagement"])
@@ -865,7 +871,6 @@ def augment_with_emergencies_and_disengagements(simulation: Simulation, critical
         agent_missed_goal_df["has_disengagement"] = has_disengagement
 
         if emergency_behavior_df is None:
-            # Promote the agent df to global danger df
             emergency_behavior_df = agent_missed_goal_df.set_index([[agent.id] * len(agent_missed_goal_df), agent_missed_goal_df.index])
         else:
             agent_missed_goal_df = agent_missed_goal_df.set_index([[agent.id] * len(agent_missed_goal_df), agent_missed_goal_df.index])
@@ -895,19 +900,27 @@ def augment_with_missed_goals(simulation: Simulation, criticality_dataframe: pd.
     # Iterate over all scenario agents
     for agent in sorted(simulation.agents, key = lambda a: a.id):
         # Initialize the has_timeout and has_missed_goal series with default values (0.0)
-        has_timeout = pd.Series(None, index=list(range(t_start, t_end+1)))
-        has_missed_goal = pd.Series(None, index=list(range(t_start, t_end+1)), dtype=object)
+        has_timeout = pd.Series(None, index = list(range(t_start, t_end + 1)))
+        has_missed_goal = pd.Series(None, index = list(range(t_start, t_end + 1)), dtype = object)
 
         # Iterate over scenario's timesteps and populate the has_timeout and has_missed_goal series
         for t in range(t_start, t_end + 1):
-            has_timeout[t] = 1.0 if agent.agent_state.status == AgentStatus.TIMELIMIT else 0.0
-            has_missed_goal[t] = 1.0 if agent.agent_state.status == AgentStatus.MAX_S_POSITION else 0.0
+            if agent.agent_state.status == AgentStatus.TIMELIMIT:
+                has_timeout[t] = 1.0
+            else:
+                has_timeout[t] = 0.0
+
+            if agent.agent_state.status == AgentStatus.MAX_S_POSITION:
+                has_missed_goal[t] = 1.0
+            else:
+                has_missed_goal[t] = 0.0
 
         # Save the dataframe for this agent and concatenate with the previous ones
         agent_missed_goal_df = pd.DataFrame(None, index=list(range(t_start, t_end + 1)), columns=["has_timeout", "has_missed_goal"])
         agent_missed_goal_df["has_timeout"] = has_timeout
         agent_missed_goal_df["has_missed_goal"] = has_missed_goal
 
+        # Concatenate the agent df with the previous ones
         if missed_goal_df is None:
             missed_goal_df = agent_missed_goal_df.set_index([[agent.id] * len(agent_missed_goal_df), agent_missed_goal_df.index])
         else:
@@ -931,6 +944,7 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
     
     t_start = 0
     t_end = -1
+
     # Compute scenario final timestep
     for agent in sorted(simulation.agents, key = lambda a: a.id):
         t_end = max(t_end, simulation.scenario.obstacle_by_id(agent.id).prediction.final_time_step)
@@ -946,19 +960,18 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
         most_critical_agent = pd.Series(None, index = list(range(t_start, t_end + 1)))
 
         # Iterate over scenario's timesteps
-        for t in range(t_start, t_end+1):
+        for t in range(t_start, t_end + 1):
             # Check if the agent collided at this time step and if it is the first time step after the collision            
             if agent.agent_state.status == AgentStatus.COLLISION and t >= agent.agent_state.last_timestep and t < len(agent.vehicle_history):
                 # Compute collision features at the time it happened
                 has_collided[t] = 1.0
 
                 # Detect vehicles involved in the collision
-                other_agents = [oa for oa in simulation.agents if oa.id != agent.id]
-                vehicles_involved_in_collision = list_vehicles_involved_in_collision(t, agent, [a for a in simulation.agents if a.id != agent.id], simulation.scenario)
+                other_agents = [other_agent for other_agent in simulation.agents if other_agent.id != agent.id]
+                vehicles_involved_in_collision = list_vehicles_involved_in_collision(t, agent, other_agents, simulation.scenario)
 
                 # Compute the collision features only considering the agents involved in this collision
-                # This generates some spurious entry for those already collided...
-                collided_agents = [ca for ca in other_agents if ca.id in vehicles_involved_in_collision]
+                collided_agents = [collided_agent for collided_agent in other_agents if collided_agent.id in vehicles_involved_in_collision]
 
                 try:
                     # Compute collision criticality features
@@ -995,9 +1008,8 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
         agent_has_collided_df["impact_position"] = impact_position
         agent_has_collided_df["most_critical_agent"] = most_critical_agent
         
-
+        # Concatenate the agent df with the previous ones
         if collision_df is None:
-            # promote the agent df to global danger df
             collision_df = agent_has_collided_df.set_index([[agent.id] * len(agent_has_collided_df), agent_has_collided_df.index])
         else:
             agent_has_collided_df = agent_has_collided_df.set_index([[agent.id] * len(agent_has_collided_df), agent_has_collided_df.index])
@@ -1011,12 +1023,10 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
     
     return criticality_dataframe
 
-def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, threshold: float = 1.0) -> pd.DataFrame:
+def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, trajectory_difference_threshold: float) -> pd.DataFrame:
     """
     For each agent and time check whether the agent interacted with someone else (i.e., changed its trajectory because of someone else)
     """
-    module_logger.info(f"Current threshold for interaction detection: {threshold}")
-
     interactions_count_df = None
 
     # Iterate over all scenario agents
@@ -1060,12 +1070,12 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
 
             # Detect nearby agents at time t that are within the safety distance
             obstacle = simulation.scenario.obstacle_by_id(agent_id)
-            other_obstacles = [simulation.scenario.obstacle_by_id(a.id) for a in simulation.agents if a.id != agent_id]
+            other_obstacles = [simulation.scenario.obstacle_by_id(agent.id) for agent in simulation.agents if agent.id != agent_id]
             nearby_agent_ids = list_anyone_nearby(t, obstacle, other_obstacles)
 
             # Check if the consecutive planned trajectories are different and if there are nearby agents
             # If both conditions are true, we consider that the agent interacted with the nearby agents at time t
-            if not is_trajectory_similar(cropped_traj_a, cropped_traj_b, threshold) and len(nearby_agent_ids) > 0:
+            if not is_trajectory_similar(cropped_traj_a, cropped_traj_b, trajectory_difference_threshold) and len(nearby_agent_ids) > 0:
                 try:
                     diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1)
                 except:
@@ -1088,12 +1098,12 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
         agent_interactions_count_df["diff_long"] = diff_long
         agent_interactions_count_df["diff_lat"] = diff_lat
         
+        # Convert the agent_interactions_count_df
         if interactions_count_df is None:
             interactions_count_df = agent_interactions_count_df.set_index([[agent_id] * len(agent_interactions_count_df), agent_interactions_count_df.index])
         else:
             agent_interactions_count_df = agent_interactions_count_df.set_index([[agent_id] * len(agent_interactions_count_df), agent_interactions_count_df.index])
             interactions_count_df = pd.concat([interactions_count_df, agent_interactions_count_df])
-
 
     # At this point interactions_count_df should be organized exactly as criticality_dataframe so they can be merged so we reset the index
     interactions_count_df.reset_index(inplace=True)
@@ -1116,13 +1126,13 @@ def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Tra
     pos_a = cropped_traj_a.final_state.position    
     pos_b = cropped_traj_b.final_state.position
 
-    # Take one of the lanelets where the first state (a) is and use its center as curvilinear reference system
-    # and project there a and b
+    # Take one of the lanelets where the first state (a) is and use its center as curvilinear reference system and project there a and b
 
     # It might happen that the final states are out of the road, because those are planned trajectories and those in emergency mode might result in this
-    # So we need to consider an alternative strategy to label this interaction. If we can assume that NOT all the planned states are outside the road
-    # we look up in the past states until we find a lanelet
+    # So we need to consider an alternative strategy to label this interaction.
+    # If we can assume that NOT all the planned states are outside the road we look up in the past states until we find a lanelet
     lanelet_id = None
+
     # Go backwards
     for target_state_a in reversed(cropped_traj_a.state_list):
         if lanelet_id:
@@ -1140,6 +1150,7 @@ def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Tra
         path = lanelet.center_vertices
     else:
         orientation_a = cropped_traj_a.final_state.orientation
+
         # Create a line passing from the middle of the vehicle rotated according to the vechile's orientation
         xs = [pos_a[0] + distance * math.cos(orientation_a) for distance in np.linspace(-100, 100, 100)]
         ys = [pos_a[1] + distance * math.sin(orientation_a) for distance in np.linspace(-100, 100, 100)]
@@ -1147,9 +1158,6 @@ def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Tra
 
     # Make sure the path is long enough to avoid the out of domain projection error. 50 is not enough...
     try:
-        # This one is broken. It extends it ONLY in one side and crop the other side
-        # path = extend_ref_path_both_ends(path, extension_length=100)
-        
         extended_path = np.array(scale(LineString(path), 3.0, 3.0).coords)
         extended_path = resample_polyline(extended_path, step=1)
         cosy = CoordinateSystem(extended_path)

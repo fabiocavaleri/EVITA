@@ -3,6 +3,7 @@ from ..interfaces import AbstractScenarioExecutor
 import os
 import sys
 import logging
+import enlighten # Progress bar
 
 import traceback
 from datetime import datetime
@@ -27,7 +28,7 @@ def _get_cmap(n, name = 'hsv'):
 
 class PatchedConfigurationBuilder(ConfigurationBuilder):
     """
-    This is a patched version of the ConfigurationBuilder that does not consider the commandline configuration, since in the stitched execution we want to have a fixed configuration for all the tranches and not consider the commandline configuration that may be different for each tranche
+    This is a patched version of the ConfigurationBuilder that does not consider the commandline configuration
     """
     @classmethod
     def build_configuration(cls, scenario_name: str, path_root: str = None, dir_config = "configurations", module = "simulation"):
@@ -55,7 +56,6 @@ import copy
 import time
 from queue import Empty
 from typing import List
-# from cr_scenario_handler.simulation.simulation import Simulation
 from commonroad.scenario.trajectory import Trajectory
 from commonroad.prediction.prediction import TrajectoryPrediction
 from cr_scenario_handler.utils.agent_status import TIMEOUT, AgentStatus
@@ -67,13 +67,72 @@ class EVITASimulation(Simulation):
     crashing on empty histories when agents collide/finish.
     """
 
-    def __init__(self, config_sim, config_planner):
+    def __init__(self, config_sim, config_planner, progress_bar_manager, on_step):
         super().__init__(config_sim, config_planner)
         
         # Ensure the log directory exists for all batches
         log_dir = os.path.join(self.mod_path, "logs")
+
         if not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok = True)
+
+        # Retrieve the progress bar manager from the argument or create a new one if not provided
+        if progress_bar_manager:
+            self.progress_bar_manager = progress_bar_manager
+        else:
+            self.progress_bar_manager = enlighten.get_manager()
+
+        # Optional function called after every simulation step (e.g. to refresh the main time-budget bar)
+        self.on_step = on_step
+
+    def run_sequential_simulation(self):
+        """
+        As long as not all agents are finished, do a step in the sequential simulation for each non-finished agent
+        and visualize current timestep if specified in the simulation configuration
+        """
+        
+        # TODO How to handle planner.emergency mode here?!
+        # Here we do not start the batch, because we want the execution to take place in the main thread
+
+        # Create a progress bar for the scenario execution process
+        execution_bar = self.progress_bar_manager.counter(total = self.expected_duration, desc = "Scenario Execution", unit = "timesteps", color = "orange", leave = False)
+
+        running = True
+        while running:
+
+            if self.config.occlusion.use_occlusion_module:
+                if self.agents[0].planner_interface.occlusion_module is not None:
+                    for agent in self.agents[0].planner_interface.occlusion_module.agent_manager.real_agents:
+                        if agent.commonroad_dynamic_obstacle not in self.scenario.obstacles:
+                            self.scenario.add_objects(agent.commonroad_dynamic_obstacle)
+
+                self._set_collision_check()
+
+            #######################
+            # Here time progresses
+            self.global_timestep += 1
+            #######################
+
+            self.process_times = {}
+            step_time_start = time.perf_counter()
+
+            # Execute one simulation step for all the agents
+            running = self.step_sequential_simulation()
+
+            self.visualize_simulation(self.global_timestep)
+            self.process_times.update({"total_sim_step": time.perf_counter() - step_time_start})
+
+            # get batch process times
+            self.process_times[self.batch_list[0].name] = self.batch_list[0].process_times
+
+            if self.config.evaluation.evaluate_runtime:
+                self.sim_logger.log_global_time(self.global_timestep, self.process_times)
+
+            execution_bar.update()
+            if self.on_step is not None:
+                self.on_step()
+
+        execution_bar.close(clear = True)
 
     def _step_parallel_simulation(self):
             """
@@ -299,11 +358,13 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         """
         Visualize and plot the initial scenario
         """
+        from commonroad.planning.planning_problem import PlanningProblem
         import matplotlib.pyplot as plt
         import matplotlib.colors as colors
 
         # Sort the planning problems by their ID to ensure consistent coloring
         planning_problems = sorted(planning_problem_set.planning_problem_dict.values(), key = lambda pp : pp.planning_problem_id)
+
         # Get a unique color for each planning problem
         unique_colors = _get_cmap(len(planning_problems), 'rainbow')
 
@@ -319,8 +380,8 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         
         # Iterate over the planning problems and draw them with unique colors
         for i, planning_problem in enumerate(planning_problems):
-            from commonroad.planning.planning_problem import PlanningProblem
             planning_problem: PlanningProblem
+
             # Set renderer draw params
             rnd.draw_params.planning_problem.initial_state.state.facecolor = colors.to_hex(unique_colors(i))
             rnd.draw_params.planning_problem.initial_state.state.draw_arrow = True
@@ -341,7 +402,7 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         # Save the plot to a file
         plt.savefig(f"{output_folder}/scenario.png", format = 'png', dpi = 500, bbox_inches = 'tight')
 
-    def execute(self, scenario, planning_problem_set) -> Simulation:
+    def execute(self, scenario, planning_problem_set, progress_bar_manager = None, on_step = None) -> Simulation:
         """
         Return the original scenario, the simulated scenario, and additional information about the AVs
         """
@@ -352,11 +413,11 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         # Create the folders for the execution using the generation_id
         execution_folder_name = str(scenario.generation_id).rjust(5, '0')
         execution_folder = os.path.join(self.output_folder, execution_folder_name)
-        os.makedirs(execution_folder, exist_ok=False)
+        os.makedirs(execution_folder, exist_ok = False)
 
         # Store here the input scenario, configurations, default configurations
         scenario_folder = os.path.join(execution_folder, "scenario")
-        os.makedirs(scenario_folder, exist_ok=False)
+        os.makedirs(scenario_folder, exist_ok = False)
 
         # Build the scenario file name and file path
         scenario_name = f"scenario_{execution_folder_name}"
@@ -364,12 +425,14 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
 
         # Collect here the execution logs
         logs_folder = os.path.join(execution_folder, "logs")
-        os.makedirs(logs_folder, exist_ok=False)
+        os.makedirs(logs_folder, exist_ok = False)
         
         # Load the default simulation configuration from the Frenetix Motion Planner configuration module
         config_sim = PatchedConfigurationBuilder.build_sim_configuration(scenario_name, scenario_folder, root_path = FRENETIX_ROOT, module = "simulation")
 
+        # Enable multi-agent simulation
         config_sim.simulation.use_multiagent = True
+        
         # Make sure we write the logs in the right folder
         config_sim.simulation.log_path = logs_folder
         
@@ -386,6 +449,7 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         for planning_problem in planning_problem_set.planning_problem_dict.values():
             original_initial_time = planning_problem.initial_state.time_step
             adjusted_initial_time = original_initial_time
+           
             # Increment vehicle initial timestep until it matches the planner replanning frequency
             while adjusted_initial_time % config_planner.planning.replanning_frequency != 0:
                 adjusted_initial_time = adjusted_initial_time + 1
@@ -396,8 +460,6 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
                 planning_problem.initial_state.time_step = adjusted_initial_time
 
         # Write the scenario to a CommonRoad file
-        # CommonRoad truncate floating point numbers, so we need to ensure that we are indeed executing what we generate
-        # Or at least be consistent to avoid reproducibility issues
         crfw = CommonRoadFileWriter(
             scenario,
             planning_problem_set,
@@ -417,23 +479,26 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
 
         try:
             # If any agent fails to start, this will trigger an exception, and stop the simulation
-            simulation = EVITASimulation(config_sim, config_planner)
+            simulation = EVITASimulation(config_sim, config_planner, progress_bar_manager, on_step)
             simulation.run_simulation()
         except Exception as e:
-            error_traceback = traceback.format_exc()  # This gets the entire error traceback
+            error_traceback = traceback.format_exc()
             current_time = datetime.now().strftime('%H:%M:%S')
+            
             # Check if simulation is not None before trying to access current_timestep
-            current_timestep = str(simulation.global_timestep) if simulation else "N/A"
-            print("Error time: " + str(current_time) + " ; " +
-                  "In Scenario Timestep: " + current_timestep + " ; " +
-                  "CODE ERROR: " + str(e) + error_traceback + "\n\n\n\n")
+            if simulation:
+                current_timestep = str(simulation.global_timestep) 
+            else:
+                current_timestep = "N/A"
+
+            print("Error time: " + str(current_time) + " ; " + "In Scenario Timestep: " + current_timestep + " ; " + "CODE ERROR: " + str(e) + error_traceback + "\n\n\n\n")
             
             return None
         finally:
             if simulation is not None:
                 try:
                     # close sim_logger
-                    # simulation.sim_logger.con.close()
+                    simulation.sim_logger.con.close()
                     # close child processes
                     simulation.close_processes()
                 except:
