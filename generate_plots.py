@@ -13,6 +13,7 @@ from scipy.stats import mannwhitneyu
 import matplotlib as mpl
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 from evita.config import ScenarioGeneratorConfig
 from evita.data_analysis import get_interaction_map_bins
@@ -21,7 +22,25 @@ from commonroad.scenario.obstacle import ObstacleType
 
 from evita.data_analysis import compute_effect_size
 
-N_BINS = 8
+N_BINS = ScenarioGeneratorConfig().n_bins
+
+# Colour of each framework, shared by all plots
+FRAMEWORK_COLORS = {}
+ 
+def set_framework_colors(labels: list) -> None:
+    """
+    Assign a fixed colour to each framework, in the order of the given labels
+    """
+    cmap = plt.get_cmap("tab10")
+    FRAMEWORK_COLORS.clear()
+    FRAMEWORK_COLORS.update({label: cmap(i % 10) for i, label in enumerate(labels)})
+ 
+def framework_palette(frameworks) -> dict:
+    """
+    Palette for the given frameworks, using the shared colours (frameworks not yet assigned get the next tab10 colour)
+    """
+    cmap = plt.get_cmap("tab10")
+    return {framework: FRAMEWORK_COLORS.get(framework, cmap((len(FRAMEWORK_COLORS) + i) % 10)) for i, framework in enumerate(frameworks)}
 
 MAP_NAMES_MAPPING = {
     "borregas_ave": "Borregas Ave",
@@ -50,27 +69,32 @@ def plot_interaction_map(interaction_map, long_bins, lat_bins, plot_title: str =
     # Initialize scenario configuration object
     config = ScenarioGeneratorConfig()
 
+    # Rows of the map are longitudinal cells: transpose, so that x = longitudinal and y = lateral
+    data = np.asarray(interaction_map, dtype = float).T
+ 
+    # Empty cells are drawn white
+    data[data == 0] = np.nan
+
     # Initialize the figure and axis
-    fig, ax = plt.subplots(figsize = (8, 4))
+    fig, ax = plt.subplots(figsize = (4.5, 4.5))
 
     # Get the colormap and set the under and bad colors
-    colMap = cm.inferno_r
+    colMap = cm.inferno_r.copy()
     colMap.set_bad(color = 'white')
-    colMap.set_under(color = 'white')
 
-    # Prepare data for plotting
-    masked_data = np.copy(interaction_map).astype(float)
-    masked_data[masked_data == 0 ] = np.nan
-
-    # Plot the heatmap
-    try:
-        ax.imshow(masked_data, cmap = colMap)
-    except Exception as exc:
-        raise exc
+    # Set the color normalization to logarithmic scale, with a minimum value of 1 and a maximum value based on the data
+    if np.any(np.isfinite(data)):
+        max_count = np.nanmax(data)
+    else:
+        max_count = 1
+    
+    # Create a logarithmic normalization for the color scale
+    image = ax.imshow(data, cmap = colMap, norm = LogNorm(vmin = 1, vmax = max(1, max_count)))
+    # fig.colorbar(image, ax = ax, label = "# interactions", shrink = 0.8)
 
     # Show all ticks and label them with the respective list entries.
-    ax.set_xticks(np.arange(len(long_bins)), labels = [f"{v:.2f}" for v in long_bins])
-    ax.set_yticks(np.arange(len(lat_bins)), labels = [f"{v:.2f}" for v in lat_bins])
+    ax.set_xticks(np.arange(len(long_bins)) + 0.5, labels = [f"{v:.2f}" for v in long_bins])
+    ax.set_yticks(np.arange(len(lat_bins)) + 0.5, labels = [f"{v:.2f}" for v in lat_bins])
 
     # Let the horizontal axes labeling appear on top.
     ax.tick_params(top = True, bottom = False, labeltop = True, labelbottom = False, labelsize = 6)
@@ -78,42 +102,51 @@ def plot_interaction_map(interaction_map, long_bins, lat_bins, plot_title: str =
     # Rotate the tick labels and set their alignment.
     plt.setp(ax.get_xticklabels(), rotation = -30, ha = "right", rotation_mode = "anchor")
 
-    # Turn spines off and create white grid.
+    # Axis titles
+    ax.set_xlabel("Longitudinal change [m]", fontsize = 7)
+    ax.set_ylabel("Lateral change [m]", fontsize = 7)
+    ax.xaxis.set_label_position("top")
+ 
+    # Draw white lines between cells
     ax.spines[:].set_visible(False)
 
-    ax.set_xticks(np.arange(len(long_bins) + 1) -.5, minor = True)
-    ax.set_yticks(np.arange(len(lat_bins) + 1) -.5, minor = True)
-
-    ax.grid(which = "minor", color = "w", linestyle = '-', linewidth = 3)
-    ax.tick_params(which = "minor", bottom = False, left = False)
-
+    for x in np.arange(data.shape[1] + 1) - 0.5:
+        ax.axvline(x, color = "w", linewidth = 3, clip_on = False)
+    for y in np.arange(data.shape[0] + 1) - 0.5:
+        ax.axhline(y, color = "w", linewidth = 3, clip_on = False)
+ 
     # Set plot title
     ax.set_title(plot_title)
-
-    # Define the center of the plot for placing the vehicle icon
-    center_x = sum(ax.get_xlim()) * 0.5 - 0.5
-    center_y = sum(ax.get_ylim()) * 0.5 - 0.5
-
+ 
+    # Vehicle icon on the "no change" cell (the middle one), with its size converted from metres to cells
+    center_x = (data.shape[1] - 1) / 2
+    center_y = (data.shape[0] - 1) / 2
+    long_cell_size = np.diff(long_bins).mean()   # metres per longitudinal cell
+    lat_cell_size = np.diff(lat_bins).mean()     # metres per lateral cell
+ 
     icon_patch_list = get_obstacle_icon_patch(ObstacleType.CAR,
         center_x,
         center_y,
         0.0,
-        config.length * 0.5,
-        config.width * 0.5,
+        config.length * 0.5 / long_cell_size,
+        config.width * 0.5 / lat_cell_size,
+        zorder = 10,                              # above the cells and the white lines
         vehicle_color = (1, 1, 1, 0.6),
         edgecolor = "black",
         lw = 0.5)
-    
+ 
     patch_col = mpl.collections.PatchCollection(icon_patch_list, match_original = True)
+    patch_col.set_zorder(10) # the collection's own z-order decides what is drawn on top
+    patch_col.set_alpha(0.7) # set the alpha for the whole collection
     ax.add_collection(patch_col)
-
+ 
     fig.tight_layout()
-
+ 
     return fig
 
 def compute_interaction_maps(experiment_folder: str, long_bins, lat_bins):
     """
-    Computes the interaction maps for the different interaction types and saves the results as plots and csv files
+    Computes the interaction maps and saves the results as plots and csv files
     """
 
     def make_json_serializable(obj):
@@ -137,6 +170,7 @@ def compute_interaction_maps(experiment_folder: str, long_bins, lat_bins):
     os.makedirs(os.path.join(experiment_folder, "csv"), exist_ok = True)
     os.makedirs(os.path.join(experiment_folder, "plots"), exist_ok = True)
     
+    '''
     # ========== STOP SIGNS INTERACTIONS ==========
 
     # Open stop signs interactions file
@@ -211,68 +245,30 @@ def compute_interaction_maps(experiment_folder: str, long_bins, lat_bins):
         fig = plot_interaction_map(vehicles_interactions_map, long_bins, lat_bins, "Vehicles Interactions Map")
         plt.savefig(os.path.join(experiment_folder, "plots", "vehicles_interactions_map.png"), dpi = 500)
         plt.close(fig)
+    '''
 
     # ========== TOTAL INTERACTIONS ==========
 
     # Open total interactions file
-    total_interactions_file_path = os.path.join(experiment_folder, "total_interactions.json")
-    with open(total_interactions_file_path, "r") as f:
-        total_interactions = json.load(f)
+    interactions_maps_file_path = os.path.join(experiment_folder, "interaction_maps.json")
+    with open(interactions_maps_file_path, "r") as f:
+        interaction_maps = json.load(f)
 
-    # Compute interactions map and unique interactions
-    total_interactions_map, total_unique_interactions = compute_map(total_interactions, long_bins, lat_bins)
-
-    # Save interactions map and unique interactions
-    save_list(total_unique_interactions, "total_unique_interactions.json")
-    pd.DataFrame(total_interactions_map).to_csv(
-        os.path.join(experiment_folder, "csv", "total_interaction_map.csv"),
-        index = False,
-        header = False
-    )
-
-    # Plot interactions map
-    fig = plot_interaction_map(total_interactions_map, long_bins, lat_bins, "Total Interactions Map")
-    plt.savefig(os.path.join(experiment_folder, "plots", "total_interactions_map.png"), dpi = 500)
-    plt.close(fig)
-
-def compute_map(interactions: dict, long_bins, lat_bins):
-    """
-    Computes the interactions map and the unique interactions for the given interactions data
-    """
-
-    rows = len(long_bins) + 2
-    cols = len(lat_bins) + 2
+    rows = len(long_bins) + 1
+    cols = len(lat_bins) + 1
 
     # Initialize the interaction map and the unique interactions dictionary
-    interaction_map = np.zeros((rows, cols))
-    unique_interactions = {key: [] for key in interactions}
+    interaction_map = np.zeros((rows, cols), dtype = int)
 
-    # Iterate over the experiments IDs and their interactions lists
-    for experiment_key, experiments_interactions in interactions.items():
-        # Iterate over the interactions lists of the current experiment
-        for interactions_lists in experiments_interactions:
-            # Initialize local interaction map
-            local_interaction_map = np.zeros((rows, cols))
-            # Iterate over the interactions of the current interactions list
-            for interaction in interactions_lists:
-                # Extract longitudinal and latitudinal interaction's effect
-                long = interaction[0]
-                lat = interaction[1]
+    for exp_id, int_map in interaction_maps.items():
+        interaction_map += int_map
 
-                long_bin_index = np.digitize(long, long_bins)
-                lat_bin_index = np.digitize(lat, lat_bins)
+    # Plot interactions map
+    fig = plot_interaction_map(interaction_map, long_bins, lat_bins, "")
+    plt.savefig(os.path.join(experiment_folder, "plots", "interaction_map.png"), dpi = 500)
+    plt.close(fig)
 
-                # Update local interaction map
-                local_interaction_map[long_bin_index, lat_bin_index] += 1
-
-            # Compute local unique interactions
-            unique_interactions[experiment_key].append(np.count_nonzero(local_interaction_map))
-            # Update interaction map
-            interaction_map += local_interaction_map
-
-    return interaction_map, unique_interactions
-
-def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: bool = True):
+def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: bool, aggregated_data_load: bool):
     """
     Generates the comparison plot between Evita and DoppelTest for the interactions or collisions metrics and saves the result in the output folder
     """
@@ -287,10 +283,23 @@ def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: b
                 print(f"Warning: File not found for framework '{framework}' in map '{map_name}'. Expected at: {file_path}")
                 continue
 
+            if aggregated_data_load and aggregate:
+                file_path = file_path.replace("total_", "aggregated_")
+                
             data = load_json_data(file_path, aggregate)
 
-            for _, val in data.items():
-                all_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), "Metric": val, "Framework": framework})
+            for experiment_id, values in data.items():
+                # Aggregated: one value per run. Not aggregated: one value per scenario of the run
+                if isinstance(values, list):
+                    values = values
+                else:
+                    values = [values]
+
+                for value in values:
+                    all_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name),
+                                    "Run": experiment_id,
+                                    "Metric": value,
+                                    "Framework": framework})
 
     # Create DataFrame with the collected data
     df = pd.DataFrame(all_data)
@@ -312,11 +321,7 @@ def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: b
     # Define colors for each framework's data
     # Generate a color palette from a colormap based on the frameworks considered
     frameworks = df["Framework"].unique()
-    cmap = plt.get_cmap("tab10")
-    palette = {
-        framework: cmap(i / max(len(frameworks) - 1, 1))
-        for i, framework in enumerate(frameworks)
-    }
+    palette = framework_palette(frameworks)
     
     # Plot the boxplot
     sns.boxplot(
@@ -354,6 +359,7 @@ def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: b
     for map_name in data_map.keys():
         frameworks_data = {}
         effect_sizes[map_name] = {}
+        
         for framework in frameworks:
             data = df[(df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name)) & (df["Framework"] == framework)]["Metric"].to_list()
 
@@ -388,10 +394,7 @@ def load_json_data(file_path: str, aggregate: bool = True) -> dict:
 
     for experiment, values in data.items():
         if isinstance(values, list):
-            aggregated_data[experiment] = sum(
-                value for value in values
-                if isinstance(value, int) and not isinstance(value, bool)
-            )
+            aggregated_data[experiment] = sum(value for value in values if isinstance(value, int) and not isinstance(value, bool))
         elif isinstance(values, int) and not isinstance(values, bool):
             # Handle values that are already aggregated.
             aggregated_data[experiment] = values
@@ -449,11 +452,7 @@ def violations_plots(data_map: dict, output_folder_path: str, aggregate: bool = 
         # Define colors for each framework's data
         # Generate a color palette from a colormap based on the frameworks considered
         frameworks = df["Framework"].unique()
-        cmap = plt.get_cmap("tab10")
-        palette = {
-            framework: cmap(i / max(len(frameworks) - 1, 1))
-            for i, framework in enumerate(frameworks)
-        }
+        palette = framework_palette(frameworks)
         
         # Plot data
         sns.boxplot(
@@ -522,9 +521,13 @@ def generate_statistics_plots(data_map: dict, first_label: str, output_folder_pa
             map_data = statistic_data[map_name]
             for framework, file_path in map_data.items():
                 data = load_json_data(file_path)
-    
-                for _, val in data.items():
-                    all_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), f"{statistic}": val, "Framework": framework})
+
+                for experiment_id, val in data.items():
+                    all_data.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name),
+                                     "Run": experiment_id,
+                                     f"{statistic}": val,
+                                     "Framework": framework}
+                                     )
         
         # Create DataFrame with the collected data for the current generation statistic
         df = pd.DataFrame(all_data)
@@ -536,11 +539,7 @@ def generate_statistics_plots(data_map: dict, first_label: str, output_folder_pa
         # Define colors for each framework's data
         # Generate a color palette from a colormap based on the frameworks considered
         frameworks = df["Framework"].unique()
-        cmap = plt.get_cmap("tab10")
-        palette = {
-            framework: cmap(i / max(len(frameworks) - 1, 1))
-            for i, framework in enumerate(frameworks)
-        }
+        palette = framework_palette(frameworks)
         
         # Plot data
         sns.boxplot(
@@ -761,18 +760,20 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
 
     # Create DataFrame with the collected data
     valid_df = pd.DataFrame(all_valid_data)
+
     frameworks = valid_df["Framework"].unique()
+
     summed_valid = {}
     for map_name in valid_data_map.keys():
         summed_valid[map_name] = {}
         for framework in frameworks:
             summed_valid[map_name][framework] = valid_df[(valid_df["Framework"] == framework) & (valid_df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name))]["Valid"].sum()
 
-    all_data = {}
     statistics = {}
     
     # Iterate over each map and aggregated metric data paths lists
     for map_name, map_data in vehicles_data_map.items():
+        all_data = {}
         statistics[map_name] = {}
 
         for framework, file_path in map_data.items():
@@ -785,7 +786,7 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
                 vehicle_count_list.extend(val)
 
             statistics[map_name][framework] = {
-                "Mean": mean(vehicle_count_list),
+                "Mean": round(mean(vehicle_count_list), 2),
                 "Median": median(vehicle_count_list)
             }
 
@@ -800,18 +801,16 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
 
             scenarios_count = all_data[framework]
 
-            total_valid = summed_valid[map_name][framework]
-
-            # Fallback if generated count is unavailable
-            if total_valid == 0:
-                total_valid = sum(scenarios_count.values())
+            # Percentages of the scenarios with vehicle data (executed and evaluated).
+            # The valid count from performance.csv also includes scenarios skipped when the budget was over, which have no data
+            total_scenarios = sum(scenarios_count.values())
 
             for n in sorted(scenarios_count.keys()):
-                # Ignore scenarios with fewer than 2 agents
+                # Ignore scenarios with fewer than 2 agents and more than 8 agents for
                 if n < 2 or n > 8:
                     continue
                 
-                percentage = (scenarios_count[n] / total_valid) * 100
+                percentage = (scenarios_count[n] / total_scenarios) * 100
 
                 percentage_data.append({
                     "Agents": n,
@@ -834,12 +833,14 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
             x = "Agents",
             y = "Percentage",
             hue = "Framework",
+            hue_order = [framework for framework in frameworks if framework in all_data],
+            palette = framework_palette(frameworks),
             dodge = True,
             errorbar = None,
             ax = ax
         )
 
-        ax.set_title(map_name, fontsize = 14, pad = 15)
+        ax.set_title(MAP_NAMES_MAPPING.get(map_name, map_name), fontsize = 14, pad = 15)
         ax.set_xlabel("# Agents")
         ax.set_ylabel("% Scenarios")
 
@@ -869,7 +870,7 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
 
         plt.tight_layout()
 
-        fig.savefig(os.path.join(output_folder_path, f"{map_name}_scenario_vehicles_comparison.png"), dpi = 500, bbox_inches = "tight")
+        fig.savefig(os.path.join(output_folder_path, f"{MAP_NAMES_MAPPING.get(map_name, map_name)}_scenario_vehicles_comparison.png"), dpi = 500, bbox_inches = "tight")
 
         plt.close(fig)
 
@@ -885,6 +886,7 @@ def initialize_effect_size(experiments_folder_paths: list, experiments_labels: l
     effect_size_data = {}
     maps_folders = None
 
+    # Extract map folders from experiment folders
     for experiment_folder_path in experiments_folder_paths:
         maps = set([f for f in os.listdir(experiment_folder_path) if os.path.isdir(os.path.join(experiment_folder_path, f)) and f != "interactions_collisions_analysis"])
 
@@ -893,19 +895,29 @@ def initialize_effect_size(experiments_folder_paths: list, experiments_labels: l
         else:
             maps_folders &= maps
 
+    # Initialize effect size results and data dictionaries
     for effect_size_column in effect_size_columns.keys():
-        effect_size_results[effect_size_column] = {}
+        effect_size_results[effect_size_column] = {
+            "aggregated_experiments_plots": {},
+            "single_scenarios_plots": {},
+        }
         effect_size_data[effect_size_column] = {}
+        
         for map_folder in maps_folders:
-            effect_size_results[effect_size_column][map_folder] = None
+            effect_size_results[effect_size_column]["aggregated_experiments_plots"][map_folder] = None
+            effect_size_results[effect_size_column]["single_scenarios_plots"][map_folder] = None
             effect_size_data[effect_size_column][map_folder] = {}
+        
             for experiment_label in experiments_labels:
                 effect_size_data[effect_size_column][map_folder][experiment_label] = None
 
+    # Initialize additional columns in effect size data dictionary
     for additional_column in additional_columns.keys():
         effect_size_data[additional_column] = {}
+
         for map_folder in maps_folders:
             effect_size_data[additional_column][map_folder] = {}
+            
             for experiment_label in experiments_labels:
                 effect_size_data[additional_column][map_folder][experiment_label] = None
 
@@ -917,8 +929,22 @@ def generate_comparison_plots(experiments_folder_paths: list, experiments_labels
     """
     
     # Initialize effect size dictionary
-    effect_size_columns = {"interactions": "total_interactions_count.json", "unique_interactions": "total_unique_interactions.json", "collisions": "total_collisions.json", "unique_collisions": "total_unique_collisions.json", "violations": "scenario_violations.json"}
-    additional_columns = {"generated": "total_generated_scenarios.json", "valid": "total_valid_scenarios.json", "invalid": "total_invalid_scenarios.json", "vehicles_number": "vehicles_number.json"}
+    effect_size_columns = {
+        "interactions": "total_interactions.json",
+        "unique_interactions": "total_unique_interactions.json",
+        "collisions": "total_collisions.json",
+        "unique_collisions": "total_unique_collisions.json",
+        "violations": "scenario_violations.json"
+    }
+    additional_columns = {
+        "generated": "total_generated_scenarios.json",
+        "valid": "total_valid_scenarios.json",
+        "invalid": "total_invalid_scenarios.json",
+        "vehicles_number": "vehicles_number.json"
+    }
+
+    # Same colour for each framework in every plot
+    set_framework_colors(experiments_labels)
 
     effect_size_results, effect_size_data, maps_folders = initialize_effect_size(experiments_folder_paths, experiments_labels, effect_size_columns,  additional_columns)
 
@@ -955,15 +981,25 @@ def generate_comparison_plots(experiments_folder_paths: list, experiments_labels
         files_list = effect_size_data[effect_size_column]
 
         if effect_size_column == "violations":
-            effect_size_list = violations_plots(files_list, output_folder_path)
+            output_path = os.path.join(output_folder_path, "aggregated_experiments_plots")
+            effect_size_aggregated_list = violations_plots(files_list, output_folder_path, True)
+
+            output_path = os.path.join(output_folder_path, "single_scenarios_plots")
+            effect_size_single_list = violations_plots(files_list, output_folder_path, True)
         else:
-            output_path = os.path.join(output_folder_path, f"{effect_size_column}_comparison.png")
-            effect_size_list = interactions_collisions_plots(files_list, output_path)
+            aggregated_data_load = (effect_size_column in ["unique_interactions", "unique_collisions"])
+
+            output_path = os.path.join(output_folder_path, "aggregated_experiments_plots", f"{effect_size_column}_comparison.png")
+            effect_size_aggregated_list = interactions_collisions_plots(files_list, output_path, True, aggregated_data_load)
+
+            output_path = os.path.join(output_folder_path, "single_scenarios_plots", f"{effect_size_column}_comparison.png")
+            effect_size_single_list = interactions_collisions_plots(files_list, output_path, False, aggregated_data_load)
 
         print(f"Generated {effect_size_column} comparison plot")
 
-        for map_folder in effect_size_list.keys():
-            effect_size_results[effect_size_column][map_folder] = effect_size_list[map_folder]
+        for map_folder in effect_size_aggregated_list.keys():
+            effect_size_results[effect_size_column]["aggregated_experiments_plots"][map_folder] = effect_size_aggregated_list[map_folder]
+            effect_size_results[effect_size_column]["single_scenarios_plots"][map_folder] = effect_size_single_list[map_folder]
 
 
     # ========== PLOT GENERATION STATISTICS =========
@@ -1016,6 +1052,7 @@ if __name__ == "__main__":
     if len(args.experiments) != len(args.labels):
         parser.error("The number of experiment folder paths must match the number of experiment labels.")
 
-    os.makedirs(args.output, exist_ok = True)
+    os.makedirs(os.path.join(args.output, "aggregated_experiments_plots"), exist_ok = True)
+    os.makedirs(os.path.join(args.output, "single_scenarios_plots"), exist_ok = True)
 
     generate_comparison_plots(args.experiments, args.labels, args.output)
