@@ -13,7 +13,7 @@ import tempfile
 from typing import List, Tuple, Set
 
 
-from .utils import EVITA_MAIN_LOGGER_NAME, ROOT_DIR, RESULTS_FOLDER, LANELET_EXTENSION, Budget, extend_scenario_after_goal_areas, time_shift, simulation_folders
+from .utils import EVITA_MAIN_LOGGER_NAME, ROOT_DIR, RESULTS_FOLDER, LANELET_EXTENSION, Budget, extend_scenario_after_goal_areas, time_shift, simulation_folders, get_progress_bar_manager
 
 from .interfaces import AbstractScenarioGenerator, AbstractScenarioExecutor, AbstractScenarioEvaluator
 from .validator import ScenarioValidator
@@ -439,7 +439,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     budget.start()
 
     # Define a progress bar with time
-    progress_bar_manager = enlighten.get_manager()
+    progress_bar_manager = get_progress_bar_manager()
     main_progress_bar = progress_bar_manager.counter(total = int(budget.get_time_budget()), desc = "Time Budget", unit = "seconds", color = "red", leave = False)
 
     def update_main_progress_bar():
@@ -575,21 +575,15 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                 try:
                     # Log info of the scenario that is going to be evaluated
                     logger.info(f"Evaluating scenario: {scenario.generation_id} - {budget.get_remaining_real_time()}")
-
-                    # Pause the budget while we evaluate the scenario
-                    budget.pause()
                     
                     try:
                         # Compute the criticality metrics for this scenario and planning problem set
-                        criticality_dataframe = scenario_evaluator.evaluate(simulation)
+                        criticality_dataframe = scenario_evaluator.evaluate(simulation, on_step = update_main_progress_bar)
                     finally:
                         # Perform cleanup after evaluation
                         simulation.sim_logger.con.close()
                         if simulation.config.simulation.multiprocessing:
                             simulation.close_processes()
-    
-                        # Resume the budget for the next scenario execution
-                        budget.resume()
 
                     # Log validation completion and remaining time
                     logger.info(f"Done. - {budget.get_remaining_real_time()}")

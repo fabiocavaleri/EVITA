@@ -76,7 +76,7 @@ def process_scenario(scenario_folder_path: str, impact_location_bins, riv_bins, 
         # Check if any collision happened in the scenario
         if len(collisions) > 0:
             # Iterate over each collision metric
-            for impact_location, riv, ria in zip(collisions["impact_position"], collisions["riv"], collisions["ria"]):
+            for impact_location, riv, ria in zip(collisions["impact_location"], collisions["riv"], collisions["ria"]):
                 # Retrieve impact location index and RIV/RIA bins
                 idx = impact_location_bins.index(impact_location)
                 riv_bin = np.digitize(riv, riv_bins)

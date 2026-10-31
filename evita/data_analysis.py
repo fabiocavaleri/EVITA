@@ -1227,7 +1227,7 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
     try:
         # Retrieve collisions data from the DB
         # Group data by agent_id and has_collided_with to get unique collisions
-        result = connection.execute('SELECT MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_position from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
+        result = connection.execute('SELECT MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_location from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
         metrics = result.fetchall()
 
         collisions = dict()
@@ -1291,7 +1291,7 @@ def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) 
         # A this point we need to merge the impact locations together
         for collision in collisions.values():
             collision["impact_location"] = frozenset((collision["v1_impact_location"], collision["v2_impact_location"]))
-            module_logger.info(f"Register {collision}")
+            module_logger.debug(f"Register {collision}")
 
         return [(c["impact_location"], c["riv"], c["ria"]) for c in collisions.values()]
     finally:
@@ -1340,6 +1340,26 @@ def get_interaction_map_bins(n_bins: int = None):
     lat_bins = np.linspace(-lane_width, lane_width, n_bins)
     
     return long_bins, lat_bins
+
+# Columns written by EVITA's evaluator: a scenario_evaluation table without them was never evaluated
+EVALUATION_COLUMNS = {"is_interacting", "diff_long", "diff_lat", "has_collided", "has_collided_with",
+                      "ria", "riv", "impact_location", "most_critical_agent", "has_timeout", "has_missed_goal"}
+
+def _is_evaluated(simulation_db: str) -> bool:
+    """
+    True if the scenario was evaluated: the evaluation table has EVITA's columns and at least one row.
+    Executed but invalid scenarios (e.g. an agent did not start) keep the fork's bare table and are not evaluated.
+    """
+    connection = sqlite3.connect(simulation_db)
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(scenario_evaluation);")}
+        if not EVALUATION_COLUMNS.issubset(columns):
+            return False
+        return connection.execute("SELECT COUNT(*) FROM scenario_evaluation;").fetchone()[0] > 0
+    except sqlite3.Error:
+        return False
+    finally:
+        connection.close()
 
 def generate_report(run_folder: str, _output_to: str = None) -> None:
     """
@@ -1404,6 +1424,10 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             
             # Build scenario's DB file path
             simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
+
+            if not _is_evaluated(simulation_db):
+                module_logger.debug(f"Skipping {simulation_folder}: not evaluated (invalid scenario)")
+                continue
 
             total_timeouts += count_metric(simulation_db, "has_timeout")
             total_missed_goals += count_metric(simulation_db, "has_missed_goal")
@@ -1496,6 +1520,10 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
             # Build scenario's DB and scenario's file paths
             simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
             scenario_file = os.path.join(run_folder, simulation_folder, "scenario", f"scenario_{simulation_folder}.xml")
+
+            if not _is_evaluated(simulation_db):
+                module_logger.debug(f"Skipping {simulation_folder}: not evaluated (invalid scenario)")
+                continue
 
             total_emergency += count_metric(simulation_db, "has_emergency")
             total_disengagement += count_metric(simulation_db, "has_disengagement")

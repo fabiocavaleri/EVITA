@@ -23,11 +23,14 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
     
         self.output_folder = output_folder
     
-    def evaluate(self, simulation: Simulation, trajectory_difference_threshold = 1.0) -> pd.DataFrame:
+    def evaluate(self, simulation: Simulation, trajectory_difference_threshold = 1.0, on_step = None) -> pd.DataFrame:
         """
         Evaluate the simulation using the already implemented metrics, then augment the result with
         our additional metrics
         """
+        def sync_progress_bar():
+            if on_step is not None:
+                on_step()
 
         # Retrieve scenario agents
         agent_ids = simulation.agent_id_list
@@ -50,12 +53,16 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
             for timestep, xs, ys, orientations, velocities in sorted([(int(d["trajectory_number"]), d["x_positions_m"], d["y_positions_m"], d["theta_orientations_rad"], d["velocities_mps"]) for d in data], key = lambda tup: tup[0]):
                 trajectories_df.loc[len(trajectories_df)] = [agent_id, timestep, _rebuild_trajectory(timestep, xs, ys, orientations, velocities)]
 
+        sync_progress_bar()
+
         for obstacle in simulation.scenario.obstacles:
             module_logger.debug(f"Obstacle {obstacle.obstacle_id} has initial state at timestep {obstacle.initial_state.time_step} and final state at timestep {obstacle.prediction.trajectory.state_list[-1].time_step}")
 
         # Invoke the original code - this also stores the DB
         module_logger.info("Evaluating simulation...")
         criticality_dataframe = evaluate_simulation(simulation).criticality_dataframe
+
+        sync_progress_bar()
 
         # Extend evaluation with additional metrics for each agent:
         #  - max_danger: at each time, what's the max_danger for each agent
@@ -70,19 +77,29 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
         module_logger.info("Computing danger criticality metric...")
         criticality_dataframe = augment_with_danger(simulation, criticality_dataframe)
 
+        sync_progress_bar()
+
         module_logger.info("Computing interactions...")
         criticality_dataframe = augment_with_interactions(simulation, trajectories_df, criticality_dataframe, trajectory_difference_threshold)
 
+        sync_progress_bar()
+
         module_logger.info("Computing collisions...")
         criticality_dataframe = augment_with_collisions(simulation, criticality_dataframe)
+
+        sync_progress_bar()
 
         # collect data about missed goals/timeouts
         module_logger.info("Computing missed goals and timeouts...")
         criticality_dataframe = augment_with_missed_goals(simulation, criticality_dataframe)
 
+        sync_progress_bar()
+
         # collect data about emergency behaviors and disengagement
         module_logger.info("Computing emergencies and disengagements...")
         criticality_dataframe = augment_with_emergencies_and_disengagements(simulation, criticality_dataframe)
+
+        sync_progress_bar()
         
         # Replace NaN with None otherwise SQLITE Complains
         criticality_dataframe = criticality_dataframe.replace({float('nan'): None})
@@ -107,5 +124,7 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
 
         # Make sure we log everything inside the dataframe
         simulation.sim_logger.log_evaluation(criticality_dataframe)
+
+        sync_progress_bar()
 
         return criticality_dataframe

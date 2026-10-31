@@ -666,15 +666,15 @@ def augment_with_collisions(executed_scenario: Scenario, scenario_collisions: pd
         # Compute collision metrics and extend original DataFrame row
         try:
             # Compute collision criticality features
-            row["ria"], row["riv"], row["impact_position"] = compute_collision_features(collision_timestep, agent, collided_agent)
+            row["ria"], row["riv"], row["impact_location"] = compute_collision_features(collision_timestep, agent, collided_agent)
         except Exception as e:
-            row["ria"], row["riv"], row["impact_position"] = None, None, None
+            row["ria"], row["riv"], row["impact_location"] = None, None, None
 
-        if pd.notna(row["impact_position"]):
+        if pd.notna(row["impact_location"]):
             extended_collisions_rows.append(row)
 
     return pd.DataFrame(extended_collisions_rows,
-                        columns = scenario_collisions.columns.tolist() + ["ria", "riv", "impact_position"]), issue_rows
+                        columns = scenario_collisions.columns.tolist() + ["ria", "riv", "impact_location"]), issue_rows
 
 def compute_collision_features(collision_timestep: int, agent: DynamicObstacle, collided_agent: DynamicObstacle) -> List[int]:
     """

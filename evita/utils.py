@@ -195,6 +195,19 @@ class Budget:
     def is_over(self):
         return self.get_remaining_real_time() <= 0
 
+import enlighten
+
+def get_progress_bar_manager():
+    """
+    Progress bars on the terminal, also when stdout is redirected (e.g. `| tee log`).
+    Falls back to the default (disabled when there's no terminal, e.g. under nohup or in a batch job).
+    """
+    try:
+        terminal = open("/dev/tty", "w")
+        return enlighten.get_manager(stream = terminal)
+    except OSError:
+        return enlighten.get_manager()
+
 from typing import Tuple
 from commonroad.scenario.scenario import Scenario
 from commonroad.planning.planning_problem import PlanningProblemSet

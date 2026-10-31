@@ -76,8 +76,8 @@ def main(experiments_folder_path: str, max_workers: int = 5):
         if not os.path.exists(simulation_db_path):
             return None
 
-        columns = ['agent_id', 'timestep', 'max_danger', 'max_danger_caused_by_agent', 'is_interacting', 'is_interacting_with', 'diff_long', 'diff_lat', 'has_collided', 'has_collided_with', 'ria', 'riv', 'impact_location', 'impact_position']
-        # columns = ['agent_id', 'timestep', 'max_danger', 'max_danger_caused_by_agent', 'is_interacting', 'is_interacting_with', 'diff_long', 'diff_lat', 'has_collided', 'has_collided_with', 'ria', 'riv', 'impact_location', 'impact_position', 'most_critical_agent', 'has_timeout', 'has_missed_goal', 'has_emergency', 'has_disengagement']
+        columns = ['agent_id', 'timestep', 'max_danger', 'max_danger_caused_by_agent', 'is_interacting', 'is_interacting_with', 'diff_long', 'diff_lat', 'has_collided', 'has_collided_with', 'ria', 'riv', 'impact_location']
+        # columns = ['agent_id', 'timestep', 'max_danger', 'max_danger_caused_by_agent', 'is_interacting', 'is_interacting_with', 'diff_long', 'diff_lat', 'has_collided', 'has_collided_with', 'ria', 'riv', 'impact_location', 'most_critical_agent', 'has_timeout', 'has_missed_goal', 'has_emergency', 'has_disengagement']
 
         conn = None
 
@@ -136,7 +136,7 @@ def main(experiments_folder_path: str, max_workers: int = 5):
         # COLLISIONS
         # ================================================================
 
-        collisions_columns = ['agent_id', 'timestep', 'has_collided', 'has_collided_with', 'ria', 'riv', 'impact_location', 'impact_position']
+        collisions_columns = ['agent_id', 'timestep', 'has_collided', 'has_collided_with', 'ria', 'riv', 'impact_location']
 
         collisions = criticality_df[criticality_df['has_collided'] == 1.0][collisions_columns].sort_values(["timestep", "agent_id"])
 
@@ -151,7 +151,7 @@ def main(experiments_folder_path: str, max_workers: int = 5):
             crashes = collisions.groupby("has_collided_with", sort = False)
 
             # Iterate over each collision metric
-            for impact_location, riv, ria in zip(collisions["impact_position"], collisions["riv"], collisions["ria"]):
+            for impact_location, riv, ria in zip(collisions["impact_location"], collisions["riv"], collisions["ria"]):
                 # Skip impacts with missing features ('None' / NULL), instead of failing the whole scenario
                 riv = pd.to_numeric(riv, errors = "coerce")
                 ria = pd.to_numeric(ria, errors = "coerce")

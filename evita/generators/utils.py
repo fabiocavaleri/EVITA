@@ -1002,12 +1002,12 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
                 most_critical_agent[t] = None
                 
         # Save the dataframe for this agent and concatenate with the previous ones
-        agent_has_collided_df = pd.DataFrame(None, index = list(range(t_start, t_end + 1)), columns = ["has_collided", "has_collided_with", "ria", "riv", "impact_position", "most_critical_agent"])
+        agent_has_collided_df = pd.DataFrame(None, index = list(range(t_start, t_end + 1)), columns = ["has_collided", "has_collided_with", "ria", "riv", "impact_location", "most_critical_agent"])
         agent_has_collided_df["has_collided"] = has_collided
         agent_has_collided_df["has_collided_with"] = has_collided_with
         agent_has_collided_df["ria"] = ria
         agent_has_collided_df["riv"] = riv
-        agent_has_collided_df["impact_position"] = impact_position
+        agent_has_collided_df["impact_location"] = impact_position
         agent_has_collided_df["most_critical_agent"] = most_critical_agent
         
         # Concatenate the agent df with the previous ones

@@ -306,15 +306,14 @@ class NSGAIIproblem(ElementwiseProblem):
         """
         self.logger.info(f"Evaluating scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
  
-        with self.termination_criterion.paused():
-            try:
-                criticality_dataframe = self.scenario_evaluator.evaluate(simulation, self.trajectory_difference_threshold)
-            finally:
-                # Perform cleanup after evaluation
-                simulation.sim_logger.con.close()
+        try:
+            criticality_dataframe = self.scenario_evaluator.evaluate(simulation, self.trajectory_difference_threshold, on_step = update_main_progress_bar)
+        finally:
+            # Perform cleanup after evaluation
+            simulation.sim_logger.con.close()
 
-                if simulation.config.simulation.multiprocessing:
-                    simulation.close_processes()
+            if simulation.config.simulation.multiprocessing:
+                simulation.close_processes()
  
         self.logger.info(f"Evaluation completed - {self.termination_criterion.remaining_time()}")
 

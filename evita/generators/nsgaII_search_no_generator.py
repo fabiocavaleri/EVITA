@@ -6,7 +6,7 @@ import os
 import csv
 import argparse
 import shutil
-import enlighten
+import enlighten  # Progress bars
 from pymoo.algorithms.moo.nsga2 import NSGA2
 
 import random
@@ -19,7 +19,7 @@ from evita.generators.nsgaII_operators import ScenarioSampling, ScenarioMutation
     ScenarioDuplicateElimination, CustomTimeTermination
 from evita.generators import utils as scenario_generation_utils
 
-from evita.utils import initialize_main_logger, EVITA_MAIN_LOGGER_NAME
+from evita.utils import initialize_main_logger, EVITA_MAIN_LOGGER_NAME, get_progress_bar_manager
 
 if __name__ == '__main__':
     """
@@ -112,7 +112,7 @@ if __name__ == '__main__':
 
     driving_agent_name = "frenetix"
 
-    progress_bar_manager = enlighten.get_manager()
+    progress_bar_manager = get_progress_bar_manager()
 
     # By default checkpoint is every 60 minutes after the population evaluation
     termination_criterion = CustomTimeTermination(args.time_budget, checkpoint_every = args.checkpoint_every, progress_bar_manager = progress_bar_manager)
