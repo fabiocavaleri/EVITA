@@ -37,7 +37,7 @@ class EVITAPlanningProblem(PlanningProblem):
         super().__init__(planning_problem_id, initial_state, goal_region)
         self.path = path
 
-def mutate_initial_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario) -> PlanningProblem:
+def mutate_initial_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario, scenario_map_file_path: str = None) -> PlanningProblem:
     """
     Mutate the initial position of the given planning problem.
     Return a new planning problem
@@ -66,7 +66,7 @@ def mutate_initial_position(config: ScenarioGeneratorConfig, planning_problem: P
 
     return _planning_problem
 
-def mutate_initial_velocity(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario) -> PlanningProblem:
+def mutate_initial_velocity(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario, scenario_map_file_path: str = None) -> PlanningProblem:
     """
     Mutate the initial velocity of the given planning problem. Return a new planning problem
     """
@@ -100,7 +100,7 @@ def _routes_with_exit(start_lanelet: Lanelet, ll_network) -> List[Tuple[Lanelet,
 
     return finished
 
-def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario) -> PlanningProblem:
+def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario, scenario_map_file_path: str = None) -> PlanningProblem:
     """
     Move the goal area of the planning problem to the end of a different exit lane
     reachable from the initial lanelet (in the driving direction)
@@ -137,7 +137,7 @@ def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem:
 
     return _planning_problem
 
-def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet) -> PlanningProblemSet:
+def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet, map_file_path: str = None) -> PlanningProblemSet|EVITAPlanningProblem:
     """
     Return a new PlanningProblemSet containing the same problems plus a random one
     """
@@ -214,7 +214,7 @@ def point_at_distance_with_next(lanelet, s):
 
     return point, next_point
 
-def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet, scenario_map_file_path: str = None) -> PlanningProblemSet:
+def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet, scenario_map_file_path: str) -> PlanningProblemSet:
     """
     Return a new PlanningProblemSet containing the same problems plus a random one
     This is a custom version of the add_random_planning_problem function that ensures the generated planning problem is compatible with the EVITA + DoppelTest framework
@@ -223,6 +223,7 @@ def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario:
     # Copy the scenario and problem set
     _scenario = deepcopy(scenario)
     _problem_set = deepcopy(problem_set)
+    lanelet_network = _scenario.lanelet_network
 
     # Retrieve scenario's map name
     scenario_map_path = scenario_map_file_path.removesuffix(".xml")
@@ -232,90 +233,70 @@ def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario:
     with open(lanelets_not_in_junction_file_path, "r") as f:
         lanelets_not_in_junction = json.load(f)
 
-    # Iterate until a valid initial lanelet is found (one that has at least one successor)
-    while True:
-        # Pick a random lanelet to place the AV 
-        initial_lanelet = scenario.lanelet_network.find_lanelet_by_id(random.choice(lanelets_not_in_junction))
-
-        # Check that the initial lanelet has at least a successor (not only adjacent lanes)
-        if len(initial_lanelet.successor) > 0:
-            break
-
     # Open .json file with all the feasible paths for the map lanelets
     map_feasible_paths_file_path = os.path.join(f"{scenario_map_path}_feasible_paths.json")
     with open(map_feasible_paths_file_path, "r") as f:
         feasible_paths = json.load(f)
 
-    # Extract input lanelet feasible paths
-    lanelet_feasible_paths = feasible_paths[str(initial_lanelet.lanelet_id)]
-
+    # Iterate until a valid planning problem is found
     while True:
-        # Pick a random goal lanelet
-        random_path = random.choice(lanelet_feasible_paths)
-        random_exit_lanelet = _scenario.lanelet_network.find_lanelet_by_id(random_path[-1])
-        # Check that the goal lanelet is not in a junction (to avoid short routes) and that the path is not within a single lanelet
-        if random_path[-1] in lanelets_not_in_junction and len(random_path) > 1:
-            break
+        # Pick a random lanelet to place the AV 
+        initial_lanelet = scenario.lanelet_network.find_lanelet_by_id(random.choice(lanelets_not_in_junction))
 
-    # Get initial and final lanelet lengths
-    start_lane_length = np.sum(np.linalg.norm(np.diff(initial_lanelet.center_vertices, axis = 0), axis = 0))
-    final_lane_length = np.sum(np.linalg.norm(np.diff(random_exit_lanelet.center_vertices, axis = 0), axis = 0))
+        # Check that the initial lanelet has at least a successor (not only adjacent lanes)
+        if len(initial_lanelet.successor) == 0:
+            continue
 
-    # Select start position
-    if start_lane_length > 5:
-        start_position_distance = round(random.random() * (start_lane_length - 5), 1)
-    else:
-        start_position_distance = 0.0
+        # Extract input lanelet feasible paths
+        lanelet_feasible_paths = feasible_paths[str(initial_lanelet.lanelet_id)]
+        # Filter only the paths with a valid goal lanelet
+        filtered_feasible_paths = [path for path in lanelet_feasible_paths if path[-1] in lanelets_not_in_junction and not lanelet_network.find_lanelet_by_id(path[-1]).successor]
 
-    # Extract start position and next point to compute orientation
-    start_point = initial_lanelet.interpolate_position(start_position_distance)[0]
-    start_next_point = initial_lanelet.interpolate_position(start_position_distance + 1.0)[0]
+        # Check there is at least one valid path
+        if len(filtered_feasible_paths) == 0:
+            continue
+        
+        random_path = random.choice(filtered_feasible_paths)
 
-    # Compute initial velocity, orientation, acceleration, yaw_rate and slip angle
-    velocity = random.uniform(config.min_init_velocity, config.max_init_velocity)
-    orientation = generation_utils.get_orientation_by_coords((start_point[0], start_point[1]), (start_next_point[0], start_next_point[1]))
-    acceleration = 0.0
-    yaw_rate = 0.0
-    slip_angle = 0.0
+        # Generate an initial state for the planning problem
+        init_state = generation_utils.get_random_init_state(config, initial_lanelet)
+        if init_state is None:
+            continue
 
-    # Randomply select the initial timestep
-    initial_time_step = random.randint(0, INSTANCE_MAX_WAIT_TIME * 10)
+        # Randomly select the initial timestep
+        init_state.time_step = random.randint(0, INSTANCE_MAX_WAIT_TIME * 10)
+
+        # Generate a goal area
+        goal_area = generation_utils.get_possible_goal_for_lanelet(config, _merge_path(lanelet_network, random_path))
+        goal = generation_utils.generate_goal(config, goal_area)
+
+        if _problem_set.planning_problem_dict:
+            last_key, _ = max(list(_problem_set.planning_problem_dict.items()))
+        else:
+            # Note start with the predefined ID to ensure uniqueness of IDs
+            last_key = config.av_base_id
+
+        new_id = last_key + 1
+
+        new_pp = EVITAPlanningProblem(new_id, init_state, goal, random_path)
+        _problem_set.add_planning_problem(new_pp)
+        
+        return _problem_set
+
+def _merge_path(lanelet_network, path: List[int]) -> Lanelet:
+    """
+    Merge the lanelets of a path into a single lanelet, as get_successor_lanelets does for the Frenetix routes
+    """
+    merged = None
+
+    for lanelet_id in path:
+        lanelet = lanelet_network.find_lanelet_by_id(lanelet_id)
+        if merged is None:
+            merged = deepcopy(lanelet)
+        else:
+            merged = Lanelet.merge_lanelets(merged, lanelet)
     
-    init_state = InitialState(time_step = initial_time_step, 
-                            position = start_point,
-                            orientation = orientation, 
-                            velocity = velocity, 
-                            acceleration = acceleration,
-                            yaw_rate = yaw_rate,
-                            slip_angle = slip_angle)
-
-
-    # Select goal position
-    goal_position_distance = round(final_lane_length / 2, 1)
-
-    # Extract goal position and next point to compute orientation
-    goal_center_point = random_exit_lanelet.interpolate_position(goal_position_distance)[0]
-    goal_next_point = random_exit_lanelet.interpolate_position(goal_position_distance + 1.0)[0]
-
-    # Compute goal position orientation
-    orientation = generation_utils.get_orientation_by_coords((goal_center_point[0], goal_center_point[1]), (goal_next_point[0], goal_next_point[1]))
-
-    # Create goal area object
-    goal_area = Rectangle(config.length, config.width, np.array([goal_center_point[0], goal_center_point[1]]), orientation)
-    goal = generation_utils.generate_goal(config, goal_area)
-
-    if _problem_set.planning_problem_dict:
-        last_key, _ = max(list(_problem_set.planning_problem_dict.items()))
-    else:
-        # Note start with the predefined ID to ensure uniqueness of IDs
-        last_key = config.av_base_id
-
-    new_id = last_key + 1
-
-    new_pp = EVITAPlanningProblem(new_id, init_state, goal, random_path)
-    _problem_set.add_planning_problem(new_pp)
-    
-    return _problem_set
+    return merged
 
 def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: EVITAPlanningProblem, scenario: Scenario, scenario_map_file_path: str) -> EVITAPlanningProblem:
     """
@@ -323,6 +304,7 @@ def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_pr
     Return a new planning problem ensuring the goal area is reacheable
     """
     _planning_problem = deepcopy(planning_problem)
+    lanelet_network = scenario.lanelet_network
 
     # Get the lanelet ids of the initial state    
     lanelet_id_of_initial_state = _planning_problem.path[0]
@@ -342,50 +324,23 @@ def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_pr
 
     # Extract input lanelet feasible paths
     lanelet_feasible_paths = feasible_paths[str(lanelet_id_of_initial_state)]
+    # Filter only the paths with a valid goal lanelet
+    filtered_feasible_paths = [path for path in lanelet_feasible_paths if path[-1] in lanelets_not_in_junction and not lanelet_network.find_lanelet_by_id(path[-1]).successor and path[-1] != _planning_problem.path[-1]]
 
-    correct = False
-    attempted_paths = []
-    # Iterate until a valid goal lanelet is found (one that is not in a junction, to avoid short routes, and that is different from the initial lanelet, to avoid trivial routes)
-    while len(attempted_paths) < len(lanelet_feasible_paths):
-        # Pick a random goal lanelet
-        random_path = random.choice(lanelet_feasible_paths)
-
-        # Skip already attempted paths
-        if random_path in attempted_paths:
-            continue
-        
-        # Add the path to the list of attempted paths
-        attempted_paths.append(random_path)
-        random_exit_lanelet = scenario.lanelet_network.find_lanelet_by_id(random_path[-1])
-
-        # Check that the goal lanelet is not in a junction (to avoid short routes) and that the path is not within a single lanelet
-        if random_path[-1] in lanelets_not_in_junction and len(random_path) > 1 and random_path[-1] != _planning_problem.path[-1]:
-            correct = True
-            break
-    
-    # If there is not any other path available, keep the same goal lane and compute a new goal position
-    if not correct:
+    if len(filtered_feasible_paths) == 0:
+        module_logger.debug("No other path available")
+        # If there is not any other path available, keep the same goal lane and compute a new goal position
         random_path = _planning_problem.path
-        random_exit_lanelet = scenario.lanelet_network.find_lanelet_by_id(random_path[-1])
-
-    # Get final lanelet length
-    final_lane_length = np.sum(np.linalg.norm(np.diff(random_exit_lanelet.center_vertices, axis = 0), axis = 0))
-
-    # Select goal position
-    goal_position_distance = round(final_lane_length / 2, 1)
-
-    # Extract goal position and next point to compute orientation
-    goal_center_point = random_exit_lanelet.interpolate_position(goal_position_distance)[0]
-    goal_next_point = random_exit_lanelet.interpolate_position(goal_position_distance + 1.0)[0]
-
-    # Compute goal position orientation
-    orientation = generation_utils.get_orientation_by_coords((goal_center_point[0], goal_center_point[1]), (goal_next_point[0], goal_next_point[1]))
-
-    # Create goal area object
-    goal_area = Rectangle(config.length, config.width, np.array([goal_center_point[0], goal_center_point[1]]), orientation)
+    else:
+        # Pick a random goal lanelet
+        random_path = random.choice(filtered_feasible_paths)
+    
+    # Generate a goal area
+    goal_area = generation_utils.get_possible_goal_for_lanelet(config, _merge_path(lanelet_network, random_path))
     goal = generation_utils.generate_goal(config, goal_area)
 
     _planning_problem.goal = goal
+    _planning_problem.path = random_path
 
     return _planning_problem
 

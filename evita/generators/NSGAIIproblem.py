@@ -14,7 +14,7 @@ from ..generators.utils import compute_interaction_map
 from ..interfaces import AbstractScenarioExecutor, AbstractScenarioEvaluator
 from ..utils import RESULTS_FOLDER, ROOT_DIR, extend_scenario_after_goal_areas, LANELET_EXTENSION, EVITA_MAIN_LOGGER_NAME, time_shift
 from ..data_analysis import _rebuild_trajectory
-from ..validator import ScenarioValidator, EVITAScenarioValidator
+from ..validator import ScenarioValidator
 
 import json
 import subprocess
@@ -127,18 +127,6 @@ class NSGAIIproblem(ElementwiseProblem):
         self.scenario_validator_configuration = ValidationConfig()
         self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration)
 
-        scenario_executor_path = os.path.join(ROOT_DIR, "Frenetix-Motion-Planner")
-        self.logger.debug(f"Add scenario execution to path {scenario_executor_path}")
-        sys.path.append(scenario_executor_path)
-        se_class = getattr(importlib.import_module("evita.executors.frenetix_executor"), "FrenetixScenarioExecution")
-        self.scenario_executor = se_class(self.output_folder, driving_agent_name = self.driving_agent_name, debug = self.debug)
- 
-        scenario_evaluator_path = "."
-        self.logger.debug(f"Add scenario evaluator to path {scenario_evaluator_path}")
-        sys.path.append(scenario_evaluator_path)
-        sev_class = getattr(importlib.import_module("evita.evaluators.frenetix_evaluator"), "FrenetixScenarioEvaluator")
-        self.scenario_evaluator = sev_class(self.output_folder)
-
         self.valid_scenarios = 0
         self.invalid_scenarios = 0
         
@@ -157,6 +145,22 @@ class NSGAIIproblem(ElementwiseProblem):
         self.generation_bar = None
         self.generation_bar_id = None
 
+    def _load_executor_and_evaluator(self):
+        """
+        Load the Frenetix scenario executor and evaluator once
+        """
+        scenario_executor_path = os.path.join(ROOT_DIR, "Frenetix-Motion-Planner")
+        self.logger.debug(f"Add scenario execution to path {scenario_executor_path}")
+        sys.path.append(scenario_executor_path)
+        se_class = getattr(importlib.import_module("evita.executors.frenetix_executor"), "FrenetixScenarioExecution")
+        self.scenario_executor = se_class(self.output_folder, driving_agent_name = self.driving_agent_name, debug = self.debug)
+
+        scenario_evaluator_path = "."
+        self.logger.debug(f"Add scenario evaluator to path {scenario_evaluator_path}")
+        sys.path.append(scenario_evaluator_path)
+        sev_class = getattr(importlib.import_module("evita.evaluators.frenetix_evaluator"), "FrenetixScenarioEvaluator")
+        self.scenario_evaluator = sev_class(self.output_folder)
+
     def _evaluate(self, x, out, *args, **kwargs):
         """
         This function is called by the NSGA-II algorithm to evaluate the fitness of a scenario
@@ -165,21 +169,27 @@ class NSGAIIproblem(ElementwiseProblem):
         scenario = x[0]
         planning_problem_set = x[1]
         
-        generation = kwargs["algorithm"].n_iter
+        self.current_generation = kwargs["algorithm"].n_iter
 
         # Ensure that the scenario has an unique number
         ensure_generation_id([(scenario, planning_problem_set)])
 
+        # Load scenario executor and evaluator
+        self._load_executor_and_evaluator()
+
         # Update the progress bar for the current generation
-        if generation != self.generation_bar_id:
+        if self.current_generation != self.generation_bar_id:
             if self.generation_bar is not None:
                 self.generation_bar.close(clear = True)
 
-            self.generation_bar = self.termination_criterion.progress_bar_manager.counter(total = self.pop_size, desc = f"Generation {generation}", unit = "scenarios", color = "blue", leave = False)
-            self.generation_bar_id = generation
-            self.logger.info(f" ====== Evaluating Generation {generation} ====== ")
+            self.generation_bar = self.termination_criterion.progress_bar_manager.counter(total = self.pop_size, desc = f"Generation {self.current_generation}", unit = "scenarios", color = "blue", leave = False)
+            self.generation_bar_id = self.current_generation
+            self.logger.info(f" ====== Evaluating Generation {self.current_generation} ====== ")
 
         self.termination_criterion.update_main_progress_bar()
+
+        # Generation and position of this individual within it
+        self.current_individual = self.generation_bar.count
 
         # Fitness of scenarios that cannot be evaluated; replaced by the computed one on success
         fitness = self.worst_fitness
@@ -209,7 +219,7 @@ class NSGAIIproblem(ElementwiseProblem):
                     criticality_dataframe = self._evaluate_simulation(scenario, simulation)
 
                     # ===== 5. Fitness =====
-                    fitness = self._compute_fitness(simulation, criticality_dataframe, generation)
+                    fitness = self._compute_fitness(simulation, criticality_dataframe, self.current_generation)
                 except Exception:
                     msg = f" {scenario.generation_id} to be evaluated. Mark it as invalid"
                     self.logger.critical("=" * (len(msg) + 2))
@@ -307,7 +317,7 @@ class NSGAIIproblem(ElementwiseProblem):
         self.logger.info(f"Evaluating scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
  
         try:
-            criticality_dataframe = self.scenario_evaluator.evaluate(simulation, self.trajectory_difference_threshold, on_step = update_main_progress_bar)
+            criticality_dataframe = self.scenario_evaluator.evaluate(simulation, self.trajectory_difference_threshold, on_step = self.termination_criterion.update_main_progress_bar)
         finally:
             # Perform cleanup after evaluation
             simulation.sim_logger.con.close()
@@ -362,14 +372,32 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
         2. Maximize the variety of the interaction in the scenario'
         3. Minimize the number of cars in the scenario
     """
-    def __init__(self, map_file_path, driving_agent_name, pop_size, termination_criterion, records_file_path, **kwargs):
+    def __init__(self, map_file_path, driving_agent_name, pop_size, termination_criterion, records_file_path, trajectory_difference_threshold = 1.0, n_bins = None, **kwargs):
         """
-        Use parent constructor to initialize the NSGAIIproblem and then add the specific attributes for the EVITA + DoppelTest
+        Use parent constructor to initialize the NSGAIIproblem and then add the specific attributes for EVITA + DoppelTest
         """
-        super().__init__(map_file_path, driving_agent_name, pop_size, termination_criterion, **kwargs)
+        super().__init__(map_file_path, driving_agent_name, pop_size, termination_criterion, trajectory_difference_threshold, n_bins, **kwargs)
+
+        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, apollo = True)
 
         self.records_file_path = records_file_path
-        self.scenario_validator = EVITAScenarioValidator(self.scenario_validator_configuration)
+
+        # Python 3.8 environment and script that run a scenario with Apollo
+        self.python_38 = "../.venv38/bin/python"
+        self.scenario_running_script = "./apollo_scenario_runner.py"
+
+    def _load_executor_and_evaluator(self):
+        """
+        Apollo runs in a separate process (apollo_scenario_runner.py): no Frenetix executor or evaluator is needed
+        """
+        self.scenario_executor = None
+        self.scenario_evaluator = None
+
+    def _scenario_output_folder(self) -> str:
+        """
+        Folder of the current scenario's Apollo outputs: <evita-records>/Generation_<g>/Scenario_<i>
+        """
+        return os.path.join(self.records_file_path.replace("/records/", "/evita-records/"), f"Generation_{self.current_generation}", f"Scenario_{self.current_individual}")
 
     def plot_pps(self, _scenario, planning_problems, output_folder: str):
         """
@@ -412,176 +440,108 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
             plt.axis('off')
             plt.savefig(
                 f"{output_folder}/pp_{pp.planning_problem_id}.png",
-                dpi = 800,            # very high resolution
+                dpi = 500,
                 bbox_inches = "tight", # trims extra whitespace around the figure
                 pad_inches = 0,        # no padding
                 transparent = False,   # keep background white (or True if you want transparent)
             )
             plt.close()
 
-    def _evaluate(self, x, out, *args, **kwargs):
+    def _execute(self, scenario, planning_problem_set):
         """
-        This function is called by the NSGA-II algorithm to evaluate the fitness of a scenario
+        Run the scenario with Apollo. Returns the folder with Apollo's outputs, or None if the execution failed
+        (scenario.is_valid and scenario.validation_message are then updated, as for Frenetix)
         """
-        # Get scenario and planning problems to be evaluated     
-        scenario = x[0]
-        planning_problem_set = x[1]
+        output_folder_path = self._scenario_output_folder()
+        self.logger.info(f"Executing scenario: {scenario.generation_id} with Apollo - {self.termination_criterion.remaining_time()}")
 
-        # Ensure that the scenario has an unique number
-        ensure_generation_id([(scenario, planning_problem_set)])
+        try:
+            os.makedirs(output_folder_path, exist_ok = True)
 
-        current_generation = self.algorithm.n_gen
-        current_individual = (self.valid_scenarios + self.invalid_scenarios) % self.pop_size        
-        
-        print(f"\n{'-' * 25} Evaluation of scenario {current_individual} {'-' * 25}\n")
-        
-        # Validate the generated scenarios. This will add the attribute: is_valid to the scenario object
-        self.scenario_validator.validate_all([(scenario, planning_problem_set)])
+            # Scenario in Apollo's .json format, and in CommonRoad format
+            json_scenario = build_json_scenario(scenario, deepcopy(planning_problem_set), self.map_file)
+            evita_scenario_file_path = os.path.join(output_folder_path, "evita_scenario.json")
+            with open(evita_scenario_file_path, "w") as f:
+                json.dump(json_scenario, f, indent = 2)
 
-        print(f"SCENARIO {current_individual} is valid {scenario.is_valid}")
-              
-        # Simulate valide scenarios and skip invalid ones
-        if scenario.is_valid:
+            CommonRoadFileWriter(scenario, planning_problem_set).write_to_file(os.path.join(output_folder_path, "scenario.xml"))
+
+            # Run the scenario with Apollo; the script also converts the result to CommonRoad and saves collisions, interactions, and perception data
+            self.logger.info(f"Apollo records will be saved at: {os.path.join(self.records_file_path, f'Generation_{self.current_generation}', f'Scenario_{self.current_individual}')}")
             try:
-                # Convert CommonRoad scenario to a Baidu Apollo compatible .json format
-                json_scenario = build_json_scenario(scenario, deepcopy(planning_problem_set), self.map_file)
+                subprocess.run([self.python_38, self.scenario_running_script, evita_scenario_file_path,
+                                str(self.current_generation), str(self.current_individual), self.records_file_path], check = True)
+            except subprocess.CalledProcessError as e:
+                if e.returncode == 10 or not os.path.exists(os.path.join(output_folder_path, "executed_scenario.xml")):
+                    self.logger.critical(f"Scenario {scenario.generation_id} failed during the execution with Apollo (record file issue)")
+                    scenario.is_valid = False
+                    scenario.validation_message = "Error during the simulation execution"
+                    return None
 
-                # Save converted .json scenario to file in the output folder
-                output_folder_path = os.path.join(self.records_file_path.replace("/records/", "/evita-records/"), f'Generation_{current_generation}', f'Scenario_{current_individual}')
-                os.makedirs(output_folder_path, exist_ok = True)
+            # Plots of the planning problems: outputs, not testing, so excluded from the budget
+            with self.termination_criterion.paused():
+                planning_problems_plots_folder = os.path.join(output_folder_path, "planning_problems_plots")
+                os.makedirs(planning_problems_plots_folder, exist_ok = True)
+                self.plot_pps(scenario, planning_problem_set.planning_problem_dict.values(), planning_problems_plots_folder)
 
-                evita_scenario_file_path = os.path.join(output_folder_path, f"evita_scenario.json")
-                with open(evita_scenario_file_path, "w") as f:
-                    json.dump(json_scenario, f, indent = 2)
+            return output_folder_path
+        except (ValueError, RecordFileError) as e:
+            self.logger.critical(f"Scenario {scenario.generation_id} could not be executed with Apollo: {e}")
+            scenario.is_valid = False
+            scenario.validation_message = "Error during the simulation execution"
+            return None
 
-                # Save CommonRoad scenario to output folder
-                scenario_file_path = os.path.join(output_folder_path, f"scenario.xml")
+    def _evaluate_simulation(self, scenario, simulation):
+        """
+        Compute collisions and interactions from Apollo's outputs (simulation is the folder returned by _execute)
+        """
+        output_folder_path = simulation
+        self.logger.info(f"Evaluating scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
 
-                writer = CommonRoadFileWriter(
-                    scenario,
-                    planning_problem_set
-                )
+        # Executed scenario, collisions, planned trajectories and perceptions written by the Apollo runner
+        executed_scenario, _ = XMLFileReader(os.path.join(output_folder_path, "executed_scenario.xml")).open(lanelet_assignment = True)
+        scenario_collisions = pd.read_csv(os.path.join(output_folder_path, "apollo_scenario_collisions.csv"))
+        scenario_vehicles_perceptions = pd.read_csv(os.path.join(output_folder_path, "vehicles_perception.csv"))
+        scenario_traffic_lights_perceptions = pd.read_csv(os.path.join(output_folder_path, "traffic_lights_perceptions.csv"))
+        with open(os.path.join(output_folder_path, "planned_trajectories.json"), "r") as f:
+            scenario_planned_trajectories_df = planned_trajectories_to_df(json.load(f))
 
-                writer.write_to_file(scenario_file_path)
+        # Collisions (and the collisions that could not be matched to obstacles)
+        collisions_df, issue_rows = augment_with_collisions(executed_scenario, scenario_collisions)
+        collisions_df.to_csv(os.path.join(output_folder_path, "collisions.csv"), index = False)
+        if len(issue_rows) > 0:
+            pd.DataFrame(issue_rows, columns = scenario_collisions.columns.tolist() + ["detected_obstacles"]).to_csv(
+                os.path.join(output_folder_path, "invalid_collisions.csv"), index = False)
 
-                # Define python 3.8 environment and script to run scenario using Apollo
-                python_38 = "../.venv38/bin/python"
-                scenario_running_script = f"./apollo_scenario_runner.py"
+        # Interactions and interaction map
+        interactions_df, interactions_map = augment_with_interactions(executed_scenario, scenario_planned_trajectories_df, scenario_vehicles_perceptions, scenario_traffic_lights_perceptions, scenario_collisions)
+        if interactions_df is None or interactions_map is None:
+            # The scenario is marked invalid
+            raise ValueError(f"No interactions could be computed for scenario {scenario.generation_id}")
 
-                print(f"===== Started scenario execution with Apollo =====")
-                print(f"===== Record files will be saved at: {os.path.join(self.records_file_path, f'Generation_{current_generation}', f'Scenario_{current_individual}')}")
+        interactions_df.to_csv(os.path.join(output_folder_path, "interactions.csv"), index = False)
+        pd.DataFrame(interactions_map).to_csv(os.path.join(output_folder_path, "interactions_map.csv"), index = False, header = False)
 
-                raised_exception = False
-                try:
-                    # Launch script to run scenario with Apollo
-                    # The script also converts the Apollo executed scenario to CommonRoad format and saves collisions, interactions, and perception data
-                    _ = subprocess.run(
-                        [python_38, scenario_running_script, evita_scenario_file_path, str(current_generation), str(current_individual), self.records_file_path],
-                        check = True,
-                    )
-                except subprocess.CalledProcessError as e:
-                    if e.returncode == 10 or not os.path.exists(os.path.join(output_folder_path, "executed_scenario.xml")):
-                        out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
-                        self.invalid_scenarios = self.invalid_scenarios + 1
-                        raised_exception = True
-                    #     raise RecordFileError("Record file issue") from e
-                    
-                    # print("Subprocess failed!")
-                    # print("Return code:", e.returncode)
-                    # print("stdout:", e.stdout)
-                    # print("stderr:", e.stderr)
-                    # raise
+        self.logger.info(f"Evaluation completed - {self.termination_criterion.remaining_time()}")
 
-                if raised_exception:
-                    print("===== Scenario execution failed due to record file issue =====")
-                    print("===== Scenario marked as invalid, skip to next individual =====")
-                else:
-                    print(f"===== Completed scenario execution with Apollo =====")
-                    print(f"===== CommonRoad executed scenario saved at: {output_folder_path}\n")
-                    
-                    # Plot the scenario's planning problems and save the plots to file in the output folder
-                    planning_problems_plots_folder = os.path.join(output_folder_path, "planning_problems_plots")
-                    os.makedirs(planning_problems_plots_folder, exist_ok = True)
-                    self.plot_pps(scenario, planning_problem_set._planning_problem_dict.values(), planning_problems_plots_folder)
-                    
-                    # Open executed scenario
-                    executed_scenario_file_path = os.path.join(output_folder_path, "executed_scenario.xml")
-                    executed_scenario, _ = XMLFileReader(executed_scenario_file_path).open(lanelet_assignment = True)
+        return {"executed_scenario": executed_scenario, "interactions_df": interactions_df, "interactions_map": interactions_map}
 
-                    # Open scenario's collisions
-                    scenario_collisions_file_path = os.path.join(output_folder_path, "apollo_scenario_collisions.csv")
-                    scenario_collisions = pd.read_csv(scenario_collisions_file_path)
-                    
-                    # Open planned trajectories
-                    scenario_planned_trajectories_file_path = os.path.join(output_folder_path, "planned_trajectories.json")
-                    with open(scenario_planned_trajectories_file_path, "r") as f:
-                        scenario_planned_trajectories = json.load(f)
+    def _compute_fitness(self, simulation, evaluation, generation):
+        """
+        Same three objectives as NSGAIIproblem (pymoo minimizes), from Apollo's outputs:
+        - minus the number of interactions
+        - the number of vehicles
+        - minus the distance of this interaction map from the closest map of the previous generations
+        """
+        interaction_map = np.asarray(evaluation["interactions_map"], dtype = float)
 
-                    # Convert planned trajectories Dict to a DataFrame
-                    scenario_planned_trajectories_df = planned_trajectories_to_df(scenario_planned_trajectories)
+        fitness_num_interactions = evaluation["interactions_df"]["is_interacting"].sum()
+        fitness_num_cars = len(evaluation["executed_scenario"].dynamic_obstacles)
 
-                    # Compute scenario's collisions
-                    collisions_df, issue_rows = augment_with_collisions(executed_scenario, scenario_collisions)
+        # Variety of interactions: distance from the closest interaction map found in the PREVIOUS generations
+        previous_maps = [past_map for past_generation, past_map in self.interaction_maps_by_generation if past_generation < generation]
+        min_dist = min((np.linalg.norm(interaction_map - past_map) for past_map in previous_maps), default = sys.maxsize)
 
-                    # Save scenario's collisions
-                    scenario_collisions_file_path = os.path.join(output_folder_path, "collisions.csv")
-                    collisions_df.to_csv(scenario_collisions_file_path, index = False)
+        self.interaction_maps_by_generation.append((generation, interaction_map))
 
-                    # Save issue rows
-                    if len(issue_rows) > 0:
-                        issue_rows_df = pd.DataFrame(issue_rows, columns = scenario_collisions.columns.tolist() + ["detected_obstacles"])
-                        issue_rows_df.to_csv(os.path.join(output_folder_path, "invalid_collisions.csv"), index = False)
-
-                    # Open scenario's vehicles perceptions
-                    scenario_vehicles_perceptions_file_path = os.path.join(output_folder_path, "vehicles_perception.csv")
-                    scenario_vehicles_perceptions = pd.read_csv(scenario_vehicles_perceptions_file_path)
-
-                    # Open scenario's traffic lights perceptions
-                    scenario_traffic_lights_perceptions_file_path = os.path.join(output_folder_path, "traffic_lights_perceptions.csv")
-                    scenario_traffic_lights_perceptions = pd.read_csv(scenario_traffic_lights_perceptions_file_path)
-                                                                                
-                    # Compute scenario's interactions and the interaction map
-                    interactions_df, interactions_map = augment_with_interactions(executed_scenario, 
-                                                                                scenario_planned_trajectories_df, 
-                                                                                scenario_vehicles_perceptions, 
-                                                                                scenario_traffic_lights_perceptions,
-                                                                                scenario_collisions
-                                                                                )
-
-                    # Save scenario's interactions and interactions map to file
-                    interactions_df.to_csv(f"{output_folder_path}/interactions.csv", index = False)
-                    interactions_map_df = pd.DataFrame(interactions_map)
-                    interactions_map_df.to_csv(f"{output_folder_path}/interactions_map.csv", index = False, header = False)
-
-                    # Compute and return scenario's fitness functions values
-                    if interactions_df is None or interactions_map is None:
-                        out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
-                        self.invalid_scenarios = self.invalid_scenarios + 1
-                    else:
-                        agents_data = executed_scenario.dynamic_obstacles
-                        fitness_num_interactions = interactions_df["is_interacting"].sum()
-                        fitness_num_cars = len(agents_data)
-                        
-                        min_dist = sys.maxsize
-                        for i in range(1, (self.individual_number - (self.individual_number % self.pop_size)) + 1):
-                            dist = np.linalg.norm(interactions_map - self.interaction_maps.__getitem__(i - 1))
-                            min_dist = min(dist, min_dist)
-
-                        self.individual_number += 1
-                        self.interaction_maps.append(interactions_map)
-
-                        # maximize number of interactions
-                        # minimise the number of cars
-                        # maximize minimum distance
-                        # TotalInts + UniqueInts
-                        out["F"] = [-fitness_num_interactions, fitness_num_cars, -min_dist]
-                        self.valid_scenarios = self.valid_scenarios + 1
-            except (ValueError, RecordFileError):
-                # TotalInts + UniqueInts
-                out["F"] = [sys.maxsize, sys.maxsize, sys.maxsize] # large values for a non-valid solution
-                self.invalid_scenarios = self.invalid_scenarios + 1      
-
-                pass 
-
-        print(f'\nFitness Value: {out["F"]}')
-        print(f"\n{'-' * 150}\n")
+        return [-fitness_num_interactions, fitness_num_cars, -min_dist]

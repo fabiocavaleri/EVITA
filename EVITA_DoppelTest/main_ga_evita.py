@@ -1,5 +1,6 @@
 import csv
 import sys
+import argparse
 sys.path.append("../")
 
 import os
@@ -14,19 +15,19 @@ from evita.generators.NSGAIIproblem import EVITADoppelTestNSGAIIproblem
 from evita.generators.nsgaII_operators import (
     EVITAScenarioSampling,
     EVITAScenarioMutation,
-    EVITAScenarioCrossover,
+    ScenarioCrossover,
     ScenarioDuplicateElimination,
     CustomTimeTermination
 )
 from evita.generators import utils as scenario_generation_utils
-from evita.utils import initialize_main_logger, EVITA_MAIN_LOGGER_NAME
+from evita.utils import initialize_main_logger, EVITA_MAIN_LOGGER_NAME, get_progress_bar_manager
 from config import SCENARIO_UPPER_LIMIT, HD_MAP_PATH, MAX_ADC_COUNT, RUN_FOR_HOUR, RECORDS_DIR_BASE, RuntimeConfig
 
 
 # -------------------------------------------------------
 # MAIN
 # -------------------------------------------------------
-def main():
+def main(population_size: int, checkpoint_every: int, debug: bool):
     # Build experiment unique identifier
     start_time = datetime.now()
     experiment_time = start_time.strftime("%Y%m%d%H%M%S")
@@ -51,19 +52,19 @@ def main():
         f.write(config_src)
 
     # ---------------- Initialize Logging ----------------
-    initialize_main_logger(debug=True)
+    initialize_main_logger(debug = debug)
     logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
     # ---------------- Define Additional Parameters ----------------
-    POP_SIZE = 10
+    POP_SIZE = population_size
     DRIVING_AGENT = "apollo_evita"
 
     # ---------------- Apollo Containers and Scenario Runner ----------------
     python_38 = "../.venv38/bin/python"
-    srunner_script = f"./apollo_runner_startup.py"
+    srunner_script = "./apollo_runner_startup.py"
 
     # Run script that initializes and launches containers
-    subprocess.run([python_38, srunner_script])
+    # subprocess.run([python_38, srunner_script])
 
     # ---------------- Import Base scenario ----------------
     scenario_map_file_path = os.path.join("conversion_scripts", "converted_maps", f"{map_name}.xml")
@@ -76,10 +77,14 @@ def main():
     # Initialize scenario generation configurations
     config = ScenarioGeneratorConfig(SCENARIO_UPPER_LIMIT * 10, MAX_ADC_COUNT)
 
+    # ---------------- Define Termination Criteria Object ----------------
+    progress_bar_manager = get_progress_bar_manager()
+    termination = CustomTimeTermination(RUN_FOR_HOUR * 60, checkpoint_every, progress_bar_manager)
+
     # ---------------- Initialize Pymoo Operators ----------------
-    sampling = EVITAScenarioSampling(base_scenario, base_planning_problem_set, config, scenario_map_file_path)
-    mutation = EVITAScenarioMutation(scenario_map_file_path)
-    crossover = EVITAScenarioCrossover()
+    sampling = EVITAScenarioSampling(base_scenario, base_planning_problem_set, config, termination, scenario_map_file_path)
+    mutation = EVITAScenarioMutation(scenario_map_file_path, config, termination)
+    crossover = ScenarioCrossover(config, termination)
 
     # Initialize NSGA2 algorithm
     algorithm = NSGA2(
@@ -89,9 +94,6 @@ def main():
         mutation = mutation,
         eliminate_duplicates = ScenarioDuplicateElimination()
     )
-
-    # ---------------- Define Termination Criteria Object ----------------
-    termination = CustomTimeTermination(RUN_FOR_HOUR * 60, apollo = True)
 
     # ---------------- Initialize Problem ----------------
     problem = EVITADoppelTestNSGAIIproblem(
@@ -134,4 +136,30 @@ def main():
     logger.info("NSGA-II run completed.")
 
 if __name__ == '__main__':
-    main()
+
+    parser = argparse.ArgumentParser(description = "Run EVITA on Baidu Apollo with NSGA-II for scenario generation.")
+
+    # Required arguments
+    parser.add_argument(
+        "--population-size",
+        type = int,
+        required = True,
+        help = "Number of scenarios to generate in each generation."
+    )
+
+    # Optional arguments
+    parser.add_argument(
+        "--checkpoint-every",
+        type = int,
+        default = 60,
+        help = "Checkpoint every N minutes (default: 60)."
+    )
+    parser.add_argument(
+        "--debug",
+        action = "store_true",
+        help = "Enable debug logging."
+    )
+
+    args = parser.parse_args()
+
+    main(args.population_size, args.checkpoint_every, args.debug)

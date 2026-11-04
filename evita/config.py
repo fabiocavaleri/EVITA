@@ -15,7 +15,7 @@ class ValidationConfig:
     
     # The vehicle must be at least 5 meters inside any of the initial lanelets
     min_dist_init = 5
-    retry_generation = 2000
+    retry_generation = 500
 
     ignore_validation = False  # for debugging purposes
 

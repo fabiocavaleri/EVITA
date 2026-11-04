@@ -16,7 +16,7 @@ from pymoo.core.termination import Termination
 from evita.config import ValidationConfig, ScenarioGeneratorConfig
 from evita.utils import Budget, EVITA_MAIN_LOGGER_NAME
 from evita.generators import scenario_mutation
-from evita.validator import ScenarioValidator, EVITAScenarioValidator
+from evita.validator import ScenarioValidator
 from evita.generators import utils as scenario_generation_utils
 
 import matplotlib.pyplot as plt
@@ -29,7 +29,7 @@ class ScenarioSampling(Sampling):
     """
     Sampling operator to generate random scenarios and planning problem sets
     """
-    def __init__(self, base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion):
+    def __init__(self, base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion, map_file_path = None):
         """
         Initialize the ScenarioSampling operator with:
         - Scenario
@@ -50,6 +50,9 @@ class ScenarioSampling(Sampling):
 
         self.termination_criterion = termination_criterion
         self.logger = module_logger
+
+        # Save the map file path
+        self.map_file_path = map_file_path
 
     def _do(self, problem, n_samples, **kwargs):
         """
@@ -101,7 +104,7 @@ class ScenarioSampling(Sampling):
 
                     # Generate a random planning problem for the target number of AVs
                     for _ in range(target_number_of_planning_problems):
-                        _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
+                        _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set, self.map_file_path)
                     
                     # Check if scenario is valid with the generated planning problems
                     if self._is_valid(_scenario, _planning_problem_set):
@@ -124,11 +127,13 @@ class EVITAScenarioSampling(ScenarioSampling):
     """
     Sampling operator to generate random scenarios and planning problem sets for EVITA
     """
-    def __init__(self, base_scenario, base_planning_problem_set, scenario_generator_configuration, map_file_path):
+    def __init__(self, base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion, map_file_path):
         # Use the parent ScenarioSampling class to initialize the common attributes
-        super().__init__(base_scenario, base_planning_problem_set, scenario_generator_configuration)
+        super().__init__(base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion)
+
         # Update the scenario validator to the EVITA one
-        self.scenario_validator = EVITAScenarioValidator(self.scenario_validator_configuration)
+        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, apollo = True)
+        
         # Update the add_random_planning_problem function to the EVITA one
         self.add_random_planning_problem = scenario_mutation.add_evita_random_planning_problem
 
@@ -140,65 +145,10 @@ class EVITAScenarioSampling(ScenarioSampling):
         Generate `n_samples` random scenarios and planning problem sets for EVITA
         """
         # Generate the traffic lights configuration for the scenario
-        self.base_scenario = generate_traffic_lights(self.base_scenario, self.scenario_generator_configuration.max_time_step, self.map_file_path)
+        with self.termination_criterion.generating():
+            self.base_scenario = generate_traffic_lights(self.base_scenario, self.scenario_generator_configuration.max_time_step, self.map_file_path)
 
-        X = np.full((n_samples, 2), None, dtype = object)
-
-        print("\n")
-
-        # Generate `n_samples` scenarios and planning problems
-        for i in range(n_samples):
-            individual = self._generate_random_individual()
-            X[i, 0] = individual[0]
-            X[i, 1] = individual[1]
-
-        return X
-
-    def _generate_random_individual(self):
-        """
-        First set a target number of AVs. 
-        Then try as much as possible to generate a valid scenario with them. 
-        If this fails, decrease the target number of AV and repeat.
-        """
-
-        # Randomly choose the number of AVs (planning problems) to generate
-        target_number_of_planning_problems = random.randint(self.scenario_generator_configuration.min_amount_pp, self.scenario_generator_configuration.max_amount_pp)
-
-        # Loop until a valid scenario is generated or the target number of planning problems is below the minimum allowed
-        while target_number_of_planning_problems >= self.scenario_generator_configuration.min_amount_pp:
-            print(f"Try to generate a scenario with {target_number_of_planning_problems}")
-            
-            # Set a loop to manage generation retries in case of failure
-            for _ in range(0, self.scenario_validator_configuration.retry_generation):
-                try:
-                    # Copy base scenario and planning problem
-                    _scenario = deepcopy(self.base_scenario)
-                    _planning_problem_set = deepcopy(self.base_planning_problem_set)
-
-                    # Generate `target_number_of_planning_problems` planning problems for the scenario
-                    for _ in range(0, target_number_of_planning_problems):
-                        _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set, self.map_file_path)
-                    
-                    # Check if the generated scenario and planning problems are valid
-                    if self.scenario_validator.is_scenario_valid(_scenario, _planning_problem_set)[0]:
-                        print(f"\nScenario {self.scenario_counter} generated with {target_number_of_planning_problems}")
-                        setattr(_scenario, "debug_id", self.scenario_counter)
-
-                        # Print the main characteristics of the generated planning problems
-                        for pp in _planning_problem_set._planning_problem_dict.values():
-                            print(f"Planning Problem: {str(pp.planning_problem_id):<10} "
-                                  f"Initial Lane: {str(_scenario.lanelet_network.find_lanelet_by_position([pp.initial_state.position])):<20} "
-                                  f"Goal Lane: {str(_scenario.lanelet_network.find_lanelet_by_position([pp.goal.state_list[-1].position.center])):<20} "
-                                  f"Route: {pp.path}")
-
-                        print(f"\n{'=' * 150}\n")
-
-                        self.scenario_counter += 1
-
-                        return _scenario, _planning_problem_set
-                except Exception as exc:
-                    print(f"An exception occurred while generating the scenario. {exc}")
-                    pass
+        return super()._do(problem, n_samples, **kwargs)
 
 class ScenarioMutation(Mutation):
     """
@@ -260,7 +210,7 @@ class ScenarioMutation(Mutation):
                         # Apply the mutation operator with a probability of 1 / number of mutation operators
                         if random.random() <= 1 / len(self.planning_problem_mutation_operators):
                             print(f"Mutating Planning Problem {mutated_planning_problem.planning_problem_id} with {planning_problem_mutation_operator.__name__}")
-                            mutated_planning_problem = planning_problem_mutation_operator(self.scenario_generator_configuration, mutated_planning_problem, _scenario)
+                            mutated_planning_problem = planning_problem_mutation_operator(self.scenario_generator_configuration, mutated_planning_problem, _scenario, self.map_file_path)
 
                     # Save mutated planning problem
                     _planning_problem_set.planning_problem_dict[key] = mutated_planning_problem
@@ -308,21 +258,17 @@ class EVITAScenarioMutation(ScenarioMutation):
     """
     Mutation operator to mutate scenarios and planning problem sets for EVITA
     """
-    def __init__(self, map_file_path: str):
+    def __init__(self, map_file_path: str, scenario_generator_configuration, termination_criterion):
         # Use the parent ScenarioMutation class to initialize the common attributes and mutation operators
-        super().__init__(map_file_path)
+        super().__init__(map_file_path, scenario_generator_configuration, termination_criterion)
 
         # Update the mutation operators to the EVITA ones
-        self.traffic_lights_mutation_operators = [scenario_mutation.mutate_tl_initial_configuration,
-                                                  scenario_mutation.mutate_green_light_duration]
+        self.traffic_lights_mutation_operators = [scenario_mutation.mutate_tl_initial_configuration, scenario_mutation.mutate_green_light_duration]
         
         self.planning_problem_mutation_operators.remove(scenario_mutation.mutate_goal_area_position)
         self.planning_problem_mutation_operators.append(scenario_mutation.mutate_evita_goal_area_position)
         
-        
         self.add_random_planning_problem = scenario_mutation.add_evita_random_planning_problem
-        
-        self.scenario_validator = EVITAScenarioValidator(self.scenario_validator_configuration)
 
 class ScenarioCrossover(Crossover):
     """
@@ -345,7 +291,7 @@ class ScenarioCrossover(Crossover):
 
         # The output with the shape (n_offsprings, n_matings, n_var)
         # Because there the number of parents and offsprings are equal it keeps the shape of X
-        Y = np.full_like(X, None, dtype=object)
+        Y = np.full_like(X, None, dtype = object)
 
         with self.termination_criterion.generating():
             for k in range(n_matings):
@@ -375,6 +321,14 @@ class ScenarioCrossover(Crossover):
                     offspring_2_scenarios = deepcopy(parent_2_scenarios)
                     planningProblemSet_offspring_1 = PlanningProblemSet(offspring_1_planning_problems)
                     planningProblemSet_offspring_2 = PlanningProblemSet(offspring_2_planning_problems)
+
+                    # Remove 'is_valid' and 'validation_message' attribute from the offspring scenarios if it exists
+                    if hasattr(offspring_1_scenarios, "is_valid"):
+                        delattr(offspring_1_scenarios, "is_valid")
+                        delattr(offspring_1_scenarios, "validation_message")
+                    if hasattr(offspring_2_scenarios, "is_valid"):
+                        delattr(offspring_2_scenarios, "is_valid")
+                        delattr(offspring_2_scenarios, "validation_message")
 
                     # Validate the offspring scenarios and planning problem sets
                     with self.termination_criterion.paused():
@@ -411,16 +365,6 @@ class ScenarioCrossover(Crossover):
         
         return renumbered
 
-class EVITAScenarioCrossover(ScenarioCrossover):
-    """
-    Crossover operator to crossover scenarios and planning problem sets for EVITA
-    """
-    def __init__(self):
-        # Use the parent ScenarioCrossover class to initialize the common attributes and crossover logic
-        super().__init__()
-        # Update the scenario validator to the EVITA one
-        self.scenario_validator = EVITAScenarioValidator(self.scenario_validator_configuration)
-
 class ScenarioDuplicateElimination(ElementwiseDuplicateElimination):
     def is_equal(self, a, b):
         return a.X[0] == b.X[0] and a.X[1] == b.X[1]
@@ -431,52 +375,6 @@ from ..utils import simulation_folders
 from ..data_analysis import generate_report
 import os
 import csv
-
-'''
-def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios:int, valid_scenarios:int, invalid_scenarios:int, total_generation_time:int, apollo: bool) -> None:
-    """
-    Link all the scenario folders generated so far + compute the results for the generation (aka csv files) to the checkpoint folder.
-    """
-    # Build the checkpoint folder path and create it
-    checkpoint_folder = os.path.join(output_folder, "checkpoints", f"{str(checkpoint_id).rjust(4,'0')}").replace("/records/", "/evita-records/")
-    os.makedirs(checkpoint_folder, exist_ok=False)
-    
-    print(f"Creating checkpoint at {checkpoint_folder}")
-
-    # Create a scenarios.csv file containining the id of all the scenarios generated so far
-    scenario_file = os.path.join(checkpoint_folder, "scenarios.csv")
-    with open(scenario_file, "w", newline = "") as csvfile:
-        csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-        # Write the header of the csv file depending on whether we are in Apollo mode or not
-        if not apollo:
-            csv_writer.writerow(["generation_id", "scenario_id", "scenario_file", "planned_trajectories_file"])
-        else:
-            csv_writer.writerow(["scenario_id", "scenario_file", "planned_trajectories_file"])
-        
-        # Iterate over all the simulation folders and write their information to the csv file
-        for _, simulation_folder in simulation_folders(output_folder):
-            if apollo:
-                scenarios_folders = os.listdir(os.path.join(output_folder, simulation_folder))
-                for scenario_id in scenarios_folders:
-                    scenario_file = os.path.join(output_folder, simulation_folder, scenario_id, "scenario.xml").replace("/records/", "/evita-records/")
-                    planned_trajectories_file = os.path.join(output_folder, simulation_folder, scenario_id, "planned_trajectories.json").replace("/records/", "/evita-records/")
-                    csv_writer.writerow([str(simulation_folder), str(scenario_id), str(scenario_file), str(planned_trajectories_file)])
-            else:
-                scenario_id = simulation_folder
-                simulation_db = os.path.join(output_folder, simulation_folder, "logs", "simulation.db")
-                scenario_file = os.path.join(output_folder, simulation_folder, "scenario", f"scenario_{simulation_folder}.xml")
-                csv_writer.writerow([str(scenario_id), str(scenario_file), str(simulation_db)])
-
-    performance_file = os.path.join(checkpoint_folder, "performance.csv")
-    with open(performance_file, "w", newline="") as csvfile:
-        csv_writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"])
-        csv_writer.writerow([str(all_scenarios), str(valid_scenarios), str(invalid_scenarios), str(total_generation_time)])
-
-    # Generate the usual report in the checkpoint folder using whatever data is available at this point
-    if not apollo:
-        generate_report(output_folder, checkpoint_folder)
-'''
 
 class CustomTimeTermination(Termination):
     """

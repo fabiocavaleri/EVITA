@@ -43,13 +43,15 @@ class ScenarioValidator:
     The validation results are stored inside the scenario object as attributes "is_valid" and "validation_message"
     The validation can be disabled by setting the "ignore_validation" flag in the configuration file to True.
     """    
-    def __init__(self, configuration: ValidationConfig, generation_config: ScenarioGeneratorConfig = None):
+    def __init__(self, configuration: ValidationConfig, generation_config: ScenarioGeneratorConfig = None, apollo: bool = False):
         self.config = configuration
 
         if generation_config:
             self.generation_config = generation_config
         else:
             self.generation_config = ScenarioGeneratorConfig()
+
+        self.apollo = apollo
 
     def validate(self, scenario: Scenario, planning_problem_set: PlanningProblemSet) -> None:
         """
@@ -121,7 +123,7 @@ class ScenarioValidator:
         # If nothing fails, we assume valid
         return True, ""
 
-    def validate_planning_problems(self, scenario: Scenario, problem_set: PlanningProblemSet, apollo_scenario = False) -> Tuple[bool, str]:
+    def validate_planning_problems(self, scenario: Scenario, problem_set: PlanningProblemSet) -> Tuple[bool, str]:
         """
         Check the planning problems are valid according to a set of criteria defined in the configuration file
         """
@@ -141,14 +143,14 @@ class ScenarioValidator:
             if not validity_flag:
                 return validity_flag, validity_message
 
-        # Check if the goal area is reachable from the initial state of each planning problem, only if the scenario is not an Apollo scenario            
-        if not apollo_scenario:
-            # Validate if goal area is reachable
-            validity_flag, validity_message = self._validate_reacheable_goal(scenario, planning_problem)
+            # Check if the goal area is reachable from the initial state of each planning problem, only if the scenario is not an Apollo scenario            
+            if not self.apollo:
+                # Validate if goal area is reachable
+                validity_flag, validity_message = self._validate_reacheable_goal(scenario, planning_problem)
 
-            # Exit if any initial state is not valid
-            if not validity_flag:
-                return validity_flag, validity_message
+                # Exit if any initial state is not valid
+                if not validity_flag:
+                    return validity_flag, validity_message
         
         # Validate initial distances between agents and obstacles on the same lanelet
         validity_flag, validity_message = self._validate_init_distances(scenario, problem_set)
@@ -158,12 +160,6 @@ class ScenarioValidator:
         
         # Validate goal areas positionings
         validity_flag, validity_message = self._validate_goal_areas_placement(scenario, problem_set)
-        # Exit if any initial state is not valid
-        if not validity_flag:
-            return validity_flag, validity_message
-
-        # This measures the distance to the goal area with a straight line
-        validity_flag, validity_message = self._validate_distance_to_goal(scenario, problem_set)
         # Exit if any initial state is not valid
         if not validity_flag:
             return validity_flag, validity_message
@@ -214,21 +210,32 @@ class ScenarioValidator:
         """
         Check whether the agent can find a route to reach its goal area
         """
-        # Extract the lanelets corresponding to the initial position of the agent
-        initial_lanelets = [scenario.lanelet_network.find_lanelet_by_id(l_id) for l_id in self._flatten(scenario.lanelet_network.find_lanelet_by_position([planning_problem.initial_state.position]))]
-        
-        # Compute reacheability using lanelets first and check if initial state is not in goal region
+        agent_id = planning_problem.planning_problem_id
+        start = Point(planning_problem.initial_state.position)
+
+        # 1. Route, as planned by Frenetix
+        try:
+            route_planner = RoutePlanner(scenario = scenario, planning_problem = planning_problem, extended_search = False, logging_level = logging.CRITICAL)
+            route = route_planner.plan_routes().retrieve_shortest_route(retrieve_shortest = True)
+        except Exception as e:
+            module_logger.debug(f"No route for agent {agent_id}: {e}")
+            return False, f"No route from the initial state to the goal of agent {agent_id}"
+
+        reference_path = LineString(route.reference_path)
+
+        # 2. Each goal area ahead, along the route, by at least min_dist_goal
+        s_start = reference_path.project(start)
         for goal_state in planning_problem.goal.state_list:
-            center_of_goal = goal_state.position.center
-            goal_lanelets = [scenario.lanelet_network.find_lanelet_by_id(l_id) for l_id in self._flatten(scenario.lanelet_network.find_lanelet_by_position([center_of_goal]))]
+            if not hasattr(goal_state, "position"):
+                continue
+
+            s_goal = reference_path.project(Point(goal_state.position.center))
+            driving_distance = s_goal - s_start
             
-            # Compute lanelets reacheable from initial lanelets and check if any of the goal lanelets is in the reacheable ones
-            for initial_lanelet in initial_lanelets:
-                if any([goal_lanelet in self._compute_reacheable_lanelets(scenario, initial_lanelet) for goal_lanelet in goal_lanelets]):
-                    return True, ""
-        
-        # Return False if no initial lanelet can reach any of the goal lanelets
-        return False, f"There's no drivable path for agent {planning_problem.planning_problem_id}"
+            if driving_distance < self.config.min_dist_goal:
+                return False, f"Goal area of agent {agent_id} is {driving_distance:.1f} m ahead along its route (min {self.config.min_dist_goal})"
+
+        return True, ""
 
     def _flatten(self, xs): 
         """
@@ -283,12 +290,11 @@ class ScenarioValidator:
                 # Skip checking if the lanelet has a predecessor -> Is not an ENTRY lanelets
                 continue
 
-            # Build a reference path for the lanelet and compute the coordinate system to check the curvilinear coordinates of the initial state
-            reference_path = resample_polyline(lanelet.center_vertices, step = 1.0)
-            cosy = CoordinateSystem(reference_path)
+            # Distance of the start from the beginning of the lanelet, measured along its centre line
+            center_line = LineString(lanelet.center_vertices)
+            distance_from_lanelet_start = center_line.project(Point(planning_problem.initial_state.position))
 
-            initial_position_cc = cosy.convert_to_curvilinear_coords(planning_problem.initial_state.position[0], planning_problem.initial_state.position[1])
-            if initial_position_cc[0] < self.config.min_dist_init:
+            if distance_from_lanelet_start < self.config.min_dist_init:
                 return False, f"Initial State of {planning_problem.planning_problem_id} too close to lanelet {lanelet.lanelet_id} initial edge"
 
         # Extract planning problem goal area
@@ -301,67 +307,6 @@ class ScenarioValidator:
                 module_logger.debug(f"Scenario not valid: Initial State of {planning_problem.planning_problem_id} inside of Goal Region")
                 return False, f"Initial State of {planning_problem.planning_problem_id} inside of Goal Region"
 
-            center_of_goal = goal_state.position.center
-
-            # If the agent is close enough to the goal area we need to check for lateral displacement
-            distance_to_goal = Point(planning_problem.initial_state.position[0], planning_problem.initial_state.position[1]).distance(Point(center_of_goal[0], center_of_goal[1]))
-            if distance_to_goal > MIN_DISTANCE:
-                continue
-            
-            # If the lateral distance is larger than twice the longitudinal distance, the vehicle is too much on the side of the goal area!
-            # Extract lanelets corresponding to the goal area
-            goal_lanelets = [scenario.lanelet_network.find_lanelet_by_id(l_id) for l_id in self._flatten(scenario.lanelet_network.find_lanelet_by_position([center_of_goal]))]
-            for goal_lanelet in goal_lanelets:
-                # Build a reference path for the lanelet and compute the coordinate system to check the curvilinear coordinates of the initial state
-                center_lane = goal_lanelet.center_vertices
-                extended_path = np.array(scale(LineString(center_lane), 3.0, 3.0).coords)
-                path = resample_polyline(extended_path, 1)
-
-                try:
-                    cosy = CoordinateSystem(path)
-                    
-                    # Compute the curvilinear coordinates of the initial state and the goal area
-                    initial_position_cc = cosy.convert_to_curvilinear_coords(planning_problem.initial_state.position[0], planning_problem.initial_state.position[1])
-                    goal_area_cc = cosy.convert_to_curvilinear_coords(center_of_goal[0], center_of_goal[1])
-                    
-                    # Compute the longitudinal and lateral distances between the initial state and the goal area
-                    longitudinal_distance = goal_area_cc[0] - initial_position_cc[0]
-                    abs_longitudinal_distance = abs(longitudinal_distance)
-                    abs_lateral_distance = abs(initial_position_cc[1] - goal_area_cc[1])
-
-                    if longitudinal_distance < 0.0:
-                        # This means that goal is before initial state, not good
-                        module_logger.debug(f"Scenario not valid: Initial State of {planning_problem.planning_problem_id} is beyond Goal Region")
-                        return False, f"Scenario not valid: Initial State of {planning_problem.planning_problem_id} is beyond Goal Region"
-
-                    if abs_longitudinal_distance <= 2 * abs_lateral_distance:
-                        # This means that the initial state is too much on the side of the goal area, not good
-                        module_logger.debug(f"Scenario not valid: Initial State of {planning_problem.planning_problem_id} too close and too on the side wrt Goal Region")
-                        return False, f"Scenario not valid: Initial State of {planning_problem.planning_problem_id} too close and too on the side wrt Goal Region"
-                except (ValueError, Exception) as e:
-                    def debug_plot():
-                        from commonroad.visualization.mp_renderer import MPRenderer
-
-                        rnd = MPRenderer()
-                        scenario.lanelet_network.draw(rnd)
-                        rnd.render()
-                        
-                        # center_lane
-                        plt.plot([p[0] for p in center_lane], [p[1] for p in center_lane], "-", lw=6, color="blue", zorder=100)
-                        plt.plot([p[0] for p in path], [p[1] for p in path], "-", lw=4, color="red", zorder=100)
-                        plt.plot([p[0] for p in path], [p[1] for p in path], "-", lw=2, color="green", zorder=100)
-                        
-                        plt.plot(planning_problem.initial_state.position[0], planning_problem.initial_state.position[1], "o", lw=2, zorder=100)
-                        plt.plot(center_of_goal[0], center_of_goal[1], "+", lw=2, zorder=100)
-                        
-                        plt.show()
-
-                    module_logger.critical(f"Cannot establish validity of initial state for {planning_problem.planning_problem_id}. Assume valid")
-                    module_logger.critical(traceback.format_exc())
-
-                    # Use this only during debugging
-                    # debug_plot()
-            
         # If nothing fails, we assume valid. In case this turns out to be wrong, we catch the issue after the execution
         return True, ""
     
@@ -376,8 +321,9 @@ class ScenarioValidator:
         planning_problems = list(problem_set.planning_problem_dict.values())
 
         for lanelet in lanelets:
-            # This one MERGEs the lanelets into a big one, but cannot deal correctly with adjacent ones...
-            full_lanelets = get_successor_lanelets(lanelet, lanelet_network)
+            # This one MERGEs the lanelets into a big one
+            full_lanelets = self.get_successor_lanelets(lanelet, lanelet_network)
+
             for full_ll in full_lanelets:        
                 # Collect planning problems initial states on this lanelet
                 pp_on_lanelet = dict()
@@ -457,6 +403,28 @@ class ScenarioValidator:
             
         return True, ""
 
+    def _lane_coordinates(self, line: LineString, position) -> Tuple[float, float]:
+        """
+        Position of a point relative to a lane line:
+        s = distance along the line to the closest point on it
+        d = signed distance from that point (positive to the left of the line's direction)
+        """
+        point = Point(position[0], position[1])
+        s = line.project(point)
+        foot = line.interpolate(s)
+
+        # Direction of the line around the closest point, to decide the side
+        ahead = line.interpolate(min(s + 0.5, line.length))
+        behind = line.interpolate(max(s - 0.5, 0.0))
+        cross = (ahead.x - behind.x) * (point.y - foot.y) - (ahead.y - behind.y) * (point.x - foot.x)
+
+        d = point.distance(foot)
+
+        if cross >= 0:
+            return s, d
+        else:
+            return s, -d
+    
     def _is_distance_in_lane_kept(self, scenario: Scenario, lanelet: Lanelet, obstacles: Dict[int, State], planning_problems: Dict[int, State]):
         """
         Check that the distance between all the agents and obstacles on this lanelet is larger than a minimum distance defined in the configuration file
@@ -470,53 +438,26 @@ class ScenarioValidator:
         if len(all_obstacles.values()) < 2:
             return True, ""
         
-        # Find the position in the lanelet coordinate system of the agent
-        path = lanelet.center_vertices
-        extended_path = resample_polyline(path, step = 1.0)
+        # Lane line (works with any centre line of 2 or more points, no resampling needed)
+        center_line = LineString(lanelet.center_vertices)
 
-        # Iterate over each obstacle driving in the lanelet
-        # Check that the distance between all the obstacles on this lanelet is larger than a minimum distance defined in the configuration file
-        for key, obstacle in all_obstacles.items():
-            try:
-                # This one fails if extended path is not smooth
-                cosy = CoordinateSystem(extended_path)
+        # Position of every object along the lane and to its side, computed once
+        lane_positions = {key: self._lane_coordinates(center_line, state.position) for key, state in all_obstacles.items()}
 
-                obstacle_center_cc = cosy.convert_to_curvilinear_coords(obstacle.position[0], obstacle.position[1])
-                
-                # Keep at least a minimum distance (from the center of the vehicle) 
-                min_safety_distance = max(self.config.car_distance_formula(obstacle.velocity) + self.generation_config.length * 0.5, 5)
+        # Check every pair once
+        for (key, state), (other_key, other_state) in combinations(all_obstacles.items(), 2):
+            # Extract the s and d coordinates of the two objects along the lane
+            (s_1, d_1), (s_2, d_2) = lane_positions[key], lane_positions[other_key]
+            # Compute the actual distance between the two objects in the lane's coordinate system
+            actual_distance = ((s_1 - s_2) ** 2 + (d_1 - d_2) ** 2) ** 0.5
 
-                # Iterate over the other obstacles
-                for other_key, other_obstacle in all_obstacles.items():
-                    # Avoid comparing the obstacle with itself
-                    if key == other_key:
-                        continue
+            # Compute the minimum safety distance between the two objects, based on their velocities and the configured safety time
+            car_distance = max(self.config.car_distance_formula(state.velocity), self.config.car_distance_formula(other_state.velocity))
+            min_safety_distance =  max(car_distance + self.generation_config.length * 0.5, 5)
 
-                    other_obstacle_center_cc = cosy.convert_to_curvilinear_coords(other_obstacle.position[0], other_obstacle.position[1])
-
-                    # Compute the distance on the reference path and check this is larger than the minimum
-                    actual_distance = ((obstacle_center_cc[0] - other_obstacle_center_cc[0])**2 + (obstacle_center_cc[1] - other_obstacle_center_cc[1])**2) ** 0.5
-
-                    # Check if the distance is smaller than the minimum safety distance, if so return False with an error message
-                    if actual_distance < min_safety_distance:
-                        module_logger.debug(f"Scenario not valid: Distance between {key} to next object in lane {other_key} is too short {actual_distance} (min {min_safety_distance})")
-                        return False, f"Distance between {key} to next object in lane {other_key} too short"
-            except Exception as exc:
-                def debug_plot():
-                    from commonroad.visualization.mp_renderer import MPRenderer
-
-                    rnd = MPRenderer()
-                    scenario.lanelet_network.draw(rnd)
-                    rnd.render()
-                    
-                    plt.plot([p[0] for p in path], [p[1] for p in path], "-", color="blue", lw=6, zorder=100)
-                    plt.plot([p[0] for p in extended_path], [p[1] for p in extended_path], "-", color="red", lw=4, zorder=100)
-                    plt.plot(obstacle.position[0], obstacle.position[1], "o", lw=2, zorder=100)
-                    plt.plot(other_obstacle.position[0], other_obstacle.position[1], "+", lw=2, zorder=100)
-                    plt.show()
-
-                module_logger.critical(f"Exception while validating scenario' obstacles initial position: {exc}")
-                # debug_plot()
+            if actual_distance < min_safety_distance:
+                module_logger.debug(f"Scenario not valid: Distance between {key} and {other_key} is too short {actual_distance:.1f} (min {min_safety_distance:.1f})")
+                return False, f"Distance between {key} to next object in lane {other_key} too short"
 
         return True, ""
 
@@ -526,6 +467,7 @@ class ScenarioValidator:
         """
         # Skip this check if it is not requested in the configuration file
         if not self.config.validate_lanelet_type_and_direction:
+            module_logger.debug("Skipping lanelet type and direction validation")
             return True, ""
         
         # Check if lanelet has correct type
@@ -542,229 +484,61 @@ class ScenarioValidator:
 
         return True, ""
 
-class EVITAScenarioValidator(ScenarioValidator):
-    """
-    Class to validate for EVITA-generated scenarios, with some specific checks on the initial state of the agent and its distance to the goal area, 
-    which are not needed for manually designed scenarios since they are already checked during the generation process.
-    """
-    
-    def __init__(self, configuration: ValidationConfig, generation_config: ScenarioGeneratorConfig = None):
-        super().__init__(configuration, generation_config)
-        self.min_agents_distance = 7.0
+    def get_successor_lanelets(self, lanelet: Lanelet, ll_network: LaneletNetwork) -> List[Lanelet]:
+        """
+        Get all successor lanelets of a given lanelet
 
-    def extend_path_linearly(self, coords, extension_distance = 20.0):
+        Given the lanelet, create longer lanelets by merging them together, but only following the successor relation.
+        Creates a new path for each successor (is a tree that becomes multiple paths)
         """
-        Extends the start and end of a polyline along its tangents
-        """
-        # Start tangent
-        p0, p1 = coords[0], coords[1]
-        tangent_start = (p0 - p1) / np.linalg.norm(p0 - p1)
-        extended_start = p0 + tangent_start * extension_distance
-        
-        # End tangent
-        pn_1, pn = coords[-2], coords[-1]
-        tangent_end = (pn - pn_1) / np.linalg.norm(pn - pn_1)
-        extended_end = pn + tangent_end * extension_distance
-        
-        return np.vstack([extended_start, coords, extended_end])
-    
-    def _validate_initial_state(self, scenario: Scenario, planning_problem: PlanningProblem):
-        """
-        Check the initial state of the agent is valid according to a set of criteria defined in the configuration file, with some specific checks for EVITA-generated scenarios.
-        """
-        if planning_problem.initial_state.velocity < 0.0:
-            module_logger.debug("Scenario not valid: Initial velocity cannot be negative!")
-            return False, "Initial velocity cannot be negative!"
-        
-        # The car must be entirely inside the lanelet
-        initial_lanelets = scenario.lanelet_network.find_lanelet_by_position([np.array(planning_problem.initial_state.position)])
-        
-        if all([len(l) == 0  for l in initial_lanelets]):
-            module_logger.debug(f"Scenario not valid: Initial State of {planning_problem.planning_problem_id} outside lanelets")
 
-            def debug_plot():
-                from commonroad.visualization.mp_renderer import MPRenderer
-                rnd = MPRenderer()
-                scenario.lanelet_network.draw(rnd)
-                planning_problem.draw(rnd)
-                rnd.render()
-                plt.show()
+        # Initialize the list of full lanelets with the initial lanelet
+        # Initialize a list of processed lanelet ids to avoid loops in case of circular paths in the lanelet network
+        full_lanelets = [lanelet]
+        processed_ids = [lanelet.lanelet_id]
+        
+        queue = []
+        visited = set()
 
-            # debug_plot()
+        path_from_initial_lanelet = [lanelet]
+        setattr(lanelet, "path", path_from_initial_lanelet)
+
+        queue.append(lanelet)
+        
+        # Loop until there are no more lanelets to process
+        while queue:
+            current_lanelet = queue.pop(0)
             
-            return False, f"Initial State of {planning_problem.planning_problem_id} outside lanelets"
-        
-        # Check the agent is at least 5 meters inside any of the initial lanelets, only if those are ENTRY lanelets
-        for lanelet_id in  [item for sublist in initial_lanelets for item in sublist]:
-            lanelet = scenario.lanelet_network.find_lanelet_by_id(lanelet_id)
-
-            if lanelet.predecessor:
-                # Skip checking if the lanelet has a predecessor, i.e., is not an ENTRY lanelets
+            # Skip already visited lanelets
+            if current_lanelet in visited:
                 continue
 
-            reference_path = resample_polyline(lanelet.center_vertices, step = 1.0)
-            cosy = CoordinateSystem(reference_path)
+            # Add the current lanelet to the visited set
+            visited.add(current_lanelet)
 
-            initial_position_cc = cosy.convert_to_curvilinear_coords(planning_problem.initial_state.position[0], planning_problem.initial_state.position[1])
-            if initial_position_cc[0] < self.config.min_dist_init:
-                return False, f"Initial State of {planning_problem.planning_problem_id} too close to lanelet {lanelet.lanelet_id} initial edge"
+            # Iterate over the successor lanelets of the current lanelet
+            for successor_lanelet in [ll_network.find_lanelet_by_id(l) for l in current_lanelet.successor]:
+                # For every successor we duplicate the path so far, so each reacheable lane contains the path from the initial lane
+                path_from_initial_lanelet = current_lanelet.path[:]
+                path_from_initial_lanelet.append(successor_lanelet)
 
-        # Extract agent's planning problem
-        goal_region = planning_problem.goal
+                setattr(successor_lanelet, "path", path_from_initial_lanelet)
 
-        # Check if the initial state is not in goal region
-        for goal_state in goal_region.state_list:
-            # If the goal region is an area, check that the initial state is not inside of it
-            if hasattr(goal_state, "position") and goal_state.position.contains_point(planning_problem.initial_state.position):
-                module_logger.debug(f"Scenario not valid: Initial State of {planning_problem.planning_problem_id} inside of Goal Region")
-                return False, f"Initial State of {planning_problem.planning_problem_id} inside of Goal Region"
+                queue.append(successor_lanelet)
 
-            # If the lateral distance is larger than twice the longitudinal distance the vehicle is too much on the side of the goal area!
-            center_of_goal = goal_state.position.center
+        # At this point we can recreate the paths from the initial lane to all the ending lanes
+        for exiting_lanelet in [l for l in ll_network.lanelets if len(l.successor) == 0 and hasattr(l, "path")]:
+            # This is an exiting lane reacheable from the initial lanelet, let's generate the merged lane
+            full_lanelet = None
+            for ll in exiting_lanelet.path:
+                if full_lanelet:
+                    full_lanelet = Lanelet.merge_lanelets(full_lanelet, ll)
+                else:
+                    full_lanelet = deepcopy(ll)
 
-            # If the agent is close enough to the goal area we need to check for lateral displacement
-            distance_to_goal = Point(planning_problem.initial_state.position[0], planning_problem.initial_state.position[1]).distance(Point(center_of_goal[0], center_of_goal[1]))
-            if distance_to_goal > MIN_DISTANCE:
-                continue
-            
-        # If nothing fails, we assume valid. In case this turns out to be wrong, we catch the issue after the execution
-        return True, ""
-
-    def _validate_init_distances(self, scenario: Scenario, problem_set: PlanningProblemSet):
-        """
-        Check the initial distance between agents and obstacles on the same lanelet is larger than a minimum distance defined in the configuration file, with some specific checks for EVITA-generated scenarios
-        """
-        obstacle_states = {}
-
-        # Extract scenario's planning problems, then retrieve their initial state
-        planning_problems = list(problem_set.planning_problem_dict.values())
-        for pp in planning_problems:
-            obstacle_states[pp.planning_problem_id] = pp.initial_state
-
-        # Check that the distance between all the pairs of agents is larger than a minimum distance defined in the configuration file
-        for (vehicle_id_1, state_1), (vehicle_id_2, state_2) in combinations(obstacle_states.items(), 2):
-            result, distance = self.is_too_close_commonroad(state_1, state_2)
-
-            if result:
-                return False, f"Distance between {vehicle_id_1} to next object in lane {vehicle_id_2} too short"
-
-        return True, ""
-
-    def is_too_close_commonroad(self, state1: InitialState, state2: InitialState) -> Tuple[bool, str]:
-        """
-        Check if the distance between two agents is smaller than a minimum distance defined in the configuration file, with some specific checks for EVITA-generated scenarios
-        """
-        # Build a polygon from the state of the agents
-        polygon_1 = self.state_to_polygon(state1, self.generation_config.length, self.generation_config.width)
-        polygon_2 = self.state_to_polygon(state2, self.generation_config.length, self.generation_config.width)
-
-        # Compute the distance between the two polygons and check if it is smaller than a minimum distance defined in the configuration file
-        distance = polygon_1.distance(polygon_2)
-
-        if distance < self.min_agents_distance:
-            return True, distance
-
-        return False, distance
-
-    def state_to_polygon(self, state: InitialState, length: float, width: float) -> Polygon:
-        """
-        Convert a CommonRoad state to a vehicle polygon.
-        """
-        # Extract vehicle's position and orientation
-        x, y = state.position
-        theta = state.orientation
-
-        # Compute the corners of the rectangle representing the vehicle
-        # Centered at the position of the state and oriented according to the orientation of the state
-        half_l = length / 2
-        half_w = width / 2
-        corners = np.array([
-            [-half_l, -half_w],
-            [-half_l,  half_w],
-            [ half_l,  half_w],
-            [ half_l, -half_w]
-        ])
-
-        # Rotation matrix
-        R = np.array([
-            [np.cos(theta), -np.sin(theta)],
-            [np.sin(theta),  np.cos(theta)]
-        ])
-
-        # Rotate + translate
-        transformed = (R @ corners.T).T + np.array([x, y])
-
-        return Polygon(transformed)
-
-    def validate_planning_problems(self, scenario: Scenario, problem_set: PlanningProblemSet) -> Tuple[bool, str]:
-        """
-        Check the validity of the planning problems of the scenario according to a set of criteria defined in the configuration file, with some specific checks for EVITA-generated scenarios
-        """
-        # Call the parent method to perform the basic checks on the planning problems
-        super().validate_planning_problems(scenario, problem_set, True)
-
-        # Validate the initial state of the agent for each planning problem
-        validity_flag, validity_message = self._validate_init_distances(scenario, problem_set)
-        if not validity_flag:
-            return validity_flag, validity_message
-
-        return True, ""
-
-def get_successor_lanelets(lanelet: Lanelet, ll_network: LaneletNetwork) -> List[Lanelet]:
-    """
-    Get all successor lanelets of a given lanelet
-
-    Given the lanelet, create longer lanelets by merging them together, but only following the successor relation.
-    Creates a new path for each successor (is a tree that becomes multiple paths)
-    """
-
-    # Initialize the list of full lanelets with the initial lanelet
-    # Initialize a list of processed lanelet ids to avoid loops in case of circular paths in the lanelet network
-    full_lanelets = [lanelet]
-    processed_ids = [lanelet.lanelet_id]
-    
-    queue = []
-    visited = set()
-
-    path_from_initial_lanelet = [lanelet]
-    setattr(lanelet, "path", path_from_initial_lanelet)
-
-    queue.append(lanelet)
-    
-    # Loop until there are no more lanelets to process
-    while queue:
-        current_lanelet = queue.pop(0)
+            full_lanelets.append(full_lanelet)
         
-        # Skip already visited lanelets
-        if current_lanelet in visited:
-            continue
+        # Clean up
+        [delattr(l, "path") for l in ll_network.lanelets if hasattr(l, "path")]
 
-        # Add the current lanelet to the visited set
-        visited.add(current_lanelet)
-
-        # Iterate over the successor lanelets of the current lanelet
-        for successor_lanelet in [ll_network.find_lanelet_by_id(l) for l in current_lanelet.successor]:
-            # For every successor we duplicate the path so far, so each reacheable lane contains the path from the initial lane
-            path_from_initial_lanelet = current_lanelet.path[:]
-            path_from_initial_lanelet.append(successor_lanelet)
-
-            setattr(successor_lanelet, "path", path_from_initial_lanelet)
-
-            queue.append(successor_lanelet)
-
-    # At this point we can recreate the paths from the initial lane to all the ending lanes
-    for exiting_lanelet in [l for l in ll_network.lanelets if len(l.successor) == 0 and hasattr(l, "path")]:
-        # This is an exiting lane reacheable from the initial lanelet, let's generate the merged lane
-        full_lanelet = None
-        for ll in exiting_lanelet.path:
-            if full_lanelet:
-                full_lanelet = Lanelet.merge_lanelets(full_lanelet, ll)
-            else:
-                full_lanelet = deepcopy(ll)
-
-        full_lanelets.append(full_lanelet)
-    
-    # Clean up
-    [delattr(l, "path") for l in ll_network.lanelets if hasattr(l, "path")]
-
-    return full_lanelets
+        return full_lanelets
