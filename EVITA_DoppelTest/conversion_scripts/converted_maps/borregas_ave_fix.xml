@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<commonRoad timeStepSize="0.1" commonRoadVersion="2020a" author="Fabio Cavaleri" affiliation="USI-AIT-NII" source="DoppelTest" benchmarkID="DEU_borregasavefix-2" date="2026-03-25">
+<commonRoad timeStepSize="0.1" commonRoadVersion="2020a" author="Fabio Cavaleri" affiliation="USI-AIT-NII" source="BaiduApollo" benchmarkID="DEU_borregasavefix-3" date="2026-11-04">
   <location>
     <geoNameId>-999</geoNameId>
     <gpsLatitude>999</gpsLatitude>
@@ -8,7 +8,7 @@
   <scenarioTags>
     <urban/>
   </scenarioTags>
-  <lanelet id="0">
+  <lanelet id="1">
     <leftBound>
       <point>
         <x>587112.9364</x>
@@ -55,9 +55,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="35"/>
-    <successor ref="46"/>
-    <adjacentLeft ref="1" drivingDir="same"/>
+    <successor ref="36"/>
+    <successor ref="47"/>
+    <adjacentLeft ref="2" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587066.4386</x>
@@ -68,12 +68,18 @@
         <y>4141589.7615</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10000"/>
+      <trafficLightRef ref="10009"/>
+      <trafficLightRef ref="10013"/>
       <trafficLightRef ref="10014"/>
     </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10000"/>
+    <trafficLightRef ref="10009"/>
+    <trafficLightRef ref="10013"/>
     <trafficLightRef ref="10014"/>
   </lanelet>
-  <lanelet id="1">
+  <lanelet id="2">
     <leftBound>
       <point>
         <x>587112.0546</x>
@@ -120,8 +126,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="34"/>
-    <adjacentLeft ref="2" drivingDir="same"/>
+    <successor ref="35"/>
+    <adjacentLeft ref="3" drivingDir="same"/>
+    <adjacentRight ref="1" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587065.5569</x>
@@ -132,12 +139,18 @@
         <y>4141586.4158</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10000"/>
+      <trafficLightRef ref="10009"/>
+      <trafficLightRef ref="10013"/>
       <trafficLightRef ref="10014"/>
     </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10000"/>
+    <trafficLightRef ref="10009"/>
+    <trafficLightRef ref="10013"/>
     <trafficLightRef ref="10014"/>
   </lanelet>
-  <lanelet id="2">
+  <lanelet id="3">
     <leftBound>
       <point>
         <x>587111.1473</x>
@@ -184,9 +197,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="33"/>
-    <adjacentLeft ref="3" drivingDir="same"/>
-    <adjacentRight ref="1" drivingDir="same"/>
+    <successor ref="34"/>
+    <adjacentLeft ref="4" drivingDir="same"/>
+    <adjacentRight ref="2" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587064.6567</x>
@@ -197,12 +210,18 @@
         <y>4141583.2056</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10000"/>
+      <trafficLightRef ref="10009"/>
+      <trafficLightRef ref="10013"/>
       <trafficLightRef ref="10014"/>
     </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10000"/>
+    <trafficLightRef ref="10009"/>
+    <trafficLightRef ref="10013"/>
     <trafficLightRef ref="10014"/>
   </lanelet>
-  <lanelet id="3">
+  <lanelet id="4">
     <leftBound>
       <point>
         <x>587111.4039</x>
@@ -249,9 +268,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="32"/>
-    <adjacentLeft ref="6" drivingDir="opposite"/>
-    <adjacentRight ref="2" drivingDir="same"/>
+    <successor ref="33"/>
+    <adjacentLeft ref="7" drivingDir="opposite"/>
+    <adjacentRight ref="3" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587063.8532</x>
@@ -262,12 +281,18 @@
         <y>4141579.9469</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10000"/>
+      <trafficLightRef ref="10009"/>
+      <trafficLightRef ref="10013"/>
       <trafficLightRef ref="10014"/>
     </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10000"/>
+    <trafficLightRef ref="10009"/>
+    <trafficLightRef ref="10013"/>
     <trafficLightRef ref="10014"/>
   </lanelet>
-  <lanelet id="4">
+  <lanelet id="5">
     <leftBound>
       <point>
         <x>587066.3756</x>
@@ -314,12 +339,12 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="37"/>
-    <predecessor ref="44"/>
-    <adjacentLeft ref="5" drivingDir="same"/>
+    <predecessor ref="38"/>
+    <predecessor ref="45"/>
+    <adjacentLeft ref="6" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="5">
+  <lanelet id="6">
     <leftBound>
       <point>
         <x>587062.0982</x>
@@ -366,12 +391,12 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="38"/>
-    <adjacentLeft ref="6" drivingDir="same"/>
-    <adjacentRight ref="4" drivingDir="same"/>
+    <predecessor ref="39"/>
+    <adjacentLeft ref="7" drivingDir="same"/>
+    <adjacentRight ref="5" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="6">
+  <lanelet id="7">
     <leftBound>
       <point>
         <x>587063.0029</x>
@@ -418,13 +443,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="39"/>
-    <predecessor ref="42"/>
-    <adjacentLeft ref="3" drivingDir="opposite"/>
-    <adjacentRight ref="5" drivingDir="same"/>
+    <predecessor ref="40"/>
+    <predecessor ref="43"/>
+    <adjacentLeft ref="4" drivingDir="opposite"/>
+    <adjacentRight ref="6" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="7">
+  <lanelet id="8">
     <leftBound>
       <point>
         <x>587038.1453</x>
@@ -471,12 +496,12 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="35"/>
-    <predecessor ref="41"/>
-    <adjacentLeft ref="8" drivingDir="same"/>
+    <predecessor ref="36"/>
+    <predecessor ref="42"/>
+    <adjacentLeft ref="9" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="8">
+  <lanelet id="9">
     <leftBound>
       <point>
         <x>587041.3337</x>
@@ -523,12 +548,12 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="34"/>
-    <adjacentLeft ref="9" drivingDir="same"/>
-    <adjacentRight ref="7" drivingDir="same"/>
+    <predecessor ref="35"/>
+    <adjacentLeft ref="10" drivingDir="same"/>
+    <adjacentRight ref="8" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="9">
+  <lanelet id="10">
     <leftBound>
       <point>
         <x>587040.4206</x>
@@ -575,13 +600,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="33"/>
-    <predecessor ref="43"/>
-    <adjacentLeft ref="13" drivingDir="opposite"/>
-    <adjacentRight ref="8" drivingDir="same"/>
+    <predecessor ref="34"/>
+    <predecessor ref="44"/>
+    <adjacentLeft ref="14" drivingDir="opposite"/>
+    <adjacentRight ref="9" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="10">
+  <lanelet id="11">
     <leftBound>
       <point>
         <x>587003.3897</x>
@@ -628,9 +653,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="37"/>
-    <successor ref="47"/>
-    <adjacentLeft ref="11" drivingDir="same"/>
+    <successor ref="38"/>
+    <successor ref="48"/>
+    <adjacentLeft ref="12" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587036.1579</x>
@@ -642,11 +667,17 @@
       </point>
       <lineMarking>solid_solid</lineMarking>
       <trafficLightRef ref="10008"/>
+      <trafficLightRef ref="10003"/>
+      <trafficLightRef ref="10004"/>
+      <trafficLightRef ref="10007"/>
     </stopLine>
     <laneletType>urban</laneletType>
     <trafficLightRef ref="10008"/>
+    <trafficLightRef ref="10003"/>
+    <trafficLightRef ref="10004"/>
+    <trafficLightRef ref="10007"/>
   </lanelet>
-  <lanelet id="11">
+  <lanelet id="12">
     <leftBound>
       <point>
         <x>587003.8485</x>
@@ -693,9 +724,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="38"/>
-    <adjacentLeft ref="12" drivingDir="same"/>
-    <adjacentRight ref="10" drivingDir="same"/>
+    <successor ref="39"/>
+    <adjacentLeft ref="13" drivingDir="same"/>
+    <adjacentRight ref="11" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587037.0987</x>
@@ -707,11 +738,17 @@
       </point>
       <lineMarking>solid_solid</lineMarking>
       <trafficLightRef ref="10008"/>
+      <trafficLightRef ref="10003"/>
+      <trafficLightRef ref="10004"/>
+      <trafficLightRef ref="10007"/>
     </stopLine>
     <laneletType>urban</laneletType>
     <trafficLightRef ref="10008"/>
+    <trafficLightRef ref="10003"/>
+    <trafficLightRef ref="10004"/>
+    <trafficLightRef ref="10007"/>
   </lanelet>
-  <lanelet id="12">
+  <lanelet id="13">
     <leftBound>
       <point>
         <x>587005.0347</x>
@@ -758,9 +795,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="39"/>
-    <adjacentLeft ref="13" drivingDir="same"/>
-    <adjacentRight ref="11" drivingDir="same"/>
+    <successor ref="40"/>
+    <adjacentLeft ref="14" drivingDir="same"/>
+    <adjacentRight ref="12" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587038.0434</x>
@@ -772,11 +809,17 @@
       </point>
       <lineMarking>solid_solid</lineMarking>
       <trafficLightRef ref="10008"/>
+      <trafficLightRef ref="10003"/>
+      <trafficLightRef ref="10004"/>
+      <trafficLightRef ref="10007"/>
     </stopLine>
     <laneletType>urban</laneletType>
     <trafficLightRef ref="10008"/>
+    <trafficLightRef ref="10003"/>
+    <trafficLightRef ref="10004"/>
+    <trafficLightRef ref="10007"/>
   </lanelet>
-  <lanelet id="13">
+  <lanelet id="14">
     <leftBound>
       <point>
         <x>587005.6875</x>
@@ -823,9 +866,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="36"/>
-    <adjacentLeft ref="9" drivingDir="opposite"/>
-    <adjacentRight ref="12" drivingDir="same"/>
+    <successor ref="37"/>
+    <adjacentLeft ref="10" drivingDir="opposite"/>
+    <adjacentRight ref="13" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587039.1232</x>
@@ -837,11 +880,17 @@
       </point>
       <lineMarking>solid_solid</lineMarking>
       <trafficLightRef ref="10008"/>
+      <trafficLightRef ref="10003"/>
+      <trafficLightRef ref="10004"/>
+      <trafficLightRef ref="10007"/>
     </stopLine>
     <laneletType>urban</laneletType>
     <trafficLightRef ref="10008"/>
+    <trafficLightRef ref="10003"/>
+    <trafficLightRef ref="10004"/>
+    <trafficLightRef ref="10007"/>
   </lanelet>
-  <lanelet id="14">
+  <lanelet id="15">
     <leftBound>
       <point>
         <x>587062.9827</x>
@@ -888,11 +937,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="46"/>
-    <adjacentLeft ref="15" drivingDir="same"/>
+    <predecessor ref="47"/>
+    <adjacentLeft ref="16" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="15">
+  <lanelet id="16">
     <leftBound>
       <point>
         <x>587059.4332</x>
@@ -939,13 +988,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="36"/>
-    <predecessor ref="45"/>
-    <adjacentLeft ref="16" drivingDir="opposite"/>
-    <adjacentRight ref="14" drivingDir="same"/>
+    <predecessor ref="37"/>
+    <predecessor ref="46"/>
+    <adjacentLeft ref="17" drivingDir="opposite"/>
+    <adjacentRight ref="15" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="16">
+  <lanelet id="17">
     <leftBound>
       <point>
         <x>587063.3457</x>
@@ -992,13 +1041,32 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="40"/>
-    <successor ref="42"/>
-    <adjacentLeft ref="15" drivingDir="opposite"/>
-    <adjacentRight ref="17" drivingDir="same"/>
+    <successor ref="41"/>
+    <successor ref="43"/>
+    <adjacentLeft ref="16" drivingDir="opposite"/>
+    <adjacentRight ref="18" drivingDir="same"/>
+    <stopLine>
+      <point>
+        <x>587056.8761</x>
+        <y>4141605.6409</y>
+      </point>
+      <point>
+        <x>587053.4951</x>
+        <y>4141606.5416</y>
+      </point>
+      <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10002"/>
+      <trafficLightRef ref="10012"/>
+      <trafficLightRef ref="10005"/>
+      <trafficLightRef ref="10006"/>
+    </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10002"/>
+    <trafficLightRef ref="10012"/>
+    <trafficLightRef ref="10005"/>
+    <trafficLightRef ref="10006"/>
   </lanelet>
-  <lanelet id="17">
+  <lanelet id="18">
     <leftBound>
       <point>
         <x>587059.5215</x>
@@ -1045,8 +1113,8 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="41"/>
-    <adjacentLeft ref="16" drivingDir="same"/>
+    <successor ref="42"/>
+    <adjacentLeft ref="17" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587053.1397</x>
@@ -1057,12 +1125,18 @@
         <y>4141607.6756</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10002"/>
       <trafficLightRef ref="10012"/>
+      <trafficLightRef ref="10005"/>
+      <trafficLightRef ref="10006"/>
     </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10002"/>
     <trafficLightRef ref="10012"/>
+    <trafficLightRef ref="10005"/>
+    <trafficLightRef ref="10006"/>
   </lanelet>
-  <lanelet id="18">
+  <lanelet id="19">
     <leftBound>
       <point>
         <x>587037.2598</x>
@@ -1141,13 +1215,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="30"/>
-    <successor ref="26"/>
-    <successor ref="28"/>
-    <adjacentLeft ref="19" drivingDir="opposite"/>
+    <predecessor ref="31"/>
+    <successor ref="27"/>
+    <successor ref="29"/>
+    <adjacentLeft ref="20" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="19">
+  <lanelet id="20">
     <leftBound>
       <point>
         <x>586981.9415</x>
@@ -1194,13 +1268,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="27"/>
-    <successor ref="29"/>
-    <successor ref="31"/>
-    <adjacentLeft ref="18" drivingDir="opposite"/>
+    <predecessor ref="28"/>
+    <successor ref="30"/>
+    <successor ref="32"/>
+    <adjacentLeft ref="19" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="20">
+  <lanelet id="21">
     <leftBound>
       <point>
         <x>586951.9021</x>
@@ -1247,13 +1321,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="50"/>
-    <successor ref="55"/>
-    <successor ref="59"/>
-    <adjacentLeft ref="21" drivingDir="opposite"/>
+    <successor ref="51"/>
+    <successor ref="56"/>
+    <successor ref="60"/>
+    <adjacentLeft ref="22" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="21">
+  <lanelet id="22">
     <leftBound>
       <point>
         <x>586958.0096</x>
@@ -1300,13 +1374,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="51"/>
-    <predecessor ref="54"/>
-    <predecessor ref="57"/>
-    <adjacentLeft ref="20" drivingDir="opposite"/>
+    <predecessor ref="52"/>
+    <predecessor ref="55"/>
+    <predecessor ref="58"/>
+    <adjacentLeft ref="21" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="22">
+  <lanelet id="23">
     <leftBound>
       <point>
         <x>586947.6501</x>
@@ -1353,13 +1427,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="48"/>
-    <predecessor ref="52"/>
-    <predecessor ref="59"/>
-    <adjacentLeft ref="23" drivingDir="opposite"/>
+    <predecessor ref="49"/>
+    <predecessor ref="53"/>
+    <predecessor ref="60"/>
+    <adjacentLeft ref="24" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="23">
+  <lanelet id="24">
     <leftBound>
       <point>
         <x>586931.6848</x>
@@ -1406,10 +1480,10 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="51"/>
-    <successor ref="53"/>
-    <successor ref="56"/>
-    <adjacentLeft ref="22" drivingDir="opposite"/>
+    <successor ref="52"/>
+    <successor ref="54"/>
+    <successor ref="57"/>
+    <adjacentLeft ref="23" drivingDir="opposite"/>
     <stopLine>
       <point>
         <x>586952.9551</x>
@@ -1420,12 +1494,12 @@
         <y>4141240.9833</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
-      <trafficSignRef ref="500"/>
+      <trafficSignRef ref="5000"/>
     </stopLine>
     <laneletType>urban</laneletType>
-    <trafficSignRef ref="500"/>
+    <trafficSignRef ref="5000"/>
   </lanelet>
-  <lanelet id="24">
+  <lanelet id="25">
     <leftBound>
       <point>
         <x>586982.7481</x>
@@ -1528,13 +1602,13 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="50"/>
-    <predecessor ref="53"/>
-    <predecessor ref="58"/>
-    <adjacentLeft ref="25" drivingDir="opposite"/>
+    <predecessor ref="51"/>
+    <predecessor ref="54"/>
+    <predecessor ref="59"/>
+    <adjacentLeft ref="26" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="25">
+  <lanelet id="26">
     <leftBound>
       <point>
         <x>587176.8297</x>
@@ -1637,10 +1711,10 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <successor ref="49"/>
-    <successor ref="52"/>
-    <successor ref="57"/>
-    <adjacentLeft ref="24" drivingDir="opposite"/>
+    <successor ref="50"/>
+    <successor ref="53"/>
+    <successor ref="58"/>
+    <adjacentLeft ref="25" drivingDir="opposite"/>
     <stopLine>
       <point>
         <x>586978.4183</x>
@@ -1651,12 +1725,12 @@
         <y>4141244.6006</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
-      <trafficSignRef ref="501"/>
+      <trafficSignRef ref="5001"/>
     </stopLine>
     <laneletType>urban</laneletType>
-    <trafficSignRef ref="501"/>
+    <trafficSignRef ref="5001"/>
   </lanelet>
-  <lanelet id="26">
+  <lanelet id="27">
     <leftBound>
       <point>
         <x>586981.7524</x>
@@ -1703,12 +1777,12 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="18"/>
-    <successor ref="48"/>
-    <adjacentLeft ref="28" drivingDir="same"/>
+    <predecessor ref="19"/>
+    <successor ref="49"/>
+    <adjacentLeft ref="29" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="27">
+  <lanelet id="28">
     <leftBound>
       <point>
         <x>586969.7339</x>
@@ -1755,14 +1829,14 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="49"/>
-    <predecessor ref="55"/>
+    <predecessor ref="50"/>
     <predecessor ref="56"/>
-    <successor ref="19"/>
-    <adjacentLeft ref="28" drivingDir="opposite"/>
+    <predecessor ref="57"/>
+    <successor ref="20"/>
+    <adjacentLeft ref="29" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="28">
+  <lanelet id="29">
     <leftBound>
       <point>
         <x>586981.8418</x>
@@ -1809,14 +1883,14 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="18"/>
-    <successor ref="54"/>
-    <successor ref="58"/>
-    <adjacentLeft ref="27" drivingDir="opposite"/>
-    <adjacentRight ref="26" drivingDir="same"/>
+    <predecessor ref="19"/>
+    <successor ref="55"/>
+    <successor ref="59"/>
+    <adjacentLeft ref="28" drivingDir="opposite"/>
+    <adjacentRight ref="27" drivingDir="same"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="29">
+  <lanelet id="30">
     <leftBound>
       <point>
         <x>587037.7527</x>
@@ -1871,9 +1945,9 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="19"/>
-    <successor ref="44"/>
-    <adjacentLeft ref="31" drivingDir="same"/>
+    <predecessor ref="20"/>
+    <successor ref="45"/>
+    <adjacentLeft ref="32" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587051.0453</x>
@@ -1884,12 +1958,16 @@
         <y>4141556.2065</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10001"/>
+      <trafficLightRef ref="10010"/>
       <trafficLightRef ref="10011"/>
     </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10001"/>
+    <trafficLightRef ref="10010"/>
     <trafficLightRef ref="10011"/>
   </lanelet>
-  <lanelet id="30">
+  <lanelet id="31">
     <leftBound>
       <point>
         <x>587042.0918</x>
@@ -1968,14 +2046,14 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="32"/>
-    <predecessor ref="40"/>
-    <predecessor ref="47"/>
-    <successor ref="18"/>
-    <adjacentLeft ref="31" drivingDir="opposite"/>
+    <predecessor ref="33"/>
+    <predecessor ref="41"/>
+    <predecessor ref="48"/>
+    <successor ref="19"/>
+    <adjacentLeft ref="32" drivingDir="opposite"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="31">
+  <lanelet id="32">
     <leftBound>
       <point>
         <x>587037.6967</x>
@@ -2030,11 +2108,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="19"/>
-    <successor ref="43"/>
-    <successor ref="45"/>
-    <adjacentLeft ref="30" drivingDir="opposite"/>
-    <adjacentRight ref="29" drivingDir="same"/>
+    <predecessor ref="20"/>
+    <successor ref="44"/>
+    <successor ref="46"/>
+    <adjacentLeft ref="31" drivingDir="opposite"/>
+    <adjacentRight ref="30" drivingDir="same"/>
     <stopLine>
       <point>
         <x>587045.1458</x>
@@ -2045,12 +2123,16 @@
         <y>4141559.1336</y>
       </point>
       <lineMarking>solid_solid</lineMarking>
+      <trafficLightRef ref="10001"/>
+      <trafficLightRef ref="10010"/>
       <trafficLightRef ref="10011"/>
     </stopLine>
     <laneletType>urban</laneletType>
+    <trafficLightRef ref="10001"/>
+    <trafficLightRef ref="10010"/>
     <trafficLightRef ref="10011"/>
   </lanelet>
-  <lanelet id="32">
+  <lanelet id="33">
     <leftBound>
       <point>
         <x>587063.4759</x>
@@ -2105,11 +2187,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="3"/>
-    <successor ref="30"/>
+    <predecessor ref="4"/>
+    <successor ref="31"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="33">
+  <lanelet id="34">
     <leftBound>
       <point>
         <x>587064.2302</x>
@@ -2156,11 +2238,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="2"/>
-    <successor ref="9"/>
+    <predecessor ref="3"/>
+    <successor ref="10"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="34">
+  <lanelet id="35">
     <leftBound>
       <point>
         <x>587065.0747</x>
@@ -2207,11 +2289,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="1"/>
-    <successor ref="8"/>
+    <predecessor ref="2"/>
+    <successor ref="9"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="35">
+  <lanelet id="36">
     <leftBound>
       <point>
         <x>587065.9602</x>
@@ -2258,11 +2340,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="0"/>
-    <successor ref="7"/>
+    <predecessor ref="1"/>
+    <successor ref="8"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="36">
+  <lanelet id="37">
     <leftBound>
       <point>
         <x>587039.7660</x>
@@ -2317,11 +2399,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="13"/>
-    <successor ref="15"/>
+    <predecessor ref="14"/>
+    <successor ref="16"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="37">
+  <lanelet id="38">
     <leftBound>
       <point>
         <x>587036.1260</x>
@@ -2368,11 +2450,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="10"/>
-    <successor ref="4"/>
+    <predecessor ref="11"/>
+    <successor ref="5"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="38">
+  <lanelet id="39">
     <leftBound>
       <point>
         <x>587037.2533</x>
@@ -2419,11 +2501,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="11"/>
-    <successor ref="5"/>
+    <predecessor ref="12"/>
+    <successor ref="6"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="39">
+  <lanelet id="40">
     <leftBound>
       <point>
         <x>587038.3500</x>
@@ -2470,11 +2552,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="12"/>
-    <successor ref="6"/>
+    <predecessor ref="13"/>
+    <successor ref="7"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="40">
+  <lanelet id="41">
     <leftBound>
       <point>
         <x>587056.8316</x>
@@ -2521,24 +2603,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="16"/>
-    <successor ref="30"/>
-    <stopLine>
-      <point>
-        <x>587056.8316</x>
-        <y>4141605.4736</y>
-      </point>
-      <point>
-        <x>587053.4701</x>
-        <y>4141606.4476</y>
-      </point>
-      <lineMarking>solid_solid</lineMarking>
-      <trafficLightRef ref="10012"/>
-    </stopLine>
+    <predecessor ref="17"/>
+    <successor ref="31"/>
     <laneletType>urban</laneletType>
-    <trafficLightRef ref="10012"/>
   </lanelet>
-  <lanelet id="41">
+  <lanelet id="42">
     <leftBound>
       <point>
         <x>587053.0940</x>
@@ -2585,11 +2654,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="17"/>
-    <successor ref="7"/>
+    <predecessor ref="18"/>
+    <successor ref="8"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="42">
+  <lanelet id="43">
     <leftBound>
       <point>
         <x>587056.8410</x>
@@ -2644,24 +2713,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="16"/>
-    <successor ref="6"/>
-    <stopLine>
-      <point>
-        <x>587056.8410</x>
-        <y>4141605.5074</y>
-      </point>
-      <point>
-        <x>587053.4607</x>
-        <y>4141606.4138</y>
-      </point>
-      <lineMarking>solid_solid</lineMarking>
-      <trafficLightRef ref="10012"/>
-    </stopLine>
+    <predecessor ref="17"/>
+    <successor ref="7"/>
     <laneletType>urban</laneletType>
-    <trafficLightRef ref="10012"/>
   </lanelet>
-  <lanelet id="43">
+  <lanelet id="44">
     <leftBound>
       <point>
         <x>587045.1702</x>
@@ -2716,11 +2772,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="31"/>
-    <successor ref="9"/>
+    <predecessor ref="32"/>
+    <successor ref="10"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="44">
+  <lanelet id="45">
     <leftBound>
       <point>
         <x>587051.7824</x>
@@ -2775,11 +2831,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="29"/>
-    <successor ref="4"/>
+    <predecessor ref="30"/>
+    <successor ref="5"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="45">
+  <lanelet id="46">
     <leftBound>
       <point>
         <x>587045.1913</x>
@@ -2826,11 +2882,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="31"/>
-    <successor ref="15"/>
+    <predecessor ref="32"/>
+    <successor ref="16"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="46">
+  <lanelet id="47">
     <leftBound>
       <point>
         <x>587065.0016</x>
@@ -2885,11 +2941,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="0"/>
-    <successor ref="14"/>
+    <predecessor ref="1"/>
+    <successor ref="15"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="47">
+  <lanelet id="48">
     <leftBound>
       <point>
         <x>587036.7319</x>
@@ -2944,11 +3000,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="10"/>
-    <successor ref="30"/>
+    <predecessor ref="11"/>
+    <successor ref="31"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="48">
+  <lanelet id="49">
     <leftBound>
       <point>
         <x>586964.1091</x>
@@ -3003,11 +3059,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="26"/>
-    <successor ref="22"/>
+    <predecessor ref="27"/>
+    <successor ref="23"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="49">
+  <lanelet id="50">
     <leftBound>
       <point>
         <x>586976.9747</x>
@@ -3062,11 +3118,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="25"/>
-    <successor ref="27"/>
+    <predecessor ref="26"/>
+    <successor ref="28"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="50">
+  <lanelet id="51">
     <leftBound>
       <point>
         <x>586959.0158</x>
@@ -3121,11 +3177,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="20"/>
-    <successor ref="24"/>
+    <predecessor ref="21"/>
+    <successor ref="25"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="51">
+  <lanelet id="52">
     <leftBound>
       <point>
         <x>586953.5947</x>
@@ -3180,11 +3236,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="23"/>
-    <successor ref="21"/>
+    <predecessor ref="24"/>
+    <successor ref="22"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="52">
+  <lanelet id="53">
     <leftBound>
       <point>
         <x>586977.6964</x>
@@ -3223,11 +3279,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="25"/>
-    <successor ref="22"/>
+    <predecessor ref="26"/>
+    <successor ref="23"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="53">
+  <lanelet id="54">
     <leftBound>
       <point>
         <x>586952.8726</x>
@@ -3266,11 +3322,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="23"/>
-    <successor ref="24"/>
+    <predecessor ref="24"/>
+    <successor ref="25"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="54">
+  <lanelet id="55">
     <leftBound>
       <point>
         <x>586969.6953</x>
@@ -3317,11 +3373,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="28"/>
-    <successor ref="21"/>
+    <predecessor ref="29"/>
+    <successor ref="22"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="55">
+  <lanelet id="56">
     <leftBound>
       <point>
         <x>586958.8201</x>
@@ -3368,11 +3424,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="20"/>
-    <successor ref="27"/>
+    <predecessor ref="21"/>
+    <successor ref="28"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="56">
+  <lanelet id="57">
     <leftBound>
       <point>
         <x>586952.2127</x>
@@ -3427,11 +3483,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="23"/>
-    <successor ref="27"/>
+    <predecessor ref="24"/>
+    <successor ref="28"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="57">
+  <lanelet id="58">
     <leftBound>
       <point>
         <x>586978.2270</x>
@@ -3486,11 +3542,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="25"/>
-    <successor ref="21"/>
+    <predecessor ref="26"/>
+    <successor ref="22"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="58">
+  <lanelet id="59">
     <leftBound>
       <point>
         <x>586969.7083</x>
@@ -3545,11 +3601,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="28"/>
-    <successor ref="24"/>
+    <predecessor ref="29"/>
+    <successor ref="25"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <lanelet id="59">
+  <lanelet id="60">
     <leftBound>
       <point>
         <x>586958.8158</x>
@@ -3644,11 +3700,11 @@
       </point>
       <lineMarking>no_marking</lineMarking>
     </rightBound>
-    <predecessor ref="20"/>
-    <successor ref="22"/>
+    <predecessor ref="21"/>
+    <successor ref="23"/>
     <laneletType>urban</laneletType>
   </lanelet>
-  <trafficSign id="500">
+  <trafficSign id="5000">
     <trafficSignElement>
       <trafficSignID>206</trafficSignID>
     </trafficSignElement>
@@ -3660,7 +3716,7 @@
     </position>
     <virtual>false</virtual>
   </trafficSign>
-  <trafficSign id="501">
+  <trafficSign id="5001">
     <trafficSignElement>
       <trafficSignID>206</trafficSignID>
     </trafficSignElement>

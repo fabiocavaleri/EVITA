@@ -3,12 +3,13 @@ import json
 import numpy as np
 from typing import List, Tuple
 import matplotlib.pyplot as plt
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 
 import sys
 sys.path.append("../")
 
 from hdmap.MapParser import MapParser
+from modules.map.proto.map_pb2 import Map as ApolloMap
 
 from commonroad.geometry.shape import Rectangle
 from commonroad.visualization.mp_renderer import MPRenderer
@@ -58,7 +59,9 @@ def curve_to_points(curve: List) -> List:
     for segment in curve.segment:
         if segment.HasField("line_segment"):
             for p in segment.line_segment.point:
-                points.append((p.x, p.y))
+                # Avoid duplicate points
+                if not points or (p.x, p.y) != points[-1]:
+                    points.append((p.x, p.y))
 
     # If exactly three points, insert interpolated midpoints
     if len(points) == 3:
@@ -139,6 +142,77 @@ def adjacent_lanes(adjacent_forward: List[int], adjacent_reverse: List[int]) -> 
 
     return adjacent, same_direction
 
+def lane_vertices(center: List, left: List, right: List) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    CommonRoad needs left and right boundaries with the same number of points (and lane lines of at least 3 points).
+    Keep Apollo's points when they already satisfy this; otherwise resample the three lines to a common number of points.
+    """
+    if len(center) == len(left) == len(right) >= 3:
+        return np.array(left), np.array(right), np.array(center)
+
+    n = max(len(center), len(left), len(right), 3)
+    
+    return resample(left, n), resample(right, n), resample(center, n)
+
+def resample(points: List, n: int) -> np.ndarray:
+    """
+    n points evenly spaced along a polyline (by length)
+    """
+    line = LineString(points)
+
+    return np.array([line.interpolate(f, normalized = True).coords[0] for f in np.linspace(0.0, 1.0, n)])
+
+def controlled_lanelets(apollo_object) -> List[int]:
+    """
+    Lanelets controlled by a stop sign or signal, with CommonRoad's convention (the stop line is at the END of the incoming lanelet).
+    Apollo lists the lanes crossing the stop line; for a lane that starts at the stop line (a junction lane),
+    the incoming lanelets are its predecessors; a lane the stop line crosses elsewhere is kept.
+    """
+    lanelets = set()
+
+    for overlap_id in apollo_object.overlap_id:
+        overlap = apollo_overlaps.get(overlap_id.id)
+        
+        if overlap is None:
+            continue
+        
+        for obj in overlap.object:
+            if obj.WhichOneof("overlap_info") != "lane_overlap_info" or obj.id.id not in lane_id_map:
+                continue
+            
+            lanelet = lanelet_network.find_lanelet_by_id(lane_id_map[obj.id.id])
+            
+            if obj.lane_overlap_info.start_s <= 1.0 and lanelet.predecessor:
+                lanelets.update(lanelet.predecessor)
+            else:
+                lanelets.add(lanelet.lanelet_id)
+    
+    return sorted(lanelets)
+ 
+def attach_stop_line(lanelet: Lanelet, stopline_points: np.ndarray, traffic_sign_id: int = None, traffic_light_id: int = None):
+    """
+    Stop line across the lanelet (the Apollo stop line cropped to its boundaries).
+    Objects sharing the lanelet's stop line are all referenced
+    """
+    stopline = LineString(stopline_points)
+    midpoint = stopline.interpolate(0.5, normalized = True)
+
+    left_bound = LineString(lanelet.left_vertices)
+    right_bound = LineString(lanelet.right_vertices)
+    
+    p_left = np.array(left_bound.interpolate(left_bound.project(midpoint)).coords[0])
+    p_right = np.array(right_bound.interpolate(right_bound.project(midpoint)).coords[0])
+
+    sign_refs = set(lanelet.stop_line.traffic_sign_ref or set()) if lanelet.stop_line else set()
+    light_refs = set(lanelet.stop_line.traffic_light_ref or set()) if lanelet.stop_line else set()
+
+    if traffic_sign_id is not None:
+        sign_refs.add(traffic_sign_id)
+    if traffic_light_id is not None:
+        light_refs.add(traffic_light_id)
+
+    lanelet.stop_line = StopLine(p_left, p_right, LineMarking.SOLID_SOLID, traffic_sign_ref = sign_refs or None, traffic_light_ref = light_refs or None)
+
 # Apollo lane types from modules/map/proto/map_lane_pb2.py
 APOLLO_TO_CR_TYPE = {
     "CITY_DRIVING": LaneletType.URBAN,
@@ -176,6 +250,7 @@ for i, map in enumerate(DT_maps):
 
     # Skip conversion if output file already exists or if source map file is missing
     if not os.path.exists(map_file) or os.path.exists(output_map_file_path):
+        print(f"Skipping map {map} conversion (source file missing or output file already exists)")
         continue
 
     print(f"\n========== Start conversion of map {map} ==========")
@@ -216,7 +291,7 @@ for i, map in enumerate(DT_maps):
     # Use map to assign incremental identifiers to lanelets
     global lane_id_map
     lane_id_map = {}
-    lane_id_counter = 0
+    lane_id_counter = 1
 
     # Assign an id to each lanelet
     for lane_id in mp.get_lanes():
@@ -261,10 +336,11 @@ for i, map in enumerate(DT_maps):
         lanelet_id = lane_id_map[lane_id]
 
         # Build CommonRoad lanelet Object
+        left_vertices, right_vertices, center_vertices = lane_vertices(center, left, right)
         lanelet = Lanelet(
-            left_vertices = np.array(left),
-            right_vertices = np.array(right),
-            center_vertices = np.array(center),
+            left_vertices = left_vertices,
+            right_vertices = right_vertices,
+            center_vertices = center_vertices,
             lanelet_id = lanelet_id,
             adjacent_left = left_adjacent,
             adjacent_left_same_direction = left_adjacent_same_direction,
@@ -288,6 +364,12 @@ for i, map in enumerate(DT_maps):
     #
     # ----- Traffic Signals Conversion -----
     #
+
+    # Apollo's overlaps state exactly which lanes each stop sign and signal controls
+    apollo_map = ApolloMap()
+    with open(map_file, "rb") as f:
+        apollo_map.ParseFromString(f.read())
+    apollo_overlaps = {o.id.id: o for o in apollo_map.overlap}
     
     # Initialize traffic signs id map and relations map
     signals_id_map = {}
@@ -316,43 +398,12 @@ for i, map in enumerate(DT_maps):
         traffic_sign_position = signal.stop_line[0].segment[0].line_segment.point[0]
 
         # Retrieve the lanelet(s) associated to the stop line
-        traffic_sign_lanelets = get_lanelet_from_stopline(lanelet_network, stopline_points)
+        traffic_sign_lanelets = controlled_lanelets(signal) or get_lanelet_from_stopline(lanelet_network, stopline_points)
 
-        # Iterate over each lanelet associated to the stop sign
+        # Stop line on each controlled lanelet
         for lanelet_id in traffic_sign_lanelets:
-            # Extract CommonRoad lanelet object
-            lanelet = scenario.lanelet_network.find_lanelet_by_id(lanelet_id)
-
-            # Compute stop line midpoint
-            stopline_geom = LineString(stopline_points)
-            midpoint = stopline_geom.interpolate(0.5, normalized = True)
-
-            # Extract lanelet boundaries as LineString
-            left_bound = LineString(lanelet.left_vertices)
-            right_bound = LineString(lanelet.right_vertices)
-
-            # Project midpoint to lane boundaries
-            p_left = left_bound.interpolate(left_bound.project(midpoint))
-            p_right = right_bound.interpolate(right_bound.project(midpoint))
-
-            # Crop the stop line to fit between the projected points on the lanelet boundaries
-            cropped_stopline = np.array([
-                np.array(p_left.coords[0]),
-                np.array(p_right.coords[0])
-            ])
-
-            # Create CommonRoad stop line object and associate it to the lanelet
-            stop_line = StopLine(
-                cropped_stopline[0],
-                cropped_stopline[-1],
-                LineMarking.SOLID_SOLID,
-                traffic_sign_ref = set([traffic_sign_id])
-            )
-
-            # Associate stop line to lanelet and save traffic sign id in lanelet traffic signs set
-            lanelet.stop_line = stop_line
-            lanelet.traffic_signs = set([traffic_sign_id])
-
+            attach_stop_line(scenario.lanelet_network.find_lanelet_by_id(lanelet_id), stopline_points, traffic_sign_id = traffic_sign_id)
+ 
         # Create CommonRoad traffic sign object and add it to the scenario
         ts = TrafficSign(
             traffic_sign_id,
@@ -362,6 +413,9 @@ for i, map in enumerate(DT_maps):
         )
 
         scenario.add_objects(ts, traffic_sign_lanelets)
+    #
+    # ----- Traffic Lights Conversion -----
+    #
 
     # Default rectangle size for traffic light (in meters)
     DEFAULT_WIDTH = 0.3
@@ -388,17 +442,16 @@ for i, map in enumerate(DT_maps):
         x, y = signal.subsignal[0].location.x, signal.subsignal[0].location.y
 
         # Extract direction of the traffic light (ARROW_FORWARD, ARROW_LEFT, etc.)
-        arrow_type = signal.subsignal[0].type
+        arrow_type = signal.subsignal[0].Type.Name(signal.subsignal[0].type)
 
         # Map Apollo arrow type to CommonRoad TrafficLightDirection
         # Default to ALL if unsure
         direction_mapping = {
-            "ARROW_STRAIGHT": TrafficLightDirection.STRAIGHT,
+            "ARROW_FORWARD": TrafficLightDirection.STRAIGHT,
             "ARROW_LEFT": TrafficLightDirection.LEFT,
-            "ARROW_LEFT_STRAIGHT": TrafficLightDirection.LEFT_STRAIGHT,
             "ARROW_RIGHT": TrafficLightDirection.RIGHT,
-            "ARROW_STRAIGHT_RIGHT": TrafficLightDirection.STRAIGHT_RIGHT,
-            "ARROW_LEFT_RIGHT": TrafficLightDirection.LEFT_RIGHT,
+            "ARROW_LEFT_AND_FORWARD": TrafficLightDirection.LEFT_STRAIGHT,
+            "ARROW_RIGHT_AND_FORWARD": TrafficLightDirection.STRAIGHT_RIGHT,
         }
         direction = direction_mapping.get(arrow_type, TrafficLightDirection.ALL)
 
@@ -436,47 +489,21 @@ for i, map in enumerate(DT_maps):
         stopline_points = np.array(stopline_points)
 
         # Get lanelet(s) associated to the traffic light stop line
-        traffic_light_lanelets = get_lanelet_from_stopline(lanelet_network, stopline_points)
+        traffic_light_lanelets = controlled_lanelets(signal) or get_lanelet_from_stopline(lanelet_network, stopline_points)
 
         # Add traffic light to scenario
-        if traffic_light_lanelets is None:
+        if not traffic_light_lanelets:
             print(f"Unable to find lanelet for traffic light {signal_id}")
         else:
             scenario.add_objects(tl, traffic_light_lanelets)
 
-            # Add traffic light reference to the associated lanelet(s)
+            # Stop line on each controlled lanelet (the stop line of the signal crossing that lanelet, if there are several)
+            stop_lines = [np.array([[p.x, p.y] for p in sl.segment[0].line_segment.point]) for sl in signal.stop_line]
             for lanelet_id in traffic_light_lanelets:
-                # Get lanelet CommonRoad object
                 lanelet = scenario.lanelet_network.find_lanelet_by_id(lanelet_id)
-
-                # Compute stop line midpoint
-                stopline_geom = LineString(stopline_points)
-                midpoint = stopline_geom.interpolate(0.5, normalized=True)
-
-                # Extract lanelet boundaries as LineString
-                left_bound = LineString(lanelet.left_vertices)
-                right_bound = LineString(lanelet.right_vertices)
-
-                # Project midpoint to lane boundaries
-                p_left = left_bound.interpolate(left_bound.project(midpoint))
-                p_right = right_bound.interpolate(right_bound.project(midpoint))
-
-                # Crop the stop line to fit between the projected points on the lanelet boundaries
-                cropped_stopline = np.array([
-                    np.array(p_left.coords[0]),
-                    np.array(p_right.coords[0])
-                ])
-
-                # Create CommonRoad stop line object and associate it to the lanelet
-                stop_line = StopLine(
-                    cropped_stopline[0],
-                    cropped_stopline[-1],
-                    LineMarking.SOLID_SOLID,
-                    traffic_light_ref = set([tl_id])
-                )
-
-                # Associate stop line to lanelet
-                lanelet.stop_line = stop_line
+                end_point = Point(lanelet.center_vertices[-1])
+                closest = min(stop_lines, key = lambda pts: LineString(pts).distance(end_point))
+                attach_stop_line(lanelet, closest, traffic_light_id = tl_id)
         
         # Retrieve the traffic lights related to the current signal
         related_signals = mp.get_signals_wrt(signal_id)
