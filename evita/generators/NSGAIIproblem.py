@@ -457,14 +457,17 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
 
         try:
             os.makedirs(output_folder_path, exist_ok = True)
+            os.makedirs(os.path.join(output_folder_path, "scenario"), exist_ok = True)
 
             # Scenario in Apollo's .json format, and in CommonRoad format
             json_scenario = build_json_scenario(scenario, deepcopy(planning_problem_set), self.map_file)
-            evita_scenario_file_path = os.path.join(output_folder_path, "evita_scenario.json")
+            evita_scenario_file_path = os.path.join(output_folder_path, "scenario", "evita_scenario.json")
             with open(evita_scenario_file_path, "w") as f:
                 json.dump(json_scenario, f, indent = 2)
 
-            CommonRoadFileWriter(scenario, planning_problem_set).write_to_file(os.path.join(output_folder_path, "scenario.xml"))
+            CommonRoadFileWriter(scenario, planning_problem_set).write_to_file(os.path.join(output_folder_path, "scenario", "scenario.xml"))
+
+            input("PAUSE: Press Enter to continue with the Apollo execution...")
 
             # Run the scenario with Apollo; the script also converts the result to CommonRoad and saves collisions, interactions, and perception data
             self.logger.info(f"Apollo records will be saved at: {os.path.join(self.records_file_path, f'Generation_{self.current_generation}', f'Scenario_{self.current_individual}')}")
@@ -480,7 +483,7 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
 
             # Plots of the planning problems: outputs, not testing, so excluded from the budget
             with self.termination_criterion.paused():
-                planning_problems_plots_folder = os.path.join(output_folder_path, "planning_problems_plots")
+                planning_problems_plots_folder = os.path.join(output_folder_path, "scenario", "planning_problems_plots")
                 os.makedirs(planning_problems_plots_folder, exist_ok = True)
                 self.plot_pps(scenario, planning_problem_set.planning_problem_dict.values(), planning_problems_plots_folder)
 
@@ -508,19 +511,19 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
 
         # Collisions (and the collisions that could not be matched to obstacles)
         collisions_df, issue_rows = augment_with_collisions(executed_scenario, scenario_collisions)
-        collisions_df.to_csv(os.path.join(output_folder_path, "collisions.csv"), index = False)
+        collisions_df.to_csv(os.path.join(output_folder_path, "fitness_functions", "collisions.csv"), index = False)
         if len(issue_rows) > 0:
-            pd.DataFrame(issue_rows, columns = scenario_collisions.columns.tolist() + ["detected_obstacles"]).to_csv(
-                os.path.join(output_folder_path, "invalid_collisions.csv"), index = False)
+            pd.DataFrame(issue_rows, columns = scenario_collisions.columns.tolist() + ["detected_obstacles"]).to_csv(os.path.join(output_folder_path, "fitness_functions", "invalid_collisions.csv"), index = False)
 
         # Interactions and interaction map
-        interactions_df, interactions_map = augment_with_interactions(executed_scenario, scenario_planned_trajectories_df, scenario_vehicles_perceptions, scenario_traffic_lights_perceptions, scenario_collisions)
+        interactions_df = augment_with_interactions(executed_scenario, scenario_planned_trajectories_df, scenario_vehicles_perceptions, scenario_traffic_lights_perceptions, scenario_collisions, self.trajectory_difference_threshold)
         if interactions_df is None or interactions_map is None:
-            # The scenario is marked invalid
             raise ValueError(f"No interactions could be computed for scenario {scenario.generation_id}")
 
-        interactions_df.to_csv(os.path.join(output_folder_path, "interactions.csv"), index = False)
-        pd.DataFrame(interactions_map).to_csv(os.path.join(output_folder_path, "interactions_map.csv"), index = False, header = False)
+        interactions_df.to_csv(os.path.join(output_folder_path, "fitness_functions", "interactions.csv"), index = False)
+        pd.DataFrame(interactions_map).to_csv(os.path.join(output_folder_path, "fitness_functions", "interactions_map.csv"), index = False, header = False)
+
+        
 
         self.logger.info(f"Evaluation completed - {self.termination_criterion.remaining_time()}")
 

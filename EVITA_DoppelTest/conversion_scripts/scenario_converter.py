@@ -1,6 +1,8 @@
 import os
+import re
 import json
 import sys
+from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
@@ -10,7 +12,8 @@ from framework.oracles import Record
 from hdmap.MapParser import MapParser
 from config import HD_MAP_PATH
 
-from .utils.utils import (export_planned_trajectories, 
+# from .utils.utils import (export_planned_trajectories, 
+from utils.utils import (export_planned_trajectories, 
                          extract_from_record, 
                          dynamic_obstacle_from_record, 
                          set_traffic_lights_cycles, 
@@ -20,7 +23,8 @@ from .utils.utils import (export_planned_trajectories,
                          convert_traffic_light_perception,
                          convert_planned_trajectories)
 
-from .utils.RecordFileError import RecordFileError
+# from .utils.RecordFileError import RecordFileError
+from utils.RecordFileError import RecordFileError
 
 from commonroad.geometry.shape import Rectangle
 from commonroad.common.file_reader import XMLFileReader
@@ -32,11 +36,223 @@ from commonroad.common.file_writer import CommonRoadFileWriter
 
 # Set standard vehicle shape
 # Also defined in config.py
-vehicle_width = 2.11
-vehicle_length = 4.933
-vehicle_heigth = 1.48
-shape = Rectangle(vehicle_length, vehicle_width)
-            
+VEHICLE_WIDTH = 2.11
+VEHICLE_LENGTH = 4.933
+VEHICLE_SHAPE = Rectangle(VEHICLE_LENGTH, VEHICLE_WIDTH)
+
+ROUTE_PATTERN = re.compile(r"ROUTE_(\d+)")
+
+# Apollo timestep are in nanoseconds; CommonRoad timesteps are tenths of a second
+NANOSECONDS_PER_TIMESTEP = 1e8
+
+####################
+#     HELPERS      #
+####################
+
+def route_index(name: str) -> Optional[int]:
+    """
+    Number of the vehicle's container (ROUTE_<n>) in a record file or container name, None if absent
+    """
+    match = ROUTE_PATTERN.search(name)
+    
+    if match:
+        return int(match.group(1))
+    else:
+        return None
+ 
+def list_record_files(record_files_path: str) -> List[str]:
+    """
+    Record files of the scenario's vehicles: files (not folders) whose name contains ROUTE_<n>
+    """
+    return sorted(f for f in os.listdir(record_files_path)
+                  if os.path.isfile(os.path.join(record_files_path, f)) and route_index(f) is not None)
+
+def vehicle_id_by_route(record_files: List[str], planning_problem_ids: List[int], scenario) -> Dict[int, int]:
+    """
+    Vehicle id of each container number
+    With planning problems, the vehicle on ROUTE_k gets the k-th planning problem id; otherwise ids start after the largest id in use.
+    """
+    routes = sorted({route_index(f) for f in record_files})
+ 
+    if planning_problem_ids and len(planning_problem_ids) >= len(routes):
+        return {route: planning_problem_ids[route] for route in routes}
+ 
+    first_free_id = max(scenario._id_set, default = 0) + 1
+    return {route: first_free_id + route for route in routes}
+
+def to_timestep(timestamp_ns: float, start_ns: float) -> int:
+    """
+    CommonRoad timestep of an Apollo timestep (nanoseconds), relative to the scenario start.
+    Rounded down, as the vehicle histories, so that the same moment gets the same time step in every table.
+    """
+    return int((timestamp_ns - start_ns) // NANOSECONDS_PER_TIMESTEP)
+
+####################
+#     ...      #
+####################
+
+def read_records(record_files_path: str, record_files: List[str], id_by_route: Dict[int, int], ids_map: Optional[Dict]) -> Dict[int, Dict]:
+    """
+    Read every record file and merge the chunks of each vehicle.
+    Returns, per vehicle id: history, planned trajectories, collisions, perceptions and violations.
+    """
+    vehicles = {}
+ 
+    for record_file in record_files:
+        vehicle_id = id_by_route[route_index(record_file)]
+        record_path = os.path.join(record_files_path, record_file)
+
+        try:
+            record = Record(record_path)
+        except Exception as exc:
+            raise RecordFileError(f"Failed to open record file {record_file}") from exc
+ 
+        (history,
+         planned_trajectories,
+         collisions,
+         vehicle_perception,
+         traffic_light_perception,
+         stop_sign_violations,
+         traffic_light_violations,
+         speeding_violations) = extract_from_record(record)
+ 
+        perceptions = convert_vehicle_perceptions(vehicle_perception, ids_map)
+        traffic_light_perceptions = convert_traffic_light_perception(traffic_light_perception)
+
+        if ids_map is not None:
+            planned_trajectories = convert_planned_trajectories(planned_trajectories, ids_map)
+ 
+        data = vehicles.setdefault(vehicle_id, {"history": {}, "planned_trajectories": {}, "collisions": [],
+                                                "perceptions": {}, "traffic_light_perceptions": {},
+                                                "stop_sign_violations": [], "traffic_light_violations": [], "speeding_violations": []})
+        data["history"].update(history)
+        data["planned_trajectories"].update(planned_trajectories)
+        data["collisions"].extend(collisions)
+        data["perceptions"].update(perceptions)
+        data["traffic_light_perceptions"].update(traffic_light_perceptions)
+        data["stop_sign_violations"].extend(stop_sign_violations)
+        data["traffic_light_violations"].extend(traffic_light_violations)
+        data["speeding_violations"].extend(speeding_violations)
+ 
+    return vehicles
+
+def build_obstacles(executed_scenario, vehicles: Dict[int, Dict], scenario_initial_timestep: int) -> Tuple[Dict, List[int]]:
+    """
+    Add each vehicle's history to the executed scenario as a dynamic obstacle.
+    Returns the planned trajectories of each vehicle and the ids of vehicles without history (never started).
+    """
+    planned_trajectories, no_history = {}, []
+ 
+    for vehicle_id in tqdm(sorted(vehicles), desc = "Processing scenario vehicles"):
+        data = vehicles[vehicle_id]
+        if not data["history"]:
+            no_history.append(vehicle_id)
+            continue
+ 
+        dynamic_obstacle, vehicle_planned_trajectories = dynamic_obstacle_from_record(vehicle_id, dict(sorted(data["history"].items())), dict(sorted(data["planned_trajectories"].items())), VEHICLE_SHAPE, scenario_initial_timestep)
+ 
+        planned_trajectories[vehicle_id] = vehicle_planned_trajectories
+        executed_scenario.add_objects(dynamic_obstacle)
+ 
+    return planned_trajectories, no_history
+
+def collisions_table(vehicles: Dict[int, Dict], ids_map: Optional[Dict], scenario_initial_timestep: int) -> pd.DataFrame:
+    """
+    Save first collision of each vehicle with each other obstacle, as reported by Apollo's collision oracle.
+    Obstacles that are not scenario vehicles keep Apollo's id.
+    """
+    rows = []
+    # Iterate over each vehicle and its collision data
+    for vehicle_id, data in vehicles.items():
+        seen = set()
+        # Sort collision entries by timestamp and iterate over them
+        for entry in sorted(data["collisions"], key = lambda e: e[2]):
+            # Convert the other obstacle's id using ids_map if available, otherwise keep the original id
+            if ids_map is not None:
+                other_obstacle = ids_map.get(entry[1], entry[1])
+            else:
+                other_obstacle = entry[1]
+
+            # Avoid duplicate entries for the same collision with the same obstacle
+            if other_obstacle in seen:
+                continue
+
+            seen.add(other_obstacle)
+            rows.append([vehicle_id, other_obstacle, to_timestep(entry[2], scenario_initial_timestep), entry[3]])
+ 
+    return pd.DataFrame(rows, columns = ["vehicle_id", "has_collided_with", "collision_timestep", "colliding_vehicle_position"])
+ 
+def perceptions_tables(vehicles: Dict[int, Dict], scenario_initial_timestep: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Obstacles and traffic lights perceived by each vehicle, per timestep.
+    """
+
+    # Adjust obstacle perceptions
+    obstacle_perceptions = adjust_perceptions(
+        {vehicle_id: data["perceptions"] for vehicle_id, data in vehicles.items()},
+        scenario_initial_timestep,
+        "obstacle_id"
+    )
+
+    obstacle_rows = [
+        [vehicle_id, int(timestep), obstacle["obstacle_id"], obstacle["obstacle_position"], obstacle["obstacle_orientation"], obstacle["obstacle_velocity"]]
+        for vehicle_id, per_timestep in obstacle_perceptions.items()
+        for timestep, perceived in per_timestep.items()
+        for obstacle in perceived
+    ]
+
+    obstacles_df = pd.DataFrame(obstacle_rows, columns = ["vehicle_id", "timestep", "obstacle_id", "obstacle_position", "obstacle_orientation", "obstacle_velocity"])
+
+    # Adjust traffic light perceptions
+    light_perceptions = adjust_perceptions(
+        {vehicle_id: data["traffic_light_perceptions"] for vehicle_id, data in vehicles.items()},
+        scenario_initial_timestep,
+        "id"
+    )
+
+    light_rows = [
+        [vehicle_id, int(timestep), light["id"], light["color"], light["confidence"]]
+        for vehicle_id, per_timestep in light_perceptions.items()
+        for timestep, perceived in per_timestep.items()
+        for light in perceived
+    ]
+
+    lights_df = pd.DataFrame(light_rows, columns = ["vehicle_id", "timestep", "tl_id", "tl_color", "perception_confidence"])
+
+    return obstacles_df, lights_df
+ 
+def violations_table(vehicles: Dict[int, Dict], scenario_initial_timestep: int) -> pd.DataFrame:
+    """
+    Stop-sign, traffic-light and speeding violations; each violation once per vehicle and timestep
+    """
+    rows = []
+    seen = set()
+ 
+    def add(vehicle_id, timestamp_ns, violation):
+        key = (vehicle_id, to_timestep(timestamp_ns, scenario_initial_timestep), violation)
+        
+        if key not in seen:
+            seen.add(key)
+            rows.append(list(key))
+    
+    # Iterate over each vehicle and its violations data
+    for vehicle_id, data in vehicles.items():
+        # Sort violations by timestamp and add them to the rows list, avoiding duplicates
+        for _, stop_sign, timestamp_ns in data["stop_sign_violations"]:
+            add(vehicle_id, timestamp_ns, stop_sign)
+        # Sort violations by timestamp and add them to the rows list, avoiding duplicates
+        for _, traffic_light, timestamp_ns in data["traffic_light_violations"]:
+            add(vehicle_id, timestamp_ns, traffic_light)
+        # Sort violations by timestamp and add them to the rows list, avoiding duplicates
+        for _, (_, speeding, timestamp_ns) in data["speeding_violations"]:
+            add(vehicle_id, timestamp_ns, speeding)
+ 
+    return pd.DataFrame(rows, columns = ["vehicle_id", "timestep", "violation"]).sort_values(["vehicle_id", "timestep"]).reset_index(drop = True)
+
+####################
+#     ...      #
+####################
+
 def scenario_converter(record_files_path: str, executed_scenario_folder: str, map_name: str, ids_map: dict = None):
     """
     Convert DoppelTest generated scenario data into CommonRoad format and save the converted scenario and data
@@ -48,343 +264,93 @@ def scenario_converter(record_files_path: str, executed_scenario_folder: str, ma
     # Load the base scenario with the map lanelet network
     BASE_DIR = Path(__file__).resolve().parent
     base_scenario_file = os.path.join(BASE_DIR, "converted_maps", f"{map_name}.xml")
-    base_scenario, _ = XMLFileReader(base_scenario_file).open(lanelet_assignment = True)          
-    
-    # Initialize data structures to store scenario data extracted from the vehicles .record files
-    vehicles_data = {}
-    scenario_collisions = {}
-    scenario_stop_signs_violations = {}
-    scenario_traffic_lights_violations = {}
-    scenario_speeding_violations = {}
-    vehicles_perceptions = {}
-    traffic_light_perceptions = {}
-    scenario_planned_trajectories = {}
-
-    # Get all the scenario vehicles' .record files
-    scenario_vehicles_record_files = sorted([record_file for record_file in os.listdir(record_files_path) if not record_file.endswith('.json') and not record_file.endswith('.xml')])
+    base_scenario, _ = XMLFileReader(base_scenario_file).open(lanelet_assignment = True)    
 
     # Load .json file with scenario specifications
-    scenario_specs_file = os.path.join(record_files_path, "c.json")
-    with open(scenario_specs_file, "r") as f:
-        scenario_specs = json.load(f)
+    scenario_specifications_file = os.path.join(record_files_path, "c.json")
+    with open(scenario_specifications_file, "r") as f:
+        scenario_specifications = json.load(f)
 
     # Retrieve traffic lights data configuration stored in c.json
-    traffic_lights_initial_states = scenario_specs["tc_section"]["initial"]
     traffic_light_durations = {
-        "red": scenario_specs["tc_section"]["duration_b"],
-        "yellow": scenario_specs["tc_section"]["duration_y"],
-        "green": scenario_specs["tc_section"]["duration_g"]
+        "red": scenario_specifications["tc_section"]["duration_b"],
+        "yellow": scenario_specifications["tc_section"]["duration_y"],
+        "green": scenario_specifications["tc_section"]["duration_g"]
     }
 
     # Update CommonRoad scenario's traffic lights
-    scenario = set_traffic_lights_cycles(base_scenario, traffic_lights_initial_states, traffic_light_durations)
+    scenario = set_traffic_lights_cycles(base_scenario, scenario_specifications["tc_section"]["initial"], traffic_light_durations)
 
-    # Get scenario objects id count
-    scenario_id_base_counter = len(scenario._id_set)  
+    # Vehicles' record files and ids
+    record_files = list_record_files(record_files_path)
+    if not record_files:
+        raise RecordFileError(f"No record files in {record_files_path}")
 
-    # Build output scenario file path
     scenario_file_path = os.path.join(executed_scenario_folder, "scenario.xml")
-    
-    # Check if the scenario file doesn't exist (EVITA pipeline does it automatically)
-    if not os.path.exists(scenario_file_path):
-        # Open .json file containing Apollo-CommonRoad lanes ids mapping
-        map_signal_ids_map_file_path = base_scenario_file.replace(".xml", "_lane_ids_map.json")
-        with open(map_signal_ids_map_file_path, "r") as f:
+    if os.path.exists(scenario_file_path):
+        # EVITA scenario: the generated scenario and its planning problems are already there
+        _, planning_problem_set = XMLFileReader(scenario_file_path).open()
+        planning_problem_ids = list(planning_problem_set.planning_problem_dict)
+        id_by_route = vehicle_id_by_route(record_files, planning_problem_ids, scenario)
+    else:
+        # DoppelTest scenario: build the planning problems from the scenario specification
+        id_by_route = vehicle_id_by_route(record_files, [], scenario)
+        with open(base_scenario_file.replace(".xml", "_lane_ids_map.json"), "r") as f:
             map_lane_id_map = json.load(f)
 
-        pp_ids = []
-        # Extract planning problems ids from scenario vehicles .record files
-        for vehicle_record_file in scenario_vehicles_record_files:
-            # Get vehicle numeric identifier
-            vehicle = vehicle_record_file.split(".")[0]
-            vehicle_id = scenario_id_base_counter + int(vehicle.split('_')[3])
-            if vehicle_id not in pp_ids:
-                pp_ids.append(vehicle_id)
-        
-        # Build CommonRoad planning problems set for Apollo scenario
-        planning_problem_set = extract_planning_problems(base_scenario, pp_ids, scenario_specs, map_lane_id_map)
-
-        # Save CommonRoad scenario file with the map and the planning problems
-        writer = CommonRoadFileWriter(
-            scenario,
-            planning_problem_set
-        )
-
-        writer.write_to_file(scenario_file_path)
-
-    # Initialize CommonRoad executed scenario with the base scenario
-    executed_scenario = deepcopy(scenario)
+        planning_problem_set = extract_planning_problems(base_scenario, sorted(set(id_by_route.values())), scenario_specifications, map_lane_id_map)
+        CommonRoadFileWriter(scenario, planning_problem_set).write_to_file(scenario_file_path)
 
     # If ids_map is available (EVITA generated scenario) setup vehicles ids map
     if ids_map is not None:
-        for key, value in ids_map.items():
-            new_value = scenario_id_base_counter + int(value.split('_')[3])
-            ids_map[key] = new_value
+        ids_map = {apollo_id: id_by_route[route_index(container)] for apollo_id, container in ids_map.items() if route_index(container) in id_by_route}
 
-    # Iterate over the scenario vehicles .record files to extract and convert scenario data
-    for vehicle_record_file in scenario_vehicles_record_files:
-        # Get vehicle numeric identifier
-        vehicle = vehicle_record_file.split(".")[0]
-        vehicle_id = scenario_id_base_counter + int(vehicle.split('_')[3])
+    # Read the record files and convert vehicle's data
+    vehicles = read_records(record_files_path, record_files, id_by_route, ids_map)
 
-        # Build path to the vehicle .record file
-        vehicle_record_file_path = os.path.join(record_files_path, vehicle_record_file)
-
-        # Try to open the vehicle .record file and raise a custom error if it fails (e.g. due to file corruption)
-        try:
-            # Open DoppelTest generated .record file
-            record = Record(vehicle_record_file_path)
-        except Exception as e:
-            print("Error while opening .record file")
-            raise RecordFileError("Failed to open .record file") from e
+    vehicles_starts = [min(data["history"]) for data in vehicles.values() if data["history"]]
     
-        # Extract simulation data from the .record file
-        (
-            extracted_vehicle_history,
-            extracted_planned_trajectories,
-            detected_collisions,
-            vehicle_perception,
-            traffic_light_perception,
-            detected_stop_signs_violations,
-            detected_traffic_lights_violations,
-            detected_speeding_violations
-        ) = extract_from_record(record)
+    if not vehicles_starts:
+        raise RecordFileError("No vehicle has history states in its record files")
+    else:
+        scenario_initial_timestep = min(vehicles_starts)
 
-        # Convert extracted perception data to an easier format
-        converted_vehicle_perception = convert_vehicle_perceptions(vehicle_perception, ids_map)
-        converted_traffic_light_perception = convert_traffic_light_perception(traffic_light_perception)
+    # Add vehicles to CommonRoad scenario as dynamic obstacles and retrieve their planned trajectories
+    executed_scenario = deepcopy(scenario)
+    planned_trajectories, no_history = build_obstacles(executed_scenario, vehicles, scenario_initial_timestep)
 
-        # Adjust vehicles ids references if ids_map is available
-        converted_planned_trajectories = extracted_planned_trajectories
-        if ids_map is not None:
-            converted_planned_trajectories = convert_planned_trajectories(extracted_planned_trajectories, ids_map)
-
-        # Save extracted and converted data
-        if vehicle_id in vehicles_data:
-            vehicles_data[vehicle_id]["history"].update(extracted_vehicle_history)
-            vehicles_data[vehicle_id]["planned_trajectories"].update(converted_planned_trajectories)
-            
-            scenario_collisions[vehicle_id].extend(detected_collisions)
-            scenario_stop_signs_violations[vehicle_id].extend(detected_stop_signs_violations)
-            scenario_traffic_lights_violations[vehicle_id].extend(detected_traffic_lights_violations)
-            scenario_speeding_violations[vehicle_id].extend(detected_speeding_violations)
-            traffic_light_perceptions[vehicle_id].update(converted_traffic_light_perception)
-            vehicles_perceptions[vehicle_id].update(converted_vehicle_perception)
-        else:
-            vehicles_data[vehicle_id] = {
-                "history": extracted_vehicle_history,
-                "planned_trajectories": converted_planned_trajectories,
-            }
-
-            scenario_collisions[vehicle_id] = detected_collisions
-            scenario_stop_signs_violations[vehicle_id] = detected_stop_signs_violations
-            scenario_traffic_lights_violations[vehicle_id] = detected_traffic_lights_violations
-            scenario_speeding_violations[vehicle_id] = detected_speeding_violations
-            traffic_light_perceptions[vehicle_id] = converted_traffic_light_perception
-            vehicles_perceptions[vehicle_id] = converted_vehicle_perception
+    # Compute collisions, perceptions and violations tables
+    collisions_df = collisions_table(vehicles, ids_map, scenario_initial_timestep)
+    obstacles_perception_df, traffic_lights_perception_df = perceptions_tables(vehicles, scenario_initial_timestep)
+    violations_df = violations_table(vehicles, scenario_initial_timestep)
     
-    # Compute scenario start timestep to normalize trajectories timesteps
-    scenario_start_timestep = None
+    # Export
+    os.makedirs(executed_scenario_folder, exist_ok = True)
 
-    for vehicle_id in vehicles_data.keys():
-        # Check if vehicle has history states in the .record file
-        if not vehicles_data[vehicle_id].get("history"):
-            continue
-
-        # Extract vehicle's start timestep
-        vehicle_start_timestep = next(
-            iter(vehicles_data[vehicle_id]["history"].values())
-        )["timestamp"]
-
-        # Update scenario start timestep with the minimum among the vehicles start timesteps
-        if scenario_start_timestep is None:
-            scenario_start_timestep = vehicle_start_timestep
-        elif vehicle_start_timestep < scenario_start_timestep:
-            scenario_start_timestep = vehicle_start_timestep
-    
-    # If all the scenario vehicles have no history re-execute the scenario
-    if scenario_start_timestep is None:
-        print("Impossible to find scenario start timestep from vehicles history. Scenario will be re-executed")
-        raise Exception
-    
-    # Convert vehicles data to CommonRoad format and add them to the scenario
-    for vehicle_id in tqdm(vehicles_data.keys(), desc = "Processing scenario vehicles"):
-        tqdm.write(f"Processing vehicle {vehicle_id}")
-        
-        # Extract vehicle data and planned trajectories
-        extracted_vehicle_history = vehicles_data[vehicle_id]["history"]
-        extracted_planned_trajectories = vehicles_data[vehicle_id]["planned_trajectories"]
-
-        # Skip vehicles with no history
-        if not extracted_vehicle_history:
-            continue
-
-        # Convert vehicle history and planned trajectories to CommonRoad format
-        # Create a DynamicObstacle object for the vehicle
-        dynamic_obstacle, planned_trajectories = dynamic_obstacle_from_record(vehicle_id, extracted_vehicle_history, extracted_planned_trajectories, shape, scenario_start_timestep)
-
-        # Save vehicle's planned trajectories
-        scenario_planned_trajectories[vehicle_id] = planned_trajectories
-
-        # Add dynamic obstacle to the CommonRoad scenario
-        executed_scenario.add_objects(dynamic_obstacle)
-
-    #
-    # Parse scenario collisions to a DataFrame
-    #
-    rows = []
-    # Get collision data for each scenario vehicle
-    for vehicle_id, collision_data in scenario_collisions.items():
-        # Iterate over each collision entry
-        collided_vehicles = []
-        for entry in collision_data:
-            if ids_map is not None:
-                colliding_vehicle_id = ids_map[entry[1]]
-            else:
-                colliding_vehicle_id = entry[1]
-
-            # Normalize and convert collision timestep to tenths of seconds
-            adjusted_timestep = round((entry[2] - scenario_start_timestep) / 1e8)
-
-            colliding_vehicle_position = entry[3]
-
-            # Build DataFrame row
-            element = [vehicle_id, colliding_vehicle_id, adjusted_timestep, colliding_vehicle_position]
-
-            # Avoid duplicate entries for the same collision
-            if colliding_vehicle_id not in collided_vehicles:
-                rows.append(element)
-                collided_vehicles.append(colliding_vehicle_id)
-    
-    scenario_collisions_df = pd.DataFrame(
-        rows,
-        columns = ["vehicle_id", "has_collided_with", "collision_timestep", "colliding_vehicle_position"]
-    )
-    
-    #
-    # Adjust vehicle perceptions and convert them to DataFrame
-    #
-    adjusted_vehicles_perceptions = adjust_perceptions(vehicles_perceptions, scenario_start_timestep, "obstacle_id")
-
-    rows = []
-    # Get vehicle obstacles perceptions data for each scenario vehicle
-    for vehicle_id, vehicle_perceptions in adjusted_vehicles_perceptions.items():
-        # Iterate vehicle perceptions at each timestep
-        for timestep, perceptions in vehicle_perceptions.items():
-            # Iterate over each perceived obstacle
-            for obstacle in perceptions:
-                # Build DataFrame row
-                element = [vehicle_id, int(timestep), obstacle["obstacle_id"], obstacle["obstacle_position"], obstacle["obstacle_orientation"], obstacle["obstacle_velocity"]]
-                rows.append(element)
-
-    scenario_vehicles_perceptions_df = pd.DataFrame(
-        rows,
-        columns = ["vehicle_id", "timestep", "obstacle_id", "obstacle_position", "obstacle_orientation", "obstacle_velocity"]
-    )
-
-    #
-    # Adjust vehicle traffic light perceptions and convert them to DataFrame
-    #
-    adjusted_traffic_lights_perceptions = adjust_perceptions(traffic_light_perceptions, scenario_start_timestep, "id")
-
-    rows = []
-    # Get vehicle traffic lights perceptions data for each scenario vehicle
-    for vehicle_id, vehicle_perceptions in adjusted_traffic_lights_perceptions.items():
-        # Iterate vehicle perceptions at each timestep
-        for timestep, perceptions in vehicle_perceptions.items():
-            # Iterate over each perceived traffic light
-            for tl in perceptions:
-                # Build DataFrame row
-                element = [vehicle_id, int(timestep), tl["id"], tl["color"], tl["confidence"]]
-                rows.append(element)
-
-    scenario_traffic_lights_perceptions_df = pd.DataFrame(
-        rows,
-        columns = ["vehicle_id", "timestep", "tl_id", "tl_color", "perception_confidence"]
-    )
-
-    #
-    # Convert stop signs and traffic lights violations to DataFrame
-    #
-
-    rows = []
-    violation_timesteps = []
-    # Get stop signs violations for each scenario vehicle
-    for vehicle_id, violations in scenario_stop_signs_violations.items():
-        for _, stop_sign, timestep in violations:
-            converted_timestep = int(round((timestep - scenario_start_timestep) / 1e8))
-            if converted_timestep not in violation_timesteps:
-                # Build DataFrame row
-                element = [vehicle_id, converted_timestep, stop_sign]
-                rows.append(element)
-                violation_timesteps.append(converted_timestep)
-
-    violation_timesteps = []
-    # Get traffic lights violations for each scenario vehicle
-    for vehicle_id, violations in scenario_traffic_lights_violations.items():
-        for _, traffic_light, timestep in violations:
-            converted_timestep = int(round((timestep - scenario_start_timestep) / 1e8))
-            if converted_timestep not in violation_timesteps:
-                # Build DataFrame row
-                element = [vehicle_id, converted_timestep, traffic_light]
-                rows.append(element)
-                violation_timesteps.append(converted_timestep)
-    
-    violation_timesteps = []
-    # Get speeding violations for each scenario vehicle
-    for vehicle_id, violations in scenario_speeding_violations.items():
-        for _, (_, speeding_violation, timestep) in violations:
-            converted_timestep = int(round((timestep - scenario_start_timestep) / 1e8))
-            if converted_timestep not in violation_timesteps:
-                # Build DataFrame row
-                element = [vehicle_id, converted_timestep, speeding_violation]
-                rows.append(element)
-                violation_timesteps.append(converted_timestep)
-
-    scenario_violations_df = pd.DataFrame(
-        rows,
-        columns = ["vehicle_id", "timestep", "violation"]
-    )
-
-    scenario_violations_df = scenario_violations_df.sort_values(
-        by = ["vehicle_id", "timestep"]
-    ).reset_index(drop = True)
-
-    #
-    # Save data
-    #
-
-    # Export planned trajectories in .json format (dict structure)
-    export_planned_trajectories(scenario_planned_trajectories, executed_scenario_folder)
-
-    # Save scenario collisions DataFrame to .csv file
-    output_path = os.path.join(executed_scenario_folder, "apollo_scenario_collisions.csv")
-    scenario_collisions_df.to_csv(output_path, index = False)
-
-    # Save scenario obstacles perceptions DataFrame to .csv file
-    output_path = os.path.join(executed_scenario_folder, "vehicles_perception.csv")
-    scenario_vehicles_perceptions_df.to_csv(output_path, index = False)
-
-    # Save scenario traffic lights perceptions DataFrame to .csv file
-    output_path = os.path.join(executed_scenario_folder, "traffic_lights_perceptions.csv")
-    scenario_traffic_lights_perceptions_df.to_csv(output_path, index = False)
-
-    # Save scenario violations DataFrame to .csv file
-    output_path = os.path.join(executed_scenario_folder, "scenario_violations.csv")
-    scenario_violations_df.to_csv(output_path, index = False)
-    
-    # Export converted executed scenario
-    XMLFileWriter(executed_scenario, None, decimal_precision = 20).write_scenario_to_file(f"{executed_scenario_folder}/executed_scenario.xml", OverwriteExistingFile.ALWAYS)
+    export_planned_trajectories(planned_trajectories, executed_scenario_folder)
+    collisions_df.to_csv(os.path.join(executed_scenario_folder, "apollo_scenario_collisions.csv"), index = False)
+    obstacles_perception_df.to_csv(os.path.join(executed_scenario_folder, "vehicles_perception.csv"), index = False)
+    traffic_lights_perception_df.to_csv(os.path.join(executed_scenario_folder, "traffic_lights_perceptions.csv"), index = False)
+    violations_df.to_csv(os.path.join(executed_scenario_folder, "scenario_violations.csv"), index = False)
+ 
+    with open(os.path.join(executed_scenario_folder, "vehicle_ids.json"), "w") as f:
+        json.dump({"vehicle_id_by_route": {f"ROUTE_{route}": vehicle_id for route, vehicle_id in id_by_route.items()},
+                   "apollo_ids": {str(apollo_id): vehicle_id for apollo_id, vehicle_id in (ids_map or {}).items()},
+                   "no_history": no_history,
+                   "scenario_initial_timestep": scenario_initial_timestep}, f, indent = 4)
+ 
+    XMLFileWriter(executed_scenario, None, decimal_precision = 20).write_scenario_to_file(os.path.join(executed_scenario_folder, "executed_scenario.xml"), OverwriteExistingFile.ALWAYS)
 
 if __name__ == "__main__":
     record_files_path = sys.argv[1]
     executed_scenario_folder = sys.argv[2]
     map_name = sys.argv[3]
 
+    ids_map = None
+    
     if len(sys.argv) > 4:
         ids_map = json.loads(sys.argv[4])
         # Convert keys to integers
         ids_map = {int(k): v for k, v in ids_map.items()}
-        scenario_converter(record_files_path, executed_scenario_folder, map_name, ids_map)
-    else:
-        scenario_converter(record_files_path, executed_scenario_folder, map_name)
+    
+    scenario_converter(record_files_path, executed_scenario_folder, map_name, ids_map)

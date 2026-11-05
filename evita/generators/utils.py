@@ -279,70 +279,31 @@ def get_orientation_by_coords(first_point: Tuple[float, float], next_point: Tupl
 from commonroad.prediction.prediction import Trajectory
 from copy import deepcopy
 
-def crop_trajectories(trajectory_before: Trajectory, trajectory_after: Trajectory) -> Tuple[Trajectory, Trajectory]:
+def crop_trajectories(trajectory_before: Trajectory, trajectory_after: Trajectory) -> Tuple[Optional[Trajectory], Optional[Trajectory]]:
     """
-    Crop the second trajectory to the first one, so both have the same length and initial time step
+    States of the two trajectories at the time steps both cover, in time order (same return order as before:
+    the later plan first, the earlier plan second). (None, None) if they share no time step.
     """
-    # Skip if the trajectory_after starts earlier than trajectory_before
-    if trajectory_after.initial_time_step < trajectory_before.initial_time_step:
-        raise Exception('trajectory_b has a larger time_step and therefore can not be cropped to trajectory_a')
-
-    # Compute time delta between the two trajectories and crop the trajectory_after to the trajectory_before
-    time_step_diff = trajectory_after.initial_time_step - trajectory_before.initial_time_step
-    cut_trajectory_a = get_cut_trajectory_end(trajectory_after, time_step_diff)
-    cut_trajectory_b = get_cut_trajectory_start(trajectory_before, time_step_diff)
-
-    return cut_trajectory_a, cut_trajectory_b
-
-def get_cut_trajectory_end(trajectory: Trajectory, amount: int) -> Trajectory:
-    """
-    Crop the trajectory by cutting the last "amount" states
-    """
-    states = deepcopy(trajectory.state_list)
-    cut_off = len(states) - amount
-    states = states[:cut_off]
-
-    return Trajectory(states[0].time_step, states)
-
-def get_cut_trajectory_start(trajectory: Trajectory, amount: int) -> Trajectory:
-    """
-    Crop the trajectory by cutting the first "amount" states
-    """
-    states = deepcopy(trajectory.state_list)
-    states = states[amount:]
-
-    return Trajectory(states[0].time_step, states)
+    before = {state.time_step: state for state in trajectory_before.state_list}
+    after = {state.time_step: state for state in trajectory_after.state_list}
+    common = sorted(set(before) & set(after))
+    if not common:
+        return None, None
+    return (Trajectory(common[0], [deepcopy(after[t]) for t in common]),
+            Trajectory(common[0], [deepcopy(before[t]) for t in common]))
 
 # ========== Evaluation methods ==========
 
-def is_position_similar(pos_a: Tuple[float, float], pos_b: Tuple[float, float], trajectory_difference_threshold: float) -> bool:
+def is_trajectory_similar(trajectory_a: Optional[Trajectory], trajectory_b: Optional[Trajectory], trajectory_difference_threshold: float) -> bool:
     """
-    Compare two positions with a given tolerance distance
-    If the euclidean distance between the two positions is smaller than the tolerance distance, they are considered similar
+    True if no planned position moved by trajectory_difference_threshold metres or more between the two plans.
+    Plans without a common time window give no evidence of replanning, so they count as similar.
     """
-    euclidean_distance = compute_euclidean_distance(pos_a, pos_b)
-
-    if euclidean_distance < trajectory_difference_threshold:
+    if trajectory_a is None or trajectory_b is None or not trajectory_a.state_list:
         return True
-    else:
-        return False
-    
-def is_trajectory_similar(trajectory_a: Trajectory, trajectory_b: Trajectory, trajectory_difference_threshold: float) -> bool:
-    """
-    Compare two trajectories with a given tolerance distance
-    If the euclidean distance between the two trajectories is smaller than the tolerance distance, they are considered similar
-    """
-    # Skip comparison between trajectories of different length, as they are not comparable
-    if len(trajectory_a.state_list) != len(trajectory_b.state_list):
-        module_logger.debug(f'Trajectory comparison: Not the same length {len(trajectory_a.state_list)} != {len(trajectory_b.state_list)}')
-        return False
-
-    # Iterate over the two trajectories states and compare the positions of the states with the given tolerance distance
     for state_a, state_b in zip(trajectory_a.state_list, trajectory_b.state_list):
-        is_pos_equal = is_position_similar(state_a.position, state_b.position, trajectory_difference_threshold)
-        if not is_pos_equal:
+        if np.linalg.norm(np.asarray(state_a.position) - np.asarray(state_b.position)) >= trajectory_difference_threshold:
             return False
-        
     return True
 
 def list_anyone_nearby(time_step: int, agent, other_agents, min_distance = 10) -> List[int]:
@@ -1078,11 +1039,8 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
             # Check if the consecutive planned trajectories are different and if there are nearby agents
             # If both conditions are true, we consider that the agent interacted with the nearby agents at time t
             if not is_trajectory_similar(cropped_traj_a, cropped_traj_b, trajectory_difference_threshold) and len(nearby_agent_ids) > 0:
-                try:
-                    diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1)
-                except:
-                    # If this fails, we cannot do much
-                    diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1, use_relative_path = True)
+                
+                diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1)
 
                 # Skip interaction in case of errors in trajectory difference computation
                 if diff_0 is None or diff_1 is None:
@@ -1115,90 +1073,38 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
     
     return criticality_dataframe
 
-def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Trajectory, trajectory_at_time_t_1: Trajectory, use_relative_path = False) -> Tuple[float, float]:
+def compute_difference_in_cc_space(scenario: Scenario, trajectory_at_time_t: Trajectory, trajectory_at_time_t_1: Trajectory, use_relative_path = False) -> Tuple[Optional[float], Optional[float]]:
     """
-    Compute the difference between two trajectories in curvilinear coordinates (s, d) space
-    This is useful to compute the difference between two planned trajectories, to check if the agent changed its trajectory because of someone else (i.e., interacted with someone else)
+    How the new plan (computed at t+1) moved the vehicle compared with the old plan (computed at t), at the last time
+    step both plans cover, in the old plan's frame. diff_long > 0: further ahead; diff_lat > 0: further left.
+    (None, None) if the plans share no time step. scenario and use_relative_path are unused (kept for the callers).
     """
-    # Take the trajectories that lead to the interaction
-    # Uniform them so they cover the same interval of observations
-    cropped_traj_a, cropped_traj_b = crop_trajectories(trajectory_at_time_t, trajectory_at_time_t_1)
+    before = {state.time_step: state for state in trajectory_at_time_t.state_list}
+    after = {state.time_step: state for state in trajectory_at_time_t_1.state_list}
+    common = sorted(set(before) & set(after))
+    if not common:
+        return None, None
 
-    # Extract the latest overlapping state (where the AV wants to go)
-    pos_a = cropped_traj_a.final_state.position    
-    pos_b = cropped_traj_b.final_state.position
+    t_end = common[-1]
+    p_old = np.asarray(before[t_end].position, dtype = float)
+    p_new = np.asarray(after[t_end].position, dtype = float)
 
-    # Take one of the lanelets where the first state (a) is and use its center as curvilinear reference system and project there a and b
+    # Direction of the old plan at t_end: its last segment there, or its heading if the vehicle stands still
+    tangent = None
+    if t_end - 1 in before:
+        segment = p_old - np.asarray(before[t_end - 1].position, dtype = float)
+        if np.linalg.norm(segment) > 1e-3:
+            tangent = segment / np.linalg.norm(segment)
+    if tangent is None:
+        theta = float(getattr(before[t_end], "orientation", 0.0) or 0.0)
+        tangent = np.array([np.cos(theta), np.sin(theta)])
+    normal = np.array([-tangent[1], tangent[0]])          # left of the direction of travel
 
-    # It might happen that the final states are out of the road, because those are planned trajectories and those in emergency mode might result in this
-    # So we need to consider an alternative strategy to label this interaction.
-    # If we can assume that NOT all the planned states are outside the road we look up in the past states until we find a lanelet
-    lanelet_id = None
+    displacement = p_new - p_old
 
-    # Go backwards
-    for target_state_a in reversed(cropped_traj_a.state_list):
-        if lanelet_id:
-            break
+    return float(displacement @ tangent), float(displacement @ normal)
 
-        for _lanelet_id in [l for l in scenario.lanelet_network.find_lanelet_by_position([target_state_a.position]) if len(l) > 0]:
-            lanelet_id = _lanelet_id[0]
-            break
-
-    assert lanelet_id, f"Cannot find a lanelet over the entire cropped trajectory for agent"
-
-    lanelet = scenario.lanelet_network.find_lanelet_by_id(lanelet_id)
-
-    if not use_relative_path:
-        path = lanelet.center_vertices
-    else:
-        orientation_a = cropped_traj_a.final_state.orientation
-
-        # Create a line passing from the middle of the vehicle rotated according to the vechile's orientation
-        xs = [pos_a[0] + distance * math.cos(orientation_a) for distance in np.linspace(-100, 100, 100)]
-        ys = [pos_a[1] + distance * math.sin(orientation_a) for distance in np.linspace(-100, 100, 100)]
-        path = np.array([[px, py] for px, py in zip(xs, ys)])
-
-    # Make sure the path is long enough to avoid the out of domain projection error. 50 is not enough...
-    try:
-        extended_path = np.array(scale(LineString(path), 3.0, 3.0).coords)
-        extended_path = resample_polyline(extended_path, step=1)
-        cosy = CoordinateSystem(extended_path)
-
-        # (s,d) - s is distance from the beginning of the refpath (long), d is the lateral displacement
-        cosy_a = cosy.convert_to_curvilinear_coords(pos_a[0], pos_a[1])
-        cosy_b = cosy.convert_to_curvilinear_coords(pos_b[0], pos_b[1])
-        diff_long = cosy_a[0] - cosy_b[0]
-        diff_lat = cosy_a[1] - cosy_b[1]
-
-        return diff_long, diff_lat
-    except Exception as exc:
-        def debug_plot():
-            import matplotlib.pyplot as plt
-            from commonroad.visualization.mp_renderer import MPRenderer
-            rnd = MPRenderer()
-            scenario.lanelet_network.draw(rnd)
-            rnd.render()
-
-            plt.plot(path[:, 0], path[:, 1], "-", zorder=99, color="black", lw=2)
-            plt.plot(extended_path[:, 0], extended_path[:, 1], "-", zorder=98, color="green", lw=2)
-
-            # Plot the positions pos a and pos b
-            plt.plot(pos_a[0], pos_a[1], "ro", zorder=100, lw=2)
-            plt.plot(pos_b[0], pos_b[1], "g+", zorder=100, lw=2)
-            
-
-            plt.plot([s.position[0] for s in cropped_traj_a.state_list], [s.position[1] for s in cropped_traj_a.state_list], "r", zorder=98, lw=2)
-            plt.plot([s.position[0] for s in cropped_traj_b.state_list], [s.position[1] for s in cropped_traj_b.state_list], "g", zorder=98, lw=2)
-            # Plot the reference path used to build the coordinate system
-            
-            
-            plt.show()
-
-        # debug_plot()
-        
-        raise exc
-
-def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, n_bins) -> pd.DataFrame:
+def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, n_bins = None) -> pd.DataFrame:
     """
     Compute the interaction map, which is a 2D histogram of the longitudinal and lateral differences between consecutive planned trajectories of agents that interacted with others
     The longitudinal and lateral differences are categorized into three classes: negative, zero, and positive, based on a threshold
@@ -1207,7 +1113,8 @@ def compute_interaction_map(simulation: Simulation, trajectories: pd.DataFrame, 
     # Get the bins of the interaction map
     scenario_generator_config = ScenarioGeneratorConfig()
 
-    n_bins = scenario_generator_config.n_bins
+    if n_bins is None:
+        n_bins = scenario_generator_config.n_bins
 
     # One car in front/one car behind - How can one retrieve difference in speed/acc?
     long_bins = np.linspace(-scenario_generator_config.length, +scenario_generator_config.length, n_bins)

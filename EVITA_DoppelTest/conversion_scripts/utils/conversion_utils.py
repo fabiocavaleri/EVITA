@@ -27,7 +27,7 @@ def build_ad_section(scenario: Scenario, planning_problem_set: PlanningProblemSe
     for planning_problem in planning_problem_set.planning_problem_dict.values():
         # Extract vehicle goal lanelet
         goal_position = planning_problem.goal.state_list[0].position.center
-        lanelets_goal =  scenario.lanelet_network.find_lanelet_by_position([goal_position])[0]
+        lanelets_goal = scenario.lanelet_network.find_lanelet_by_position([goal_position])[0]
         lanelets_of_goal_position = {0: lanelets_goal}
 
         # Build goal region object
@@ -142,11 +142,7 @@ def build_json_scenario(scenario: Scenario, planning_problems: PlanningProblemSe
     # Build the scenario .json representation 
     json_scenario = {
         # Build the ego-vehicles section
-        "ad_section": build_ad_section(
-            scenario,
-            planning_problems,
-            reverse_lane_id_map
-        ),
+        "ad_section": build_ad_section(scenario, planning_problems, reverse_lane_id_map),
         # We don't generate scenarios with pedestrians, so pedestrians section is always empty
         "pd_section": {"pds": []},
         # Build traffic lights section

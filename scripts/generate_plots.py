@@ -315,7 +315,7 @@ def interactions_collisions_plots(data_map: dict, output_path: str, aggregate: b
         df = pd.concat([df, all_df], ignore_index = True)
 
     # Initialize the figure and axis for the boxplot
-    fig, ax = plt.subplots(figsize = (7, 4))
+    fig, ax = plt.subplots(figsize = (12, 5))
     sns.set_style("ticks")
 
     # Define colors for each framework's data
@@ -507,7 +507,7 @@ def violations_plots(data_map: dict, output_folder_path: str, aggregate: bool = 
 
     return violations_effect_size_data
 
-def generate_statistics_plots(data_map: dict, first_label: str, output_folder_path: str):
+def generate_statistics_plots(data_map: dict, framework_labels: list, output_folder_path: str):
     """
     Generates the comparison plots between Evita and DoppelTest for the generation statistics metrics
     """
@@ -533,7 +533,7 @@ def generate_statistics_plots(data_map: dict, first_label: str, output_folder_pa
         df = pd.DataFrame(all_data)
 
         # Initialize the figure and axis for the boxplot
-        fig, ax = plt.subplots(figsize = (7, 4))
+        fig, ax = plt.subplots(figsize = (12, 5))
         sns.set_style("ticks")
         
         # Define colors for each framework's data
@@ -567,76 +567,77 @@ def generate_statistics_plots(data_map: dict, first_label: str, output_folder_pa
         plt.tight_layout()
         
         # Save boxplot to file
-        output_file_path = os.path.join(output_folder_path, f"{statistic}_comparison.png")
+        output_file_path = os.path.join(output_folder_path, "aggregated_experiments_plots", f"{statistic}_comparison.png")
         fig.savefig(output_file_path, dpi = 800)
         
         plt.close(fig)
 
-        # Initialize the figure and axis for the boxplot
-        fig, ax = plt.subplots(figsize = (7, 4))
-        sns.set_style("ticks")
+        for label in framework_labels:
+            # Initialize the figure and axis for the boxplot
+            fig, ax = plt.subplots(figsize = (7, 4))
+            sns.set_style("ticks")
 
-        # Add a virtual map "All" aggregating all maps for each framework
-        if len(df["Map"].unique()) > 1:
-            all_df = df.copy()
-            all_df["Map"] = "All"
-            df = pd.concat([df, all_df], ignore_index = True)
+            # Add a virtual map "All" aggregating all maps for each framework
+            if len(df["Map"].unique()) > 1:
+                all_df = df.copy()
+                all_df["Map"] = "All"
+                df = pd.concat([df, all_df], ignore_index = True)
 
-        # Plot single framework data
-        sns.boxplot(
-            data = df[(df["Framework"] == first_label)],
-            x = "Map", 
-            y = f"{statistic}", 
-            hue = "Framework", 
-            palette = palette,
-            linewidth = 1,
-            fliersize = 4,
-            width = 0.8,
-            gap = 0.2,
-            flierprops = {"marker": "o", "markeredgecolor": "gray"},
-            ax = ax
-        )
+            # Plot single framework data
+            sns.boxplot(
+                data = df[(df["Framework"] == label)],
+                x = "Map", 
+                y = f"{statistic}", 
+                hue = "Framework", 
+                palette = palette,
+                linewidth = 1,
+                fliersize = 4,
+                width = 0.8,
+                gap = 0.2,
+                flierprops = {"marker": "o", "markeredgecolor": "gray"},
+                ax = ax
+            )
 
-        # Styling
-        ax.legend(loc = 'best')
-        ax.set_xlabel("")
-        ax.set_ylabel("")
-        sns.despine(top = False, right = False) 
+            # Styling
+            ax.legend(loc = 'best')
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+            sns.despine(top = False, right = False) 
 
-        ax.margins(x = 0.05)
-        
-        plt.tight_layout()
-        
-        # Save boxplot to file
-        output_file_path = os.path.join(output_folder_path, f"{first_label}_{statistic}_comparison.png")
-        fig.savefig(output_file_path, dpi = 800)
-        
-        plt.close(fig)
+            ax.margins(x = 0.05)
+            
+            plt.tight_layout()
+            
+            # Save boxplot to file
+            output_file_path = os.path.join(output_folder_path, "frameworks_statistical_plots", f"{label}_{statistic}_comparison.png")
+            fig.savefig(output_file_path, dpi = 800)
+            
+            plt.close(fig)
 
-        # Compute effect size for every pair of frameworks
-        # Compute effect size for each map
+            # Compute effect size for every pair of frameworks
+            # Compute effect size for each map
 
-        effect_sizes[statistic] = {}
+            effect_sizes[statistic] = {}
 
-        for map_name in statistic_data.keys():
-            frameworks_data = {}
-            effect_sizes[statistic][map_name] = {}
-            for framework in frameworks:
-                data = df[(df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name)) & (df["Framework"] == framework)][f"{statistic}"].to_list()
+            for map_name in statistic_data.keys():
+                frameworks_data = {}
+                effect_sizes[statistic][map_name] = {}
+                for framework in frameworks:
+                    data = df[(df["Map"] == MAP_NAMES_MAPPING.get(map_name, map_name)) & (df["Framework"] == framework)][f"{statistic}"].to_list()
 
-                if len(data) != 0:
-                    frameworks_data[framework] = data
+                    if len(data) != 0:
+                        frameworks_data[framework] = data
 
-            for framework_1, framework_2 in combinations(frameworks_data.keys(), 2):
-                data_framework_1 = frameworks_data[framework_1]
-                data_framework_2 = frameworks_data[framework_2]
+                for framework_1, framework_2 in combinations(frameworks_data.keys(), 2):
+                    data_framework_1 = frameworks_data[framework_1]
+                    data_framework_2 = frameworks_data[framework_2]
 
-                if len(data_framework_1) != 0 and len(data_framework_2) != 0:
-                    effect_size = (*compute_effect_size(data_framework_1, data_framework_2), compute_p_value(data_framework_1, data_framework_2))
-                else:
-                    effect_size = (-1, "n/a", None)
+                    if len(data_framework_1) != 0 and len(data_framework_2) != 0:
+                        effect_size = (*compute_effect_size(data_framework_1, data_framework_2), compute_p_value(data_framework_1, data_framework_2))
+                    else:
+                        effect_size = (-1, "n/a", None)
 
-                effect_sizes[statistic][map_name][f"{framework_1}_{framework_2}"] = effect_size
+                    effect_sizes[statistic][map_name][f"{framework_1}_{framework_2}"] = effect_size
 
     return effect_sizes
 
@@ -679,6 +680,9 @@ def generate_percentage_valid_scenarios_plot(valid_data_map: dict, generated_dat
         all_df["Map"] = "All"
         generated_df = pd.concat([generated_df, all_df], ignore_index = True)
 
+    # Percentages of all frameworks, for the combined plot
+    all_percentage_data = []
+
     for framework in valid_df["Framework"].unique():
         percentage_data = []
         
@@ -696,14 +700,15 @@ def generate_percentage_valid_scenarios_plot(valid_data_map: dict, generated_dat
                 "Framework": framework,
                 "Percentage": percentage_valid
                 })
-                
+
+        all_percentage_data.extend(percentage_data)                
         percentage_df = pd.DataFrame(percentage_data)
 
         if percentage_df.empty:
             print(f"No data available for framework: {framework}. Skipping plot generation.")
             continue
 
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize = (12, 5))
 
         sns.set_style("ticks")
 
@@ -740,8 +745,50 @@ def generate_percentage_valid_scenarios_plot(valid_data_map: dict, generated_dat
 
         plt.tight_layout()
 
-        fig.savefig(os.path.join(output_folder_path, f"{framework}_valid_scenarios_comparison.png"), dpi = 500, bbox_inches = "tight")
+        fig.savefig(os.path.join(output_folder_path, "frameworks_statistical_plots", f"{framework}_valid_scenarios_comparison.png"), dpi = 500, bbox_inches = "tight")
 
+        plt.close(fig)
+
+        # Combined plot: percentage of valid scenarios of every framework, per map
+        all_percentage_df = pd.DataFrame(all_percentage_data)
+    
+        if all_percentage_df.empty:
+            print("No valid scenarios data available. Skipping the combined plot.")
+            return
+    
+        frameworks = list(all_percentage_df["Framework"].unique())
+    
+        fig, ax = plt.subplots(figsize = (12, 5))
+        sns.set_style("ticks")
+    
+        sns.barplot(
+            data = all_percentage_df,
+            x = "Map",
+            y = "Percentage",
+            hue = "Framework",
+            hue_order = frameworks,
+            palette = framework_palette(frameworks),
+            dodge = True,
+            errorbar = None,
+            ax = ax
+        )
+    
+        ax.set_title("% Valid Scenarios", fontsize = 14, pad = 15)
+        ax.set_xlabel("Map")
+        ax.set_ylabel("% Scenarios")
+        ax.set_ylim(0, 110)            # room for the labels above 100 % bars
+    
+        for container in ax.containers:
+            labels = [f"{bar.get_height():.0f}%" if bar.get_height() > 0 else "" for bar in container]
+            ax.bar_label(container, labels = labels, padding = 2, fontsize = 7)
+    
+        ax.legend(title = "Framework", loc = "upper center", bbox_to_anchor = (0.5, -0.15), ncol = len(frameworks), frameon = False)
+        sns.despine()
+    
+        plt.tight_layout()
+    
+        fig.savefig(os.path.join(output_folder_path, "aggregated_experiments_plots", "valid_scenarios_percentage_comparison.png"), dpi = 500, bbox_inches = "tight")
+    
         plt.close(fig)
         
 def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_folder_path: str):
@@ -785,6 +832,10 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
             for _, val in data.items():
                 vehicle_count_list.extend(val)
 
+            if len(vehicle_count_list) == 0:
+                print(f"No vehicle data available for framework: {framework} in map: {map_name}. Skipping statistics computation.")
+                continue
+
             statistics[map_name][framework] = {
                 "Mean": round(mean(vehicle_count_list), 2),
                 "Median": median(vehicle_count_list)
@@ -824,7 +875,7 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
             print(f"No data available for map: {map_name}. Skipping plot generation.")
             continue
 
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize=(12, 5))
 
         sns.set_style("ticks")
 
@@ -861,7 +912,7 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
                 container,
                 labels = labels,
                 padding = 3,
-                fontsize = 9
+                fontsize = 7
             )
 
         sns.despine()
@@ -870,7 +921,7 @@ def agents_number_plots(vehicles_data_map: dict, valid_data_map: dict, output_fo
 
         plt.tight_layout()
 
-        fig.savefig(os.path.join(output_folder_path, f"{MAP_NAMES_MAPPING.get(map_name, map_name)}_scenario_vehicles_comparison.png"), dpi = 500, bbox_inches = "tight")
+        fig.savefig(os.path.join(output_folder_path, "agents_percentage_distribution", f"{MAP_NAMES_MAPPING.get(map_name, map_name)}_scenario_vehicles_comparison.png"), dpi = 500, bbox_inches = "tight")
 
         plt.close(fig)
 
@@ -1009,7 +1060,7 @@ def generate_comparison_plots(experiments_folder_paths: list, experiments_labels
         "invalid": effect_size_data["invalid"]
     }
     
-    effect_size_list = generate_statistics_plots(data, experiments_labels[0], output_folder_path)
+    effect_size_list = generate_statistics_plots(data, experiments_labels, output_folder_path)
     effect_size_results["generation_statistics"] = effect_size_list
     generate_percentage_valid_scenarios_plot(effect_size_data["valid"], effect_size_data["generated"], output_folder_path)
 
@@ -1054,5 +1105,8 @@ if __name__ == "__main__":
 
     os.makedirs(os.path.join(args.output, "aggregated_experiments_plots"), exist_ok = True)
     os.makedirs(os.path.join(args.output, "single_scenarios_plots"), exist_ok = True)
+    os.makedirs(os.path.join(args.output, "agents_percentage_distribution"), exist_ok = True)
+    os.makedirs(os.path.join(args.output, "frameworks_statistical_plots"), exist_ok = True)
+    
 
     generate_comparison_plots(args.experiments, args.labels, args.output)

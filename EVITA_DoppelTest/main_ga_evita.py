@@ -76,6 +76,7 @@ def main(population_size: int, checkpoint_every: int, debug: bool):
 
     # Initialize scenario generation configurations
     config = ScenarioGeneratorConfig(SCENARIO_UPPER_LIMIT * 10, MAX_ADC_COUNT)
+    config.av_base_id = 20000
 
     # ---------------- Define Termination Criteria Object ----------------
     progress_bar_manager = get_progress_bar_manager()

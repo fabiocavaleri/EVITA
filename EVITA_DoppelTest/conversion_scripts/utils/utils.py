@@ -6,6 +6,8 @@ import numpy as np
 from typing import Union, Dict, List, Tuple
 from scipy.spatial.transform import Rotation as R
 
+from config import SCENARIO_UPPER_LIMIT
+
 from framework.oracles import Record
 from framework.oracles.impl.CollisionOracle import CollisionOracle
 from framework.oracles.impl.StopSignOracle import StopSignOracle
@@ -24,6 +26,10 @@ from commonroad.planning.goal import GoalRegion
 from commonroad.planning.planning_problem import PlanningProblem, PlanningProblemSet
 from commonroad_route_planner.route_planner import RoutePlanner
 
+##############################################
+# ----------       Helpers        ---------- #
+##############################################
+ 
 def safe_scalar(value, default: float = 0.0) -> float:
     """
     Safely convert a value to a scalar float, returning a default value if the conversion fails or results in NaN/Inf.
@@ -35,7 +41,23 @@ def safe_scalar(value, default: float = 0.0) -> float:
         return value
     except (TypeError, ValueError):
         return default
-    
+
+def wrap_angle(angle: float) -> float:
+    """
+    Angle in [-pi, pi)
+    """
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+def interpolate_angle(first: float, second: float, alpha: float) -> float:
+    """
+    Interpolate between two angles along the shorter direction
+    """
+    return wrap_angle(first + alpha * wrap_angle(second - first))
+
+##############################################
+# ---------- Conversion Functions ---------- #
+##############################################
+
 def convert_history_state(state_index: int, json_state: dict, scenario_initial_timestep: int) ->  Union[InitialState, CustomState]:
         """
         Method to convert a vehicle history state from a .record file to CommonRoad state format
@@ -52,7 +74,7 @@ def convert_history_state(state_index: int, json_state: dict, scenario_initial_t
 
         # Orientation
         quat = [json_state["qx"], json_state["qy"], json_state["qz"], json_state["qw"]]
-        orientation = safe_scalar(R.from_quat(quat).as_euler('zyx')[0])
+        orientation = wrap_angle(safe_scalar(R.from_quat(quat).as_euler('zyx')[0]) + math.pi / 2)
 
         # Velocity
         vx = safe_scalar(json_state["linear_velocity"]["x"])
@@ -62,7 +84,7 @@ def convert_history_state(state_index: int, json_state: dict, scenario_initial_t
         # Acceleration
         ax = safe_scalar(json_state["linear_acceleration"]["x"])
         ay = safe_scalar(json_state["linear_acceleration"]["y"])
-        acceleration = safe_scalar(np.hypot(ax, ay))
+        acceleration = safe_scalar(ax * math.cos(orientation) + ay * math.sin(orientation))
 
         # Yaw rate from angular velocity
         yaw_rate = safe_scalar(json_state["angular_velocity"]["z"])
@@ -98,7 +120,7 @@ def interpolate_state_backwards(first_state: CustomState, target_timestep: int) 
     """
 
     # Compute time difference between the first known state and the target timestep
-    dt = (target_timestep - first_state.time_step)
+    dt = (target_timestep - first_state.time_step) / 1e9
 
     # Backward interpolate position
     # I assume velocity and yaw do not change drastically over small dt.
@@ -107,7 +129,7 @@ def interpolate_state_backwards(first_state: CustomState, target_timestep: int) 
     new_position = first_state.position + np.array([dx, dy])
 
     # Backward interpolate orientation
-    new_orientation = first_state.orientation + first_state.yaw_rate * dt
+    new_orientation = wrap_angle(first_state.orientation + first_state.yaw_rate * dt)
 
     # Backward interpolate velocity (assuming constant acceleration)
     new_velocity = first_state.velocity + first_state.acceleration * dt
@@ -154,7 +176,7 @@ def interpolate_state(first_state: CustomState, second_state: CustomState, targe
     # Interpolate each field
     new_position = interpolation_helper(first_state.position, second_state.position)
     # Add 90° to the orientation to fix it in CommonRoad
-    new_orientation = interpolation_helper(first_state.orientation, second_state.orientation) + math.pi / 2
+    new_orientation = interpolate_angle(first_state.orientation, second_state.orientation, alpha)
     new_velocity = interpolation_helper(first_state.velocity, second_state.velocity)
     new_acceleration = interpolation_helper(first_state.acceleration, second_state.acceleration)
     new_yaw_rate = interpolation_helper(first_state.yaw_rate, second_state.yaw_rate)
@@ -249,7 +271,13 @@ def extract_from_record(record: Record) -> Tuple[Dict, Dict, List, List, List]:
                 if decision_type == "stop":
                     # Extract replanning decision
                     decision_reason = StopReasonCode.Name(message.decision.main_decision.stop.reason_code)
-                    decision_object = message.decision.main_decision.stop.reason.split(" ")[2]
+                    
+                    reason_words = message.decision.main_decision.stop.reason.split(" ")
+                    if len(reason_words) > 2:
+                        decision_object = reason_words[2]
+                    else: 
+                        decision_object = None
+
                     stop_position = [message.decision.main_decision.stop.stop_point.x, message.decision.main_decision.stop.stop_point.y]
                 elif decision_type == "cruise":
                     decision_reason = "cruise"
@@ -258,7 +286,7 @@ def extract_from_record(record: Record) -> Tuple[Dict, Dict, List, List, List]:
                 elif decision_type == "mission_complete":
                     decision_reason = "mission_complete"
                     decision_object = None
-                    stop_position = [message.decision.main_decision.stop.stop_point.x, message.decision.main_decision.stop.stop_point.y]
+                    stop_position = [message.decision.main_decision.mission_complete.stop_point.x, message.decision.main_decision.mission_complete.stop_point.y]
                 elif decision_type == "not_ready":
                     continue
                 else:
@@ -340,60 +368,49 @@ def downsample_state_list(state_list: dict, timestep_interval: int, convert_time
     :type convert_timestep: bool
     """
 
-    # Initialize the downsampled state list and save the first state in the list
-    initial_state = copy.deepcopy(state_list[0])
-    # Adjust the state orientation (add 90°)
-    initial_state.orientation = initial_state.orientation + math.pi / 2
-    # If requested, adjust the timesteps to CommonRoad format
-    if convert_timestep:
-        conversion_factor = 1e8 # nanoseconds -> tenths of second
-        initial_state.time_step = int(initial_state.time_step / conversion_factor)
-
-    downsampled_state_list = [initial_state]
-
-    # Retrieve the state list initial and final timestep
-    initial_timestep = state_list[0].time_step
-    final_timestep = state_list[-1].time_step
-    # Define the timestep of the second state in the downsampled list
-    target_timestep = initial_timestep + timestep_interval
+    if not state_list:
+        return []
+ 
+    first_timestep = state_list[0].time_step
+    last_timestep = state_list[-1].time_step
+ 
+    # First target timestep at or after the first recorded state
+    target_timestep = math.ceil(first_timestep / timestep_interval) * timestep_interval
+ 
+    resampled = []
     k = 0
-
-    # The downsampled state list must also have the same number of states as the original one
-    while target_timestep <= final_timestep and k < len(state_list) - 1:
-        state_a = state_list[k]
-        state_b = state_list[k + 1]
-
-        # Move forward until target_time is between state_a and state_b
-        if state_b.time_step < target_timestep:
+    while target_timestep <= last_timestep:
+        # Recorded states around the target timestep
+        while k < len(state_list) - 2 and state_list[k + 1].time_step < target_timestep:
             k += 1
-            continue
 
-        # Create a new state with the correct timestep by interpolating two consecutive states
-        interpolated_state = interpolate_state(state_a, state_b, target_timestep, convert_timestep)
-
-        # Add the interpolated state to the donwsampled state list
-        downsampled_state_list.append(interpolated_state)
-
-        # Increment the target timestep to the next state timestep
+        state_a, state_b = state_list[k], state_list[min(k + 1, len(state_list) - 1)]
+ 
+        if state_b.time_step == state_a.time_step:
+            state = copy.deepcopy(state_a)
+            state.time_step = target_timestep
+        else:
+            state = interpolate_state(state_a, state_b, target_timestep)
+ 
+        if convert_timestep:
+            state.time_step = int(round(target_timestep / timestep_interval))
+ 
+        resampled.append(state)
         target_timestep += timestep_interval
-
-    # Check that the states in the downsampled list are in the right time order
-    checked_downsampled_state_list = []
-    last_time_step = None
-
-    for state in downsampled_state_list:
-        # Extract state timestep
-        time_step = int(state.time_step)
-
-        # Skip states with negative or duplicated timesteps
-        if (time_step < 0) or (last_time_step is not None and time_step <= last_time_step):
-            continue
-
-        # Add state to final list and update last_time_step
-        checked_downsampled_state_list.append(state)
-        last_time_step = time_step
-
-    return checked_downsampled_state_list
+ 
+    # Keep the type of the first state (a DynamicObstacle needs an InitialState)
+    if resampled and isinstance(state_list[0], InitialState) and not isinstance(resampled[0], InitialState):
+        first = resampled[0]
+        resampled[0] = InitialState(time_step = first.time_step,
+                                    position = first.position,
+                                    orientation = first.orientation,
+                                    velocity = first.velocity,
+                                    acceleration = first.acceleration,
+                                    yaw_rate = first.yaw_rate,
+                                    slip_angle = 0
+                                    )
+ 
+    return resampled
 
 def dynamic_obstacle_from_record(vehicle_id: int, extracted_vehicle_history: dict, extracted_planned_trajectories: dict, vehicle_shape: Rectangle, scenario_initial_timestep: int) -> Tuple[DynamicObstacle, Dict]:
     """
@@ -431,7 +448,7 @@ def dynamic_obstacle_from_record(vehicle_id: int, extracted_vehicle_history: dic
     initial_state = downsampled_state_list[0]
 
     # Create the CommonRoad object to represent the vehicle history
-    vehicle_history = TrajectoryPrediction(Trajectory(initial_time_step = downsampled_state_list[0].time_step, state_list = downsampled_state_list), vehicle_shape)
+    vehicle_history = TrajectoryPrediction(Trajectory(initial_time_step = downsampled_state_list[1].time_step, state_list = downsampled_state_list[1:]), vehicle_shape)
 
     #
     # ---------- Convert Vehicle Planned Trajectories ----------
@@ -465,8 +482,10 @@ def dynamic_obstacle_from_record(vehicle_id: int, extracted_vehicle_history: dic
         if initial_timestep > normalized_original_initial_timestep:
             # Create new state interpolating backwards
             new_initial_state = interpolate_state_backwards(state_list[0], normalized_original_initial_timestep)
+
             # Set planned trajectory initial state
             state_list.insert(0, new_initial_state)
+            
             # Set planned trajectory initial timestep
             initial_timestep = new_initial_state.time_step
         elif initial_timestep < normalized_original_initial_timestep:
@@ -490,6 +509,7 @@ def dynamic_obstacle_from_record(vehicle_id: int, extracted_vehicle_history: dic
 
                 # Compute new initial state by interpolating the two states
                 new_initial_state = interpolate_state(first_state, second_state, normalized_original_initial_timestep)
+
                 # Remove the first state and insert the new interpolated one
                 state_list.pop(0)
                 state_list.insert(0, new_initial_state)
@@ -497,12 +517,6 @@ def dynamic_obstacle_from_record(vehicle_id: int, extracted_vehicle_history: dic
 
         # Downsample adjusted state list
         downsampled_state_list = downsample_state_list(state_list, timestep_interval, True)
-
-        # Compute planned trajectorygeometrical length
-        # trajectory_length = compute_trajectory_length(downsampled_state_list)
-
-        # if trajectory_length < 5.0:
-        #     continue
 
         # Create the trajectory object
         planned_trajectory = Trajectory(initial_time_step = downsampled_state_list[0].time_step, state_list = downsampled_state_list)
@@ -519,25 +533,6 @@ def dynamic_obstacle_from_record(vehicle_id: int, extracted_vehicle_history: dic
     dynamic_obstacle = DynamicObstacle(vehicle_id, ObstacleType.CAR, vehicle_shape, initial_state, prediction = vehicle_history)
 
     return dynamic_obstacle, planned_trajectories
-
-def compute_trajectory_length(state_list: List) -> float:
-    """
-    From the planned trajectory state list compute geometrical length
-    """
-    total_length = 0.0
-
-    # Iterate over state list
-    for i in range(len(state_list) - 1):
-        # Get planned position from two consecutive states
-        p1 = state_list[i].position
-        p2 = state_list[i + 1].position
-
-        dx = p2[0] - p1[0]
-        dy = p2[1] - p1[1]
-
-        total_length += math.hypot(dx, dy)
-
-    return total_length
 
 def export_planned_trajectories(scenario_planned_trajectories: Dict, executed_scenario_folder: str):
     """
@@ -694,10 +689,15 @@ def set_traffic_lights_cycles (executed_scenario: Scenario, traffic_lights_initi
 
     # Iterate over scenario's traffic lights
     for traffic_light in executed_scenario.lanelet_network.traffic_lights:
-        # Retrive Apollo original traffic light identifier
+        # Retrieve Apollo original traffic light identifier
         traffic_light_id = traffic_light.traffic_light_id - 10000
         # Retrieve traffic light initial state
         traffic_light_initial_state = traffic_lights_initial_states[f"signal_{str(traffic_light_id)}"]
+
+        # Check if the traffic light is in the scenario specification
+        if traffic_light_initial_state is None:
+            print(f"Traffic light {traffic_light.traffic_light_id} is not in the scenario specification: cycle left unchanged")
+            continue
 
         # Reconstruct traffic light color elements and cycle based on the scenario definition durations
         red_cycle_element = TrafficLightCycleElement(
@@ -729,7 +729,7 @@ def set_traffic_lights_cycles (executed_scenario: Scenario, traffic_lights_initi
 
 def extract_planning_problems(scenario: Scenario, pp_ids: List[int], scenario_specs: dict, map_lane_id_map: dict) -> PlanningProblemSet:
     """
-    
+    Extract planning problems from Apollo .json scenario specifications and convert them to CommonRoad PlanningProblemSet format
     """
     # Initialize the planning problem set
     problem_set = PlanningProblemSet()
@@ -745,19 +745,19 @@ def extract_planning_problems(scenario: Scenario, pp_ids: List[int], scenario_sp
         
         # Extract initial lane and position
         apollo_pp = apollo_planning_problems[i]
-        start_lane = map_lane_id_map[apollo_pp["routing"][0]]
+        start_lane_id = map_lane_id_map[apollo_pp["routing"][0]]
         start_position = float(apollo_pp["start_s"])
         
         # Extract destination lane and position
-        dest_lane = map_lane_id_map[apollo_pp["routing"][-1]]
-        dest_position = float(apollo_pp["dest_s"])
+        destination_lane_id = map_lane_id_map[apollo_pp["routing"][-1]]
+        destination_position = float(apollo_pp["dest_s"])
         
         # Extract and convert vehicle initial timestep
-        initial_timestep = 10 * int(apollo_pp["start_t"])
+        initial_timestep = int(int(apollo_pp["start_t"]) / scenario.dt) 
 
         # Retrive CommonRoad initial lanelet and compute initial state position
         try:
-            initial_lane = scenario.lanelet_network.find_lanelet_by_id(start_lane)
+            initial_lane = scenario.lanelet_network.find_lanelet_by_id(start_lane_id)
             starting_point = initial_lane.interpolate_position(start_position)[0]
         
             # Build initial state object
@@ -771,18 +771,19 @@ def extract_planning_problems(scenario: Scenario, pp_ids: List[int], scenario_sp
                                     slip_angle = 0.0)
             
             # Retrive CommonRoad destination lanelet
-            destination_lane = scenario.lanelet_network.find_lanelet_by_id(dest_lane)
+            destination_lane = scenario.lanelet_network.find_lanelet_by_id(destination_lane_id)
             # Get two consecutive points on the destination positionto compute the goal region orientation and position
-            goal_point = destination_lane.interpolate_position(dest_position)[0]
-            goal_next_point = destination_lane.interpolate_position(dest_position + 1.0)[0]
+            goal_point = destination_lane.interpolate_position(destination_position)[0]
+            goal_next_point = destination_lane.interpolate_position(destination_position + 1.0)[0]
 
-            orientation = math.atan2(goal_point[1] - goal_next_point[1], goal_point[0] - goal_next_point[0])
-        except:
+            orientation = math.atan2(goal_next_point[1] - goal_point[1], goal_next_point[0] - goal_point[0])
+        except Exception as exc:
+            print(f"Cannot build planning problem {pp_id} (lanes {start_lane_id} -> {destination_lane_id}): {exc}")
             continue
 
         # Build goal region object
         goal_area = Rectangle(7, 3, np.array([goal_point[0], goal_point[1]]), orientation)
-        goal_state_list = [CustomState(position = goal_area, time_step = Interval(0, 300))]
+        goal_state_list = [CustomState(position = goal_area, time_step = Interval(0, int(SCENARIO_UPPER_LIMIT / scenario.dt)))]
         goal = GoalRegion(goal_state_list)
 
         # Build planning problem object and add it to the problem set
@@ -796,12 +797,17 @@ def convert_vehicle_perceptions(vehicle_perception: dict, ids_map: dict = None) 
     Convert vehicle perceptions from .record files message format to a standardized format.
     """
     perceptions = {}
+    # Iterate over each vehicle perception message
     for perception in vehicle_perception:
+        # Iterate over each perceived obstacle
         for obs in perception.perception_obstacle:
+            # Convert obstacle id using the provided mapping, if available
             if ids_map is None:
                 obstacle_id = obs.id
             else:
-                obstacle_id = ids_map[obs.id]
+                obstacle_id = ids_map.get(obs.id, obs.id)
+
+            # Extract obstacle information
             obstacle_position = [obs.position.x, obs.position.y]
             obstacle_orientation = obs.theta
             obstacle_velocity = np.hypot(obs.velocity.x, obs.velocity.y)
@@ -820,6 +826,7 @@ def convert_vehicle_perceptions(vehicle_perception: dict, ids_map: dict = None) 
                 "obstacle_height": obstacle_height
             } 
 
+            # Initialize the list for the perception timestep if it doesn't exist
             if perception_timestep not in perceptions:
                 perceptions[perception_timestep] = []
 
@@ -846,7 +853,7 @@ def adjust_perceptions(vehicles_perception: dict, scenario_start_timestep: int, 
         # Iterate over the vehicle perceptions at each timesteps
         for timestep, perceptions in vehicle_perceptions.items():
             # Normalize and convert perception timestep to CommonRoad format (tenths of second)
-            adjusted_timestep = round((timestep - (scenario_start_timestep / 1e9)) * 10)
+            adjusted_timestep = int(math.floor((timestep - (scenario_start_timestep / 1e9)) * 10))
             
             # Vehicle perception may start before vehicle's first history state
             if adjusted_timestep < 0:
@@ -890,6 +897,7 @@ def convert_traffic_light_perception(traffic_light_perception: List) -> Dict[int
                 "confidence": tl.confidence
             }
 
+            # Initialize the list for the perception timestep if it doesn't exist
             if perception_timestep not in traffic_light_perceptions:
                 traffic_light_perceptions[perception_timestep] = []
 
@@ -908,9 +916,12 @@ def convert_planned_trajectories(planned_trajectories: Dict, ids_map: Dict) -> D
         decision_object = replanning_data["decision_object"]
 
         # If replanning decision contains a vehicle id convert it
-        if decision_reason in ["cruise", "STOP_REASON_OBSTACLE", "STOP_REASON_SIDE", "STOP_REASON_SIDEPASS_SAFETY"] and \
-            decision_object not in [None, "Side_Pass_Stop"]:
+        if decision_reason in ["cruise", "STOP_REASON_OBSTACLE", "STOP_REASON_SIDE", "STOP_REASON_SIDEPASS_SAFETY"] and decision_object not in [None, "Side_Pass_Stop"]:
+            try:
+                apollo_id = int(decision_object)
+            except (TypeError, ValueError):
+                continue
 
-            replanning_data["decision_object"] = ids_map[int(decision_object)]
+            replanning_data["decision_object"] = ids_map.get(apollo_id, apollo_id)
 
     return planned_trajectories
