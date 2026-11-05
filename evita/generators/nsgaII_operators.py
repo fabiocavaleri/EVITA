@@ -28,6 +28,7 @@ from conversion_scripts.utils.conversion_utils import generate_traffic_lights
 from evita.config import ValidationConfig
 from evita.generators import scenario_mutation
 from evita.utils import EVITA_MAIN_LOGGER_NAME, Budget
+from evita.timing import TASK_TIMER
 from evita.validator import ScenarioValidator
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
@@ -489,7 +490,8 @@ class CustomTimeTermination(Termination):
 
         # Yield control to the enclosed block, and then update the total generation time when exiting the block
         try:
-            yield
+            with TASK_TIMER.measure("generation"):
+                yield
         finally:
             self.total_generation_time += (time.perf_counter() - wall_start) - (self._paused_total - paused_start)
             self.update_main_progress_bar()
@@ -557,7 +559,8 @@ class CustomTimeTermination(Termination):
         self.checkpoints.add(checkpoint_id)
         with self.paused():
             try:
-                checkpoint(checkpoint_id, algorithm.problem.output_folder, self.all_scenarios, self.valid_scenarios, self.invalid_scenarios, self.total_generation_time, self.skipped_scenarios)
+                with TASK_TIMER.measure("checkpoints"):
+                    checkpoint(checkpoint_id, algorithm.problem.output_folder, self.all_scenarios, self.valid_scenarios, self.invalid_scenarios, self.total_generation_time, self.skipped_scenarios)
             except Exception:
                 module_logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
                 module_logger.critical(traceback.format_exc())

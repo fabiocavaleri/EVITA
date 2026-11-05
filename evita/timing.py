@@ -98,10 +98,7 @@ class TaskTimer:
         wall_clock = time.perf_counter() - self.started_at
         measured = sum(self.totals.values())
         unmeasured = max(0.0, wall_clock - measured)
-        if wall_clock > 0:
-            share = lambda seconds: f"{seconds / wall_clock:.4f}" 
-        else:
-            share = ""
+        share = lambda seconds: f"{seconds / wall_clock:.4f}" if wall_clock > 0 else ""
 
         with open(os.path.join(output_folder, "task_times.csv"), "w", newline = "") as csvfile:
             writer = csv.writer(csvfile)

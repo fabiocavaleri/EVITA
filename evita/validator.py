@@ -191,9 +191,9 @@ class ScenarioValidator:
             module_logger.debug("Scenario not valid: Initial velocity cannot be negative!")
             return False, "Initial velocity cannot be negative!"
 
-        if initial_state.velocity > self.generation_config.max_init_velocity:
-            module_logger.debug(f"Scenario not valid: Initial velocity of {pp_id} above {self.generation_config.max_init_velocity} m/s")
-            return False, f"Initial velocity of {pp_id} above {self.generation_config.max_init_velocity} m/s"
+        if initial_state.velocity > self.generation_config.max_velocity:
+            module_logger.debug(f"Scenario not valid: Initial velocity of {pp_id} above {self.generation_config.max_velocity} m/s")
+            return False, f"Initial velocity of {pp_id} above {self.generation_config.max_velocity} m/s"
 
         initial_position = np.asarray(initial_state.position)
         initial_lanelet_ids = scenario.lanelet_network.find_lanelet_by_position([initial_position])[0]
