@@ -1,33 +1,41 @@
-#
-# Implementation of basic mutation operators. Those are building blocks that can be used to build more complex search operators
+"""
+Mutation operators on scenarios: building blocks of the search operators.
+
+Mutations of a vehicle's planning problem: initial position, initial velocity, goal area.
+Mutations of the set of vehicles: add a random vehicle, remove a random vehicle.
+Mutations of the traffic lights (Apollo): initial configuration, green light duration.
+
+Every operator works on a copy and returns it; its inputs are never modified.
+The functions named *_evita_* and the traffic-light mutations belong to the Apollo pipeline.
+"""
+import os
+import json
+import logging
 import random
 import numpy as np
-import logging
-from typing import Tuple
 
 from copy import deepcopy
-from shapely.geometry import LineString
+from typing import List, Optional
+from shapely.geometry import LineString, Point
 
-from . import utils as generation_utils
-from ..config import ScenarioGeneratorConfig
-
-import os, json
-from typing import List
-from EVITA_DoppelTest.config import INSTANCE_MAX_WAIT_TIME
-
-from commonroad.geometry.shape import Rectangle
+from commonroad.planning.goal import GoalRegion
+from commonroad.planning.planning_problem import PlanningProblem, PlanningProblemSet
 from commonroad.scenario.lanelet import Lanelet
 from commonroad.scenario.scenario import Scenario
 from commonroad.scenario.state import InitialState
 from commonroad.scenario.traffic_light import TrafficLightState
-from commonroad.planning.goal import GoalRegion
-from commonroad.planning.planning_problem import PlanningProblem, PlanningProblemSet
 
-from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import get_traffic_light_configuration, get_traffic_light_cycle, compute_map_elements_mapping
+from EVITA_DoppelTest.config import INSTANCE_MAX_WAIT_TIME
+from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import compute_map_elements_mapping, get_traffic_light_configuration, get_traffic_light_cycle
 
+from . import utils as generation_utils
+from ..config import ScenarioGeneratorConfig
 from ..utils import EVITA_MAIN_LOGGER_NAME
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
+
+# Attempts to place a new vehicle before giving up and returning the planning problems unchanged
+MAX_PLACEMENT_ATTEMPTS = 100
 
 class EVITAPlanningProblem(PlanningProblem):
     """
@@ -37,77 +45,83 @@ class EVITAPlanningProblem(PlanningProblem):
         super().__init__(planning_problem_id, initial_state, goal_region)
         self.path = path
 
+# ========== Mutations of a vehicle ==========
+
+def _initial_lanelet(planning_problem: PlanningProblem, scenario: Scenario) -> Lanelet:
+    """
+    Lanelet the vehicle starts on.
+    """
+    if isinstance(planning_problem, EVITAPlanningProblem):
+        return lanelet_network.find_lanelet_by_id(planning_problem.path[0])
+    
+    lanelet_network = scenario.lanelet_network
+    lanelet_ids = lanelet_network.find_lanelet_by_position([planning_problem.initial_state.position])[0]
+
+    if lanelet_ids:
+        return lanelet_network.find_lanelet_by_id(lanelet_ids[0])
+    
+    raise ValueError(f"Could not find lanelet for initial position {planning_problem.initial_state.position} and planning problem type {type(planning_problem).__name__}")
+
+def _place_on_line(initial_state: InitialState, center_line: LineString, s: float) -> None:
+    """
+    Move the initial state to distance `s` along the centre line (clamped to the line), heading along it.
+    """
+    s = min(max(s, 0.0), center_line.length)
+    point = center_line.interpolate(s)
+    ahead = center_line.interpolate(min(s + 0.5, center_line.length))
+    behind = center_line.interpolate(max(s - 0.5, 0.0))
+
+    initial_state.position = np.array([point.x, point.y])
+    initial_state.orientation = generation_utils.get_orientation_by_coords((behind.x, behind.y), (ahead.x, ahead.y))
+
 def mutate_initial_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario, scenario_map_file_path: str = None) -> PlanningProblem:
     """
-    Mutate the initial position of the given planning problem.
-    Return a new planning problem
+    Mutate the vehicle's initial position, with equal probability:
+      - shift it along its lanelet by a random value in [-max_position_modifier, +max_position_modifier] metres, or
+      - move it to the same distance along an adjacent lanelet with the same driving direction, if there is one.
+    The heading follows the centre line at the new position.
     """
     _planning_problem = deepcopy(planning_problem)
 
-    # Get planning problem initial lanelet from starting position
-    current_position = _planning_problem.initial_state.position
-    lanelet_network = scenario.lanelet_network
-    lanelets = lanelet_network.find_lanelet_by_position([current_position])
-    
-    # Get initial lanelet
-    if lanelets and lanelets[0]:
-        lanelet = lanelet_network.find_lanelet_by_id(lanelets[0][0])
-    elif isinstance(_planning_problem, EVITAPlanningProblem):
-        lanelet = lanelet_network.find_lanelet_by_id(_planning_problem.path[0])
-    else:
-        raise ValueError(f"Could not find lanelet for initial position {current_position} and planning problem type {type(_planning_problem).__name__}")
-    
+    # Get planning problem initial lanelet and its center line
+    lanelet = _initial_lanelet(_planning_problem, scenario)    
     center_line = LineString(lanelet.center_vertices)
+    s_current = center_line.project(Point(_planning_problem.initial_state.position))
 
-    # Randomly sample a new position on the lanelet center line
-    position_modifier = random.uniform(-config.max_position_modifier, config.max_position_modifier)
-    new_position = center_line.interpolate(position_modifier)
-    _planning_problem.initial_state.position = np.array([new_position.x, new_position.y])
+    # Randomly decide whether to move along the same lanelet or switch to an adjacent lanelet
+    adjacent_lanelets = generation_utils.get_adjacent_lanelets(lanelet, scenario.lanelet_network)
+    if adjacent_lanelets and random.random() < 0.5:
+        # Same distance along a different lane
+        new_lanelet = random.choice(adjacent_lanelets)
+        new_line = LineString(new_lanelet.center_vertices)
+        _place_on_line(_planning_problem.initial_state, new_line, s_current / center_line.length * new_line.length)
+    else:
+        position_modifier = random.uniform(-config.max_position_modifier, config.max_position_modifier)
+        _place_on_line(_planning_problem.initial_state, center_line, s_current + position_modifier)
 
     return _planning_problem
 
-def mutate_initial_velocity(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario, scenario_map_file_path: str = None) -> PlanningProblem:
+def mutate_initial_velocity(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario, scenario_map_file_path: Optional[str] = None) -> PlanningProblem:
     """
-    Mutate the initial velocity of the given planning problem. Return a new planning problem
+    Mutate the vehicle's initial velocity
+    Change it by a random amount in [min_init_velocity, max_init_velocity] m/s, up or down with equal probability, keeping it within
+    [min_velocity, max_velocity].
     """
     _planning_problem = deepcopy(planning_problem)
 
-    # Randomly sample a new velocity. 
-    new_velocity = random.uniform(config.min_velocity, config.max_init_velocity)
-    _planning_problem.initial_state.velocity = new_velocity
+    change = random.uniform(config.min_init_velocity, config.max_init_velocity) * random.choice((-1.0, 1.0))
+    new_velocity = _planning_problem.initial_state.velocity + change
+    _planning_problem.initial_state.velocity = min(max(new_velocity, config.min_velocity), config.max_velocity)
 
     return _planning_problem
-
-def _routes_with_exit(start_lanelet: Lanelet, ll_network) -> List[Tuple[Lanelet, int]]:
-    """
-    All routes that can be driven forward from start_lanelet, each returned as (merged lanelet of the whole route, id of the exit lanelet where the route ends)
-    """
-    finished = []
-    pending = [(start_lanelet, [start_lanelet.lanelet_id])]
-    
-    while pending:
-        merged, ids = pending.pop()
-        last = ll_network.find_lanelet_by_id(ids[-1])
-        successors = [s for s in last.successor if s not in ids]
-
-        if not successors:
-            finished.append((merged, ids[-1]))
-            continue
-
-        for successor_id in successors:
-            successor = ll_network.find_lanelet_by_id(successor_id)
-            pending.append((Lanelet.merge_lanelets(merged, successor), ids + [successor_id]))
-
-    return finished
 
 def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: PlanningProblem, scenario: Scenario, scenario_map_file_path: str = None) -> PlanningProblem:
     """
-    Move the goal area of the planning problem to the end of a different exit lane
-    reachable from the initial lanelet (in the driving direction)
+    Move the goal area to the end of a different exit lane reachable (forward) from the vehicle's initial lanelet
+    The goal is kept if there is no other reachable exit lanelets.
     """
     _planning_problem = deepcopy(planning_problem)
     ll_network = scenario.lanelet_network
-    initial_state = planning_problem.initial_state
 
     # Step 1: Lanelets the current goal area lies on
     goal_lanelet_ids = set()
@@ -119,12 +133,11 @@ def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem:
         for ids in planning_problem.goal.lanelets_of_goal_position.values():
             goal_lanelet_ids.update(ids)
 
-    # Step 2: Lanelets under the vehicle that point in its driving direction
-    ids_at_start = ll_network.find_lanelet_by_position([initial_state.position])[0]
-    start_lanelets = [ll for ll in (ll_network.find_lanelet_by_id(i) for i in ids_at_start)]
-
-    # Step 3: Reachable routes whose exit lane is NOT the current one
-    candidates = [route for start in start_lanelets for route, exit_id in _routes_with_exit(start, ll_network) if exit_id not in goal_lanelet_ids]
+    # Step 2: Routes from the lanelets under the vehicle to an exit other than the current one
+    ids_at_start = ll_network.find_lanelet_by_position([planning_problem.initial_state.position])[0]
+    candidates = [route for start_id in ids_at_start
+                  for route, exit_id in generation_utils.routes_to_exits(ll_network.find_lanelet_by_id(start_id), ll_network)
+                  if exit_id not in goal_lanelet_ids]
 
     # Step 4: Pick one at random, or keep the current goal if there is no alternative exit
     if not candidates:
@@ -137,82 +150,76 @@ def mutate_goal_area_position(config: ScenarioGeneratorConfig, planning_problem:
 
     return _planning_problem
 
-def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet, map_file_path: str = None) -> PlanningProblemSet|EVITAPlanningProblem:
+# ========== Mutations of the set of vehicles ==========
+
+def _next_planning_problem_id(config: ScenarioGeneratorConfig, problem_set: PlanningProblemSet) -> int:
     """
-    Return a new PlanningProblemSet containing the same problems plus a random one
+    Id for a new planning problem: one more than the largest id in use, or than av_base_id if there is none.
+    """
+    return max(problem_set.planning_problem_dict.keys(), default = config.av_base_id) + 1
+
+def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet, map_file_path: Optional[str] = None) -> PlanningProblemSet|EVITAPlanningProblem:
+    """
+    Copy of the planning problems plus a new vehicle
+    On a random lanelet, take the routes to the exits from it and from its adjacent lanes with the same direction;
+    The planning problems are returned unchanged if no start can be placed after MAX_PLACEMENT_ATTEMPTS attempts.
     """
     # Copy the scenario and problem set
-    _scenario = deepcopy(scenario)
     _problem_set = deepcopy(problem_set)
+    lanelet_network = scenario.lanelet_network
 
-    # Pick a random lanelet to place the AV 
-    lanelet = random.choice(_scenario.lanelet_network.lanelets)
+    for _ in range(MAX_PLACEMENT_ATTEMPTS):
+        lanelet = random.choice(lanelet_network.lanelets)
 
-    # Get all the successor lanelets of the initial lanelet
-    full_lanelets = generation_utils.get_successor_lanelets(lanelet, _scenario.lanelet_network)
+        # Routes from the lanelet and from its adjacent lanes with the same direction
+        routes = [route for route, _ in generation_utils.routes_to_exits(lanelet, lanelet_network)]
+        for adjacent in generation_utils.get_adjacent_lanelets(lanelet, lanelet_network):
+            routes += [route for route, _ in generation_utils.routes_to_exits(adjacent, lanelet_network)]
 
-    # Get any adjacent random lanelet with same direction
-    adjacent_lanelets = generation_utils.get_adjacent_lanelets(lanelet, _scenario.lanelet_network)
+        random_route = random.choice(routes)
 
-    # Add the adjacent lanelets successors to the list of possible exit lanelets
-    for adjacent in adjacent_lanelets:
-        full_lanelets = full_lanelets + generation_utils.get_successor_lanelets(adjacent, _scenario.lanelet_network)
+        init_state = generation_utils.get_random_init_state(config, random_route[0])
+        if init_state is None:
+            continue
 
-    # Pick one of the exit lanelets at random
-    random_exit_lanelet = random.choice(full_lanelets)
+        goal = generation_utils.generate_goal(config, generation_utils.get_possible_goal_for_lanelet(config, random_route[-1]))
+        _problem_set.add_planning_problem(PlanningProblem(_next_planning_problem_id(config, _problem_set), init_state, goal))
 
-    # Generate a new random goal area and goal position
-    goal_area = generation_utils.get_possible_goal_for_lanelet(config, random_exit_lanelet)
-    goal = generation_utils.generate_goal(config, goal_area)
+        return _problem_set
 
-    # Check for planning problem ID uniqueness and generate a new ID
-    if _problem_set.planning_problem_dict:
-        last_key, pp = max(list(_problem_set.planning_problem_dict.items()))
-    else:
-        # Note start with the predefined ID to ensure uniqueness of IDs
-        last_key = config.av_base_id
+    module_logger.debug(f"Could not place a new vehicle after {MAX_PLACEMENT_ATTEMPTS} attempts")
+    return _problem_set
 
-    new_id = last_key + 1
-
-    # Generate a new initial state for the planning problem
-    init_state = generation_utils.get_random_init_state(config, random.choice(full_lanelets))
-    new_pp = PlanningProblem(new_id, init_state, goal)
-    _problem_set.add_planning_problem(new_pp)
+def remove_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet) -> PlanningProblemSet:
+    """
+    Return a new PlanningProblemSet containing one planning problem less than the input one
+    """
+    _problem_set = deepcopy(problem_set)
+    
+    # Select a random planning problem to remove
+    pp = random.choice(list(_problem_set.planning_problem_dict.values()))
+    pp_id_to_remove = _problem_set.find_planning_problem_by_id(pp.planning_problem_id)
+    
+    _problem_set.planning_problem_dict.pop(pp_id_to_remove.planning_problem_id)
 
     return _problem_set
 
-def point_at_distance_with_next(lanelet, s):
+# ========== Apollo pipeline ==========
+
+def _merge_path(lanelet_network, path: List[int]) -> Lanelet:
     """
-    Returns:
-        point: interpolated (x, y) at distance s
-        next_point: next center vertex after s
+    Merge the lanelets of a path into a single lanelet, as get_successor_lanelets does for the Frenetix routes
     """
-    distances = lanelet.distance
-    center = lanelet.center_vertices
+    merged = None
 
-    # Clamp s
-    s = np.clip(s, 0.0, distances[-1])
-
-    idx = np.searchsorted(distances, s)
-
-    # If at or before start
-    if idx == 0:
-        return center[0], center[1]
-
-    # If beyond last segment
-    if idx >= len(distances):
-        return center[-1], center[-1]
-
-    # Interpolate
-    s0, s1 = distances[idx - 1], distances[idx]
-    p0, p1 = center[idx - 1], center[idx]
-
-    ratio = (s - s0) / (s1 - s0)
-    point = p0 + ratio * (p1 - p0)
-
-    next_point = center[idx]
-
-    return point, next_point
+    for lanelet_id in path:
+        lanelet = lanelet_network.find_lanelet_by_id(lanelet_id)
+        if merged is None:
+            merged = deepcopy(lanelet)
+        else:
+            merged = Lanelet.merge_lanelets(merged, lanelet)
+    
+    return merged
 
 def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet, scenario_map_file_path: str) -> PlanningProblemSet:
     """
@@ -283,21 +290,6 @@ def add_evita_random_planning_problem(config: ScenarioGeneratorConfig, scenario:
         
         return _problem_set
 
-def _merge_path(lanelet_network, path: List[int]) -> Lanelet:
-    """
-    Merge the lanelets of a path into a single lanelet, as get_successor_lanelets does for the Frenetix routes
-    """
-    merged = None
-
-    for lanelet_id in path:
-        lanelet = lanelet_network.find_lanelet_by_id(lanelet_id)
-        if merged is None:
-            merged = deepcopy(lanelet)
-        else:
-            merged = Lanelet.merge_lanelets(merged, lanelet)
-    
-    return merged
-
 def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_problem: EVITAPlanningProblem, scenario: Scenario, scenario_map_file_path: str) -> EVITAPlanningProblem:
     """
     Mutate the position of the Goal Area velocity of the given planning problem
@@ -343,20 +335,6 @@ def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_pr
     _planning_problem.path = random_path
 
     return _planning_problem
-
-def remove_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scenario, problem_set: PlanningProblemSet) -> PlanningProblemSet:
-    """
-    Return a new PlanningProblemSet containing one planning problem less than the input one
-    """
-    _problem_set = deepcopy(problem_set)
-    
-    # Select a random planning problem to remove
-    pp = random.choice(list(_problem_set.planning_problem_dict.values()))
-    pp_id_to_remove = _problem_set.find_planning_problem_by_id(pp.planning_problem_id)
-    
-    _problem_set.planning_problem_dict.pop(pp_id_to_remove.planning_problem_id)
-
-    return _problem_set
 
 def mutate_tl_initial_configuration(_: ScenarioGeneratorConfig, scenario: Scenario, map_file_path: str) -> Scenario:
     """

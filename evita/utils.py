@@ -1,103 +1,118 @@
-import logging
-import sys
+"""
+Shared utilities: paths, logging, progress bars, result folders, the time budget, and helpers for scenarios and
+data frames.
+"""
+import json
 import os
+import sys
 import time
+import logging
+import enlighten
+import numpy as np
+import pandas as pd
 
-from typing import Tuple
+from copy import deepcopy
+from enum import Enum
+from typing import Iterator, Optional, Tuple
 
-### GLOBAL CONSTANTS
+from commonroad.planning.planning_problem import PlanningProblemSet
+from commonroad.scenario.scenario import Scenario
 
-# Create the main logger
+from .generators.lanelet_extension import extend_the_outgoing_lanelets_with_a_straight
+
+# ========== Global constants ==========
+
+# Name of EVITA's main logger
 EVITA_MAIN_LOGGER_NAME = "evita.main_logger"
 
-# This is where "this script" is stored
+# Folder of this package, root folder of the project, and folder where each run stores its results
 EVITA_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# This is your Project Root
 ROOT_DIR = os.path.abspath(os.path.join(EVITA_SCRIPT_DIR, os.pardir))
-# This is where each execution of any generator is stored 
 RESULTS_FOLDER = os.path.join(ROOT_DIR, "results")
 
-# This is the location where the Frenetix-Motion-Planner submodule is checkout
+# Checkout of the Frenetix-Motion-Planner submodule
 FRENETIX_ROOT = os.path.join(ROOT_DIR, "Frenetix-Motion-Planner")
 
-LANELET_EXTENSION = 150 # Default
+# Metres of straight road added after the end of the road network, so planners do not stop before the end of the
+# road; can be overridden with the LANELET_EXTENSION environment variable
 try:
-    LANELET_EXTENSION = int(os.getenv('LANELET_EXTENSION', 150))
-except:
-    pass
+    LANELET_EXTENSION = int(os.getenv("LANELET_EXTENSION", "150"))
+except ValueError:
+    LANELET_EXTENSION = 150
 
-def initialize_main_logger(debug: bool=False) -> None:
-    """
-    Initialize the given logger in place
-    """
+# ========== Logging and progress bars ==========
 
+def initialize_main_logger(debug: bool = False) -> None:
+    """
+    Configure EVITA's main logger: level DEBUG or INFO, printing to stdout.
+    The handler is added only once, so calling this function again does not duplicate the log lines.
+    """
     logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
-
-    # Set logging level
+    
     if debug:
         loglevel = logging.DEBUG
     else:
         loglevel = logging.INFO
     logger.setLevel(loglevel)
 
-    # Create log formatter
-    log_formatter = logging.Formatter("%(levelname)-6s [%(asctime)s] %(message)s ", "%Y-%m-%d %H:%M:%S")
+    if not logger.handlers:
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(logging.Formatter("%(levelname)-6s [%(asctime)s] %(message)s ", "%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(stream_handler)
 
-    # Create stream handler (prints to stdout)
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setLevel(loglevel)
-
-    stream_handler.setFormatter(log_formatter)
-
-    # Add handlers
-    logger.addHandler(stream_handler)
+    for handler in logger.handlers:
+        handler.setLevel(loglevel)
 
 def get_main_logger() -> logging.Logger:
+    """
+    EVITA's main logger.
+    """
     return logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
-def simulation_folders(run_folder: str) -> Tuple[str, str]:
+def get_progress_bar_manager():
     """
-    Return the simulation folders that can be found in the runfolder
+    Manager of the terminal progress bars.
     """
-    # Iterate over all the directories in the run folder, and return those that are not checkpoints or debug folders
-    for simulation_folder_name in sorted([name for name in os.listdir(run_folder) if os.path.isdir(os.path.join(run_folder, name))]):
-        if "checkpoints" in simulation_folder_name:
-            continue
-        elif "debug" in simulation_folder_name:
-            continue
-        else:
-            yield os.path.join(run_folder, simulation_folder_name), simulation_folder_name
+    try:
+        terminal = open("/dev/tty", "w")
+        return enlighten.get_manager(stream = terminal)
+    except OSError:
+        return enlighten.get_manager()
 
-def collisions_folders(simulation_folder: str) -> Tuple[str, str]:
-    """
-    Return the collision folders that can be found in the runfolder
-    """
-    if os.path.exists(os.path.join(simulation_folder, "logs", "collisions")):
-        yield os.path.join(simulation_folder, "logs", "collisions"), "collisions"
+# ========== Result folders ==========
 
-def find_csv_files(path_to_dir, suffix=".csv" ) -> Tuple[str, str]:
+def simulation_folders(run_folder: str) -> Iterator[Tuple[str, str]]:
     """
-    Return the csv files that can be found in the given directory
+    (path, name) of each simulation (scenario) folder of a run, in name order, skipping checkpoint and debug folders.
     """
-    # https://stackoverflow.com/questions/9234560/find-all-csv-files-in-a-directory-using-python
+    names = sorted(name for name in os.listdir(run_folder) if os.path.isdir(os.path.join(run_folder, name)))
+    for name in names:
+        if "checkpoints" in name or "debug" in name:
+            continue
+        yield os.path.join(run_folder, name), name
+
+def collisions_folders(simulation_folder: str) -> Iterator[Tuple[str, str]]:
+    """
+    (path, name) of the collisions folder of a simulation, if it exists.
+    """
+    collisions_folder = os.path.join(simulation_folder, "logs", "collisions")
+    if os.path.exists(collisions_folder):
+        yield collisions_folder, "collisions"
+
+def find_csv_files(path_to_dir: str, suffix: str = ".csv") -> Iterator[Tuple[str, str]]:
+    """
+    (path, name) of each file in the folder whose name ends with `suffix`.
+    """
     for filename in os.listdir(path_to_dir):
-        if filename.endswith( suffix ):
+        if filename.endswith(suffix):
             yield os.path.join(path_to_dir, filename), filename
 
-def run_folders(result_folder: str) -> Tuple[str, str]:
+def folders_of_completed_runs(result_folder: str, limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
     """
-    Return the folders of the runs that can be found in the result folder
+    (path, name) of each run folder that contains all the files a completed run writes, in name order;
+    at most `limit` folders if given.
     """
-    # Iterate over all the directories
-    for run_folder_name in sorted([name for name in os.listdir(result_folder) if os.path.isdir(os.path.join(result_folder, name))]):
-        yield os.path.join(result_folder, run_folder_name), run_folder_name
-
-def folders_of_completed_runs(result_folder: str, limit: int = None) -> Tuple[str, str]:
-    """
-    Return only the folders of the runs that succesfully completed
-    """
-
-    required_file_names = ["behavior.csv", 
+    required_file_names = ["behavior.csv",
                            "collision_map.npy",
                            "collision_map_impact_location_and_riv.npy",
                            "collision_map_only_impact_location.npy",
@@ -107,30 +122,23 @@ def folders_of_completed_runs(result_folder: str, limit: int = None) -> Tuple[st
                            "requirements_violations.csv"]
 
     print(f"Checking run folders in {result_folder}")
-    
+
     count = 0
-
-    # Iterate over all the directories
-    for run_folder_name in sorted([name for name in os.listdir(result_folder) if os.path.isdir(os.path.join(result_folder, name))]):
-        count += 1
-        # Reconstruct the full path to the run folder
-        full_path = os.path.join(result_folder, run_folder_name)
-
-        # Check whether the folder contains the required files
-        all_in = True
-        for file_name in required_file_names:
-            the_file = os.path.join(full_path, file_name)
-            if not os.path.exists(the_file):
-                print(f"Missing file {the_file} in run folder {full_path}")
-                all_in = False
-                break
-
-        if all_in:
-            # If all the files are there, return the folder
-            yield os.path.join(result_folder, run_folder_name), run_folder_name
-
-        if limit and count > limit:
+    names = sorted(name for name in os.listdir(result_folder) if os.path.isdir(os.path.join(result_folder, name)))
+    for name in names:
+        if limit is not None and count >= limit:
             return
+
+        full_path = os.path.join(result_folder, name)
+        missing = [f for f in required_file_names if not os.path.exists(os.path.join(full_path, f))]
+        if missing:
+            print(f"Missing file {os.path.join(full_path, missing[0])} in run folder {full_path}")
+            continue
+
+        count += 1
+        yield full_path, name
+
+# ========== Time budget ==========
 
 class Budget:
     """
@@ -138,24 +146,40 @@ class Budget:
     """
     # Take from: https://github.com/sbft-cps-tool-competition/cps-tool-competition/
 
-    def __init__(self, time_budget: float = None):
+    def __init__(self, time_budget: Optional[float] = None) -> None:
         self.time_budget = time_budget
         self.start_real_time = None
         self.start_pause = None
-        self.time_spend_in_pause = 0
-        self.last_check = None
+        self.time_spend_in_pause = 0.0
         self.logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
-    def get_time_budget(self):
+    def get_time_budget(self) -> Optional[float]:
+        """
+        Total budget in seconds.
+        """
         return self.time_budget
+
+    def get_start_time(self) -> Optional[float]:
+        """
+        perf_counter() value at start(), None if not started.
+        """
+        return self.start_real_time
+
+    def start(self) -> None:
+        """
+        Start counting.
+        """
+        self.start_real_time = time.perf_counter()
 
     def _active_time(self) -> float:
         """
-        Execution time since start: wall-clock time minus completed pauses and any pause in progress
+        Seconds since start(), excluding completed pauses and any pause in progress; 0 if not started.
         """
-        now = time.perf_counter()
-        paused = self.time_spend_in_pause + ((now - self.start_pause) if self.start_pause is not None else 0)
+        if self.start_real_time is None:
+            return 0.0
         
+        now = time.perf_counter()
+        paused = self.time_spend_in_pause + ((now - self.start_pause) if self.start_pause is not None else 0.0)
         return max(0.0, now - self.start_real_time - paused)
 
     def get_elapsed(self) -> int:
@@ -164,59 +188,39 @@ class Budget:
         """
         return int(self._active_time())
 
-    def get_remaining_real_time(self):
+    def get_remaining_real_time(self) -> float:
         """
-        Return how much "real" time is left before the budget is over
+        Active seconds left before the budget is over.
         """
         return self.time_budget - self._active_time()
 
-    def start(self):
-        self.start_real_time = time.perf_counter()
-
-    def get_start_time(self):
-        return self.start_real_time
-
-    def get_remaining_time(self):
-        # We need to ensure that we always return the same type of object:
-        return {"time-budget": self.get_remaining_real_time()}
-
-    def pause(self):
-        # Start the counter only if not yet started
+    def pause(self) -> None:
+        """
+        Stop counting until resume(); calling it again while paused has no effect.
+        """
         if self.start_pause is None:
             self.start_pause = time.perf_counter()
     
-    def resume(self):
+    def resume(self) -> None:
+        """
+        Count again after pause(); has no effect if not paused.
+        """
         if self.start_pause is not None:
-            now = time.perf_counter()
-            self.time_spend_in_pause = self.time_spend_in_pause + (now - self.start_pause)
+            self.time_spend_in_pause += time.perf_counter() - self.start_pause
             self.start_pause = None
 
-    # General Check
-    def is_over(self):
+    def is_over(self) -> bool:
+        """
+        True when the budget is used up.
+        """
         return self.get_remaining_real_time() <= 0
 
-import enlighten
-
-def get_progress_bar_manager():
-    """
-    Progress bars on the terminal, also when stdout is redirected (e.g. `| tee log`).
-    Falls back to the default (disabled when there's no terminal, e.g. under nohup or in a batch job).
-    """
-    try:
-        terminal = open("/dev/tty", "w")
-        return enlighten.get_manager(stream = terminal)
-    except OSError:
-        return enlighten.get_manager()
-
-from typing import Tuple
-from commonroad.scenario.scenario import Scenario
-from commonroad.planning.planning_problem import PlanningProblemSet
-from .generators.lanelet_extension import extend_the_outgoing_lanelets_with_a_straight
-from copy import deepcopy
+# ========== Scenarios ==========
 
 def extend_scenario_after_goal_areas(scenario: Scenario, extend_by_meters: int = 50) -> Scenario:
     """
-    Make sure we add some road after the goal area to avoid the planner stopping in front of the end of the road.
+    Copy of the scenario with a straight road of `extend_by_meters` metres added after each lanelet without
+    successors, so that planners do not stop before the end of the road.
     Code based on Stretch
     """
 
@@ -226,95 +230,65 @@ def extend_scenario_after_goal_areas(scenario: Scenario, extend_by_meters: int =
 
 def time_shift(scenario: Scenario, planning_problem_set: PlanningProblemSet) -> PlanningProblemSet:
     """
-    Shift the time of all the agents in the scenario so that the earliest one starts at time == 0
-    Make sure that at least one agent starts at time == 0.
+    Copy of the planning problems with their initial time steps shifted so that the earliest one starts at 0.
+    Not supported for scenarios with obstacles, whose trajectories would also need shifting.
     """
-    assert len(scenario.obstacles) == 0, "Cannot time shift if there are obstacles (Not yet supported)"
+    if len(scenario.obstacles) > 0:
+        raise ValueError("Cannot time shift a scenario with obstacles (not supported)")
 
-    time_shift_by = min([planning_problem.initial_state.time_step for planning_problem in planning_problem_set.planning_problem_dict.values()])
+    planning_problems = list(planning_problem_set.planning_problem_dict.values())
+    time_shift_by = min(planning_problem.initial_state.time_step for planning_problem in planning_problems)
 
-    planning_problem_list = []
-    for planning_problem in planning_problem_set.planning_problem_dict.values():
-        time_shifted_planning_problem = deepcopy(planning_problem)
-        time_shifted_planning_problem.initial_state.time_step = time_shifted_planning_problem.initial_state.time_step - time_shift_by
-        planning_problem_list.append(time_shifted_planning_problem)
+    shifted = []
+    for planning_problem in planning_problems:
+        shifted_planning_problem = deepcopy(planning_problem)
+        shifted_planning_problem.initial_state.time_step -= time_shift_by
+        shifted.append(shifted_planning_problem)
 
-    return PlanningProblemSet(planning_problem_list)
+    return PlanningProblemSet(shifted)
 
-def augment_with_delay(planning_problem_set: PlanningProblemSet) -> PlanningProblemSet:
+# ========== Data frames ==========
+
+def _to_sqlite_value(value):
     """
-    Introduce a new attribute, delay, and reset initial_state.time_step to 0
+    `value` as a type SQLite can store: None, int, float, str or bytes. Containers become JSON strings.
     """
+    # Arrays and containers first: pd.isna() does not apply to them
+    if isinstance(value, np.ndarray):
+        return json.dumps(value.tolist())
+    if isinstance(value, (list, tuple, set)):
+        return json.dumps(list(value))
+    if isinstance(value, dict):
+        return json.dumps(value)
 
-    planning_problem_list = []
-    for planning_problem in planning_problem_set.planning_problem_dict.values():
-        time_shifted_planning_problem = deepcopy(planning_problem)
-        setattr(time_shifted_planning_problem, "initial_delay", time_shifted_planning_problem.initial_state.time_step)
-        time_shifted_planning_problem.initial_state.time_step = 0
-        planning_problem_list.append(time_shifted_planning_problem)
+    # NumPy scalars become native Python values
+    if isinstance(value, np.generic):
+        return value.item()
 
-    return PlanningProblemSet(planning_problem_list)
+    # Missing values
+    if pd.isna(value):
+        return None
 
-import json
-from enum import Enum
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, pd.Timedelta):
+        return value.total_seconds()
+    if isinstance(value, Enum):
+        return value.value
 
-import numpy as np
-import pandas as pd
+    # Already compatible
+    if isinstance(value, (int, float, str, bytes)):
+        return value
 
+    return str(value)
 
 def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Return a copy of `df` containing only SQLite-compatible values.
-
-    Supported output types:
-        - None
-        - int
-        - float
-        - str
-        - bytes
+    Copy of `df` with only SQLite-compatible values (None, int, float, str, bytes).
     """
-
-    def sanitize(value):
-        # Arrays first!
-        if isinstance(value, np.ndarray):
-            return json.dumps(value.tolist())
-
-        # Containers
-        if isinstance(value, (list, tuple, set)):
-            return json.dumps(list(value))
-
-        if isinstance(value, dict):
-            return json.dumps(value)
-
-        # NumPy scalar -> native Python
-        if isinstance(value, np.generic):
-            return value.item()
-
-        # Missing values
-        if pd.isna(value):
-            return None
-
-        # Pandas types
-        if isinstance(value, pd.Timestamp):
-            return value.isoformat()
-
-        if isinstance(value, pd.Timedelta):
-            return value.total_seconds()
-
-        # Enum
-        if isinstance(value, Enum):
-            return value.value
-
-        # Already SQLite-compatible
-        if isinstance(value, (int, float, str, bytes)):
-            return value
-
-        # Fallback
-        return str(value)
-
     df = df.copy()
 
     for column in df.columns:
-        df[column] = df[column].apply(sanitize)
-
+        df[column] = df[column].apply(_to_sqlite_value)
+    
     return df

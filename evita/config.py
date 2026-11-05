@@ -1,79 +1,84 @@
+
+"""
+Configuration of scenario generation and validation
+"""
 from commonroad.scenario.lanelet import LaneletType
+from cr_scenario_handler.utils.configuration import VehicleParameterMapping, VehicleType
 
 class ValidationConfig:
     """
-    This class contains the configuration parameters for the scenario validation process.
+    Parameters of the scenario validation (paper, Section 4.5).
     """
+    # Lanelet types on which vehicles may be placed (checked only if validate_lanelet_type_and_direction is set)
     lanelet_types = {LaneletType.HIGHWAY, LaneletType.ACCESS_RAMP, LaneletType.EXIT_RAMP, LaneletType.URBAN}
 
-    # This validation is not needed when taking valid scenarios from the online dataset
+    # Lanelet type and direction checks: not needed for the maps of the CommonRoad dataset, which are already valid
     validate_lanelet_type_and_direction = False
     lanelet_same_direction_only = False
 
-    # How close the vehicle can be to its goal area
+    # Minimum distance (metres, along the route) between a vehicle's start and its goal area
     min_dist_goal = 20
-    
-    # The vehicle must be at least 5 meters inside any of the initial lanelets
+
+    # Minimum distance (metres) between a vehicle's start and the beginning of an entry lanelet,
+    # so that the whole vehicle starts on the road
     min_dist_init = 5
+
+    # Maximum number of attempts to generate a valid scenario
     retry_generation = 2000
 
-    ignore_validation = False  # for debugging purposes
+    # Skip validation altogether (debugging only)
+    ignore_validation = False
 
-    def __init__(self, safety_time = 2) -> None:
-        # Time in seconds for a safe distance between two cars
+    def __init__(self, safety_time: float = 2.0) -> None:
+        # Time headway (seconds) defining the safety distance between two vehicles in the same lane
         self.safety_time = safety_time
 
-    # Min distance of 2m seems reasonable. It cannot be 0.0 otherwise they overlap!
-    def car_distance_formula(self, speed):
+    def car_distance_formula(self, speed: float) -> float:
+        """
+        Minimum distance (metres) that a vehicle driving at `speed` (m/s) must keep from the vehicle ahead:
+        the distance covered in `safety_time` seconds, and at least 2 m so that standing vehicles do not overlap.
+        """
         if speed > 1.0:
             return speed * self.safety_time
         else:
             return 2.0
 
-
-from cr_scenario_handler.utils.configuration import VehicleParameterMapping, VehicleType
-
 class ScenarioGeneratorConfig:
     """
-    This class contains the configuration parameters for the scenario generation process.
+    Parameters of the scenario generation and of the interaction maps.
     """
-    def __init__(self, scenario_duration: int = 300, max_planning_problems: int = 8):
-        # Length of goal area at the end of a lanelet
+
+    def __init__(self, scenario_duration: int = 300, max_planning_problems: int = 8) -> None:
+        # Distance (metres) between the goal area and the end of its lanelet (dist_to_end)
         self.dist_to_end = 10.0
 
-        # CR vehicle type (see commonroad-vehicle-models): #1: Ford Escort, #2: BMW 320i, 3 = VW Vanagon
+        # CommonRoad vehicle model: 1 = Ford Escort, 2 = BMW 320i, 3 = VW Vanagon
         self.cr_vehicle_id = 2
-
-        # Get vehicle parameters from CommonRoad vehicle models given cr_vehicle_id
         vehicle_parameters = VehicleParameterMapping.from_vehicle_type(VehicleType(self.cr_vehicle_id))
 
-        # Get dimensions from given vehicle ID
+        # Vehicle dimensions (metres): used for goal areas and for the longitudinal range of the interaction map
         self.length = vehicle_parameters.l
         self.width = vehicle_parameters.w
-        self.wb_front_axle = vehicle_parameters.a
-        self.wb_rear_axle = vehicle_parameters.b
-        self.wheelbase = vehicle_parameters.a + vehicle_parameters.b
-        self.mass = vehicle_parameters.m
 
-        self.amount_pp = 1  # initially added planning problems
-        
-        self.min_amount_pp = 2 # min amount of planning problems in a scenario
-        self.max_amount_pp = max_planning_problems # max amount of planning problems in a scenario
-        
-        self.do_mutations = True  # for debugging
-        self.max_position_modifier = 50  # max amount for position mutations; min amount is -max_position_modifier
-        self.max_velocity = 25  # max velocity of an ego by mutation
-        self.min_velocity = 0  # min velocity of an ego by mutation
-        self.max_init_velocity = 10  # max init velocity for new egos; also max velocity modifier for velocity mutations
-        self.min_init_velocity = 5  # see max_init_velocity
+        # Number of vehicles (planning problems) per scenario (min_AVs, max_AVs)
+        self.min_amount_pp = 2
+        self.max_amount_pp = max_planning_problems
+
+        # Range (metres) of the position mutation: [-max_position_modifier, +max_position_modifier]
+        self.max_position_modifier = 50
+
+        # Range (m/s) of the initial velocity of new vehicles, also used as the range of velocity mutations
+        self.min_init_velocity = 5
+        self.max_init_velocity = 10
+
+        # Safety distance between vehicles in the same lane
         self.car_distance_formula = ValidationConfig().car_distance_formula
-        #
-        self.max_time_step = scenario_duration  # maximum scenario duration in simulation steps (default: 300 -> 30 seconds)
-        self.emergency_slow_down_amount = 5  # how much a car is slowing down for each step it spends in emergency mode
-        self.max_emergency_steps = 4
-        #
-        self.av_base_id = 10000 # AV IDs start from this number
-        #
-        # Interaction maps definition
+
+        # Maximum scenario duration in simulation steps of 0.1 s (max_time_step)
+        self.max_time_step = scenario_duration
+
+        # Identifiers of the generated vehicles start from this number
+        self.av_base_id = 10000
+
+        # Number of bin edges per axis of the interaction map (n_bins): n_bins - 1 bins plus one bucket on each side
         self.n_bins = 10
-        

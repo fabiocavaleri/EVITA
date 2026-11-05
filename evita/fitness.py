@@ -1,3 +1,6 @@
+"""
+Single-objective fitness functions of the (1+1) evolutionary baselines (EAOnePlusOneGenerator).
+"""
 import pandas as pd
 from typing import List
 

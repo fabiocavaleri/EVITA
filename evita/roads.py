@@ -1,160 +1,145 @@
-# Code taken from here
-# https://github.com/testingautomated-usi/deepatash/blob/96ea0151f508b9155ee62fdeeb9760431f6b867b/BNG/utils.py#L121
+"""
+Segmentation of a driven trajectory into straight parts and turns, used by the DoppelTest generator to count a vehicle's turns ("local decisions").
+
+Adapted from DeepAtash:
+https://github.com/testingautomated-usi/deepatash/blob/96ea0151f508b9155ee62fdeeb9760431f6b867b/BNG/utils.py#L121
+"""
+from typing import Iterable, Iterator, List, Tuple
+
 import numpy as np
 
-def _calc_angle_distance(v0, v1):
-    """
-    Calculate the angle between two vectors v0 and v1 in radians.
-    The angle is calculated using the arctangent of the y and x components of each vector
-    """
-    at_0 = np.arctan2(v0[1], v0[0])
-    at_1 = np.arctan2(v1[1], v1[0])
+# A turn shorter than this many points is merged into the neighbouring segment
+SEGMENT_THRESHOLD = 15
+# A straight part shorter than this many points is merged into the neighbouring turn
+SEGMENT_THRESHOLD2 = 10
+# Minimum heading change (radians) between consecutive steps to count as turning
+ANGLE_THRESHOLD = 0.005
 
-    return at_1 - at_0
-
-def _calc_dist_angle(points):
+def _calc_angle_distance(v0: np.ndarray, v1: np.ndarray) -> float:
     """
-    Calculate the angle and distance between consecutive points in a list of points.
+    Heading change (radians, not normalised) from direction v0 to direction v1.
     """
+    return np.arctan2(v1[1], v1[0]) - np.arctan2(v0[1], v0[0])
 
-    assert len(points) >= 2, f'at least two points are needed'
-
-    def vector(idx):
+def _calc_dist_angle(points: List[np.ndarray]) -> List[Tuple[float, float, List[np.ndarray]]]:
+    """
+    For each step between consecutive points: (heading change from the previous step, step length, [end, start]).
+    """
+    def vector(idx: int) -> np.ndarray:
         return np.subtract(points[idx + 1], points[idx])
 
-    n = len(points) - 1
-    result = [None] * (n)
-    b = vector(0)
-    for i in range(n):
-        a = b
-        b = vector(i)
-        angle = _calc_angle_distance(a, b)
-        distance = np.linalg.norm(b)
-        result[i] = (angle, distance, [points[i+1], points[i]])
+    result = []
+    previous = vector(0)
+    for i in range(len(points) - 1):
+        current = vector(i)
+        result.append((_calc_angle_distance(previous, current), np.linalg.norm(current), [points[i + 1], points[i]]))
+        previous = current
 
     return result
 
-def identify_segments(agent):
+def _group_equal(labels: Iterable[str]) -> Iterator[List[str]]:
     """
-    Identify segments in the trajectory of an agent based on the angle and distance between consecutive points.
+    Group consecutive equal labels ("l", "r", "s").
     """
-     
-    nodes = [state.position for state in sorted(agent.record_state_list, key= lambda s: s.time_step)]
-    # result is List[angle, distance, [x2, y2], [x1, y1]]
-    result = _calc_dist_angle(nodes)
+    previous, group = None, []
+    for label in labels:
+        if previous is None or label == previous:
+            group.append(label)
+        else:
+            yield group
+            group = [label]
+        previous = label
+        
+    if group:
+        yield group
 
-    segments = []
-    SEGMENT_THRESHOLD = 15
-    SEGMENT_THRESHOLD2 = 10
-    ANGLE_THRESHOLD = 0.005
+def _merge_short_straights_and_turns(groups: Iterable[List[str]]) -> Iterator[List[str]]:
+    """
+    Merge into the previous group: straight parts shorter than SEGMENT_THRESHOLD2 points, and turns shorter than
+    SEGMENT_THRESHOLD points in the same direction as the previous group.
+    """
+    previous, group = None, []
+    for item in groups:
+        if previous is None:
+            group.extend(item)
+        elif len(item) < SEGMENT_THRESHOLD2 and item[0] == "s":
+            item = [previous[-1]] * len(item)
+            group.extend(item)
+        elif len(item) < SEGMENT_THRESHOLD and item[0] != "s" and previous[-1] == item[0]:
+            item = [previous[-1]] * len(item)
+            group.extend(item)
+        else:
+            yield group
+            group = item
+        previous = item
 
-    # iterate over the nodes to get the turns bigger than the threshold
-    # a turn category is assigned to each node
-    # l is a left turn
-    # r is a right turn
-    # s is a straight segment
+    if group:
+        yield group
+
+def _merge_short_groups(groups: Iterable[List[str]]) -> Iterator[List[str]]:
+    """
+    Merge into the previous group every group shorter than SEGMENT_THRESHOLD points.
+    """
+    previous, group = None, []
+    for item in groups:
+        if previous is None:
+            group.extend(item)
+        elif len(item) < SEGMENT_THRESHOLD:
+            item = [previous[-1]] * len(item)
+            group.extend(item)
+        else:
+            yield group
+            group = item
+        previous = item
+
+    if group:
+        yield group
+
+def identify_segments(agent) -> Tuple[int, List[List]]:
+    """
+    Split the trajectory driven by `agent` (its recorded states) into straight parts and turns.
+
+    Returns the number of turns and the segments, each a list of [point, heading change] pairs.
+    Steps where the vehicle did not move are skipped: they have no direction, and would register as heading changes.
+    """
+    positions = [np.asarray(state.position, dtype = float) for state in sorted(agent.record_state_list, key = lambda s: s.time_step)]
+    nodes = [p for i, p in enumerate(positions) if i == 0 or not np.allclose(p, positions[i - 1])]
+    
+    if len(nodes) < 2:
+        return 0, []
+
+    # (heading change, step length, [end point, start point]) for each step
+    steps = _calc_dist_angle(nodes)
+
+    # Label each step as left turn ("l"), right turn ("r") or straight ("s")
     turns = []
-    for i in range(0, len(result)):
-        # result[i][0] is the angle
-        angle_1 = (result[i][0] + np.pi) % (2 * np.pi) - np.pi
-        if np.abs(angle_1) > ANGLE_THRESHOLD:
-            if(angle_1) > 0:
-                turns.append("l")
-            else:
-                turns.append("r")
+    for angle, _, _ in steps:
+        angle = (angle + np.pi) % (2 * np.pi) - np.pi
+        if np.abs(angle) > ANGLE_THRESHOLD:
+            turns.append("l" if angle > 0 else "r")
         else:
             turns.append("s")
 
-    # this generator groups the points belonging to the same category
-    def grouper(iterable):
-        prev = None
-        group = []
+    # Group the labels, then merge short groups into their neighbours
+    groups = _merge_short_groups(_merge_short_straights_and_turns(_group_equal(turns)))
 
-        for item in iterable:
-            if not prev or item == prev:
-                group.append(item)
-            else:
-                yield group
-                group = [item]
-            prev = item
-        
-        if group:
-            yield group
-
-    # this generator groups:
-    # - groups of points belonging to the same category
-    # - groups smaller than 10 elements
-    def supergrouper1(iterable):
-        prev = None
-        group = []
-        
-        for item in iterable:
-            if not prev:
-                group.extend(item)
-            elif len(item) < SEGMENT_THRESHOLD2 and item[0] == "s":
-                item = [prev[-1]] * len(item)
-                group.extend(item)
-            elif len(item) < SEGMENT_THRESHOLD and item[0] != "s" and prev[-1] == item[0]:
-                item = [prev[-1]] * len(item)
-                group.extend(item)
-            else:
-                yield group
-                group = item
-
-            prev = item
-
-        if group:
-            yield group
-
-    # this generator groups:
-    # - groups of points belonging to the same category
-    # - groups smaller than 10 elements
-    def supergrouper2(iterable):
-        prev = None
-        group = []
-
-        for item in iterable:
-            if not prev:
-                group.extend(item)
-            elif len(item) < SEGMENT_THRESHOLD:
-                item = [prev[-1]]*len(item)
-                group.extend(item)
-            else:
-                yield group
-                group = item
-
-            prev = item
-
-        if group:
-            yield group
-
-    groups = grouper(turns)
-
-    supergroups1 = supergrouper1(groups)
-
-    supergroups2 = supergrouper2(supergroups1)
-
-    count = 0
-    segment_indexes = []
-    segment_count = 0
-    for g in supergroups2:
-        if g[-1] != "s":
+    # Count the turns and find where each group ends
+    segment_count, segment_ends, count = 0, [], 0
+    for group in groups:
+        if group[-1] != "s":
             segment_count += 1
+        count += len(group)
+        segment_ends.append(count)
 
-        count += (len(g))
-        segment_indexes.append(count)
-
-    segment_begin = 0
-    for idx in segment_indexes:
+    # Build the segments: the points of each group with their heading changes
+    segments, segment_begin = [], 0
+    for segment_end in segment_ends:
         segment = []
-        segment_end = idx
         for j in range(segment_begin, segment_end):
             if j == 0:
-                segment.append([result[j][2][0], result[j][0]])
-
-            segment.append([result[j][2][1], result[j][0]])
-
-        segment_begin = segment_end
+                segment.append([steps[j][2][0], steps[j][0]])
+            segment.append([steps[j][2][1], steps[j][0]])
         segments.append(segment)
+        segment_begin = segment_end
 
     return segment_count, segments

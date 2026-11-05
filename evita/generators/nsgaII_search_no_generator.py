@@ -1,98 +1,55 @@
-import sys
-sys.path.append("../EVITA_DoppelTest")  # Add the path to the EVITA_DoppelTest package to the system path
+"""
+Entry point of EVITA: NSGA-II search on a seed road network, with FrenetiX.
 
-import logging
+The initial population is random; each generation is produced by crossover and mutation and executed, until the time budget (minutes) is used up
+The scenarios, the metadata and the performance counters are stored in the output folder, followed by the report.
+"""
+import sys
+
+# The Apollo-related modules imported by the operators live in the sibling EVITA_DoppelTest project
+sys.path.append("../EVITA_DoppelTest")
+
 import os
 import csv
-import argparse
-import shutil
-import enlighten  # Progress bars
-from pymoo.algorithms.moo.nsga2 import NSGA2
-
 import random
+import shutil
+import logging
+import argparse
 import numpy as np
+
+from pymoo.algorithms.moo.nsga2 import NSGA2
 
 from evita.config import ScenarioGeneratorConfig
 from evita.data_analysis import generate_report
-from evita.generators.NSGAIIproblem import NSGAIIproblem
-from evita.generators.nsgaII_operators import ScenarioSampling, ScenarioMutation, ScenarioCrossover, \
-    ScenarioDuplicateElimination, CustomTimeTermination
 from evita.generators import utils as scenario_generation_utils
+from evita.generators.NSGAIIproblem import NSGAIIproblem
+from evita.generators.nsgaII_operators import (CustomTimeTermination, ScenarioCrossover, ScenarioDuplicateElimination,
+                                               ScenarioMutation, ScenarioSampling)
+from evita.orchestrator import write_performance_file
+from evita.utils import EVITA_MAIN_LOGGER_NAME, get_progress_bar_manager, initialize_main_logger
 
-from evita.utils import initialize_main_logger, EVITA_MAIN_LOGGER_NAME, get_progress_bar_manager
+# FrenetiX is the driving agent of every vehicle
+DRIVING_AGENT_NAME = "frenetix"
 
-if __name__ == '__main__':
-    """
-    This is the main entry point for the NSGAII Search without a generator
-    It will generate scenarios by applying mutation and crossover operators to the seed scenario, and evaluate them using the given evaluation pipeline
-    The generated scenarios will be stored in the output folder, together with metadata and performance metrics
-    """  
-    parser = argparse.ArgumentParser(description = "Run NSGAII Search without a generator.")
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description = "Run EVITA's NSGA-II search.")
 
-    # Required arguments
-    parser.add_argument(
-        "--population-size",
-        type = int,
-        required = True,
-        help = "Number of scenarios to generate in each generation."
-    )
-    parser.add_argument(
-        "--time-budget",
-        type = float,
-        required = True,
-        help = "Maximum generation time in minutes."
-    )
-    parser.add_argument(
-        "--scenario-seed-file",
-        type = str,
-        required = True,
-        help = "Path to the CommonRoad scenario seed file."
-    )
+    parser.add_argument("--population-size", type = int, required = True, help = "Number of scenarios in each generation.")
+    parser.add_argument("--time-budget", type = float, required = True, help = "Time budget in minutes.")
+    parser.add_argument("--scenario-seed-file", type = str, required = True, help = "Path to the CommonRoad scenario seed file (the road network).")
 
-    # Optional arguments
-    parser.add_argument(
-        "--output-folder-name",
-        type = str,
-        default = None,
-        help = "Output folder name. Defaults to an automatically generated name."
-    )
-    parser.add_argument(
-        "--seed",
-        type = int,
-        default = None,
-        help = "Random seed for reproducibility."
-    )
-    parser.add_argument(
-        "--threshold",
-        type = float,
-        default = 1.0,
-        help = "Evaluation threshold (default: 1.0)."
-    )
-    parser.add_argument(
-        "--n-bins",
-        type = int,
-        default = None,
-        help = "Number of bins (default: None)."
-    )
-    parser.add_argument(
-        "--checkpoint-every",
-        type = int,
-        default = 60,
-        help = "Checkpoint every N minutes (default: 60)."
-    )
-    parser.add_argument(
-        "--force-max-duration",
-        type = int,
-        default = None,
-        help = "Force the goal time interval of every planning problem to [0, N] (as `evita run --force-max-duration`)."
-    )
-    parser.add_argument(
-        "--debug",
-        action = "store_true",
-        help = "Enable debug logging."
-    )
+    parser.add_argument("--output-folder-name", type = str, default = None, help = "Output folder name. Defaults to an automatically generated name.")
+    parser.add_argument("--seed", type = int, default = None, help = "Random seed for reproducibility.")
+    parser.add_argument("--threshold", type = float, default = 1.0, help = "Trajectory difference threshold Th_ED in metres (default: 1.0).")
+    parser.add_argument("--n-bins", type = int, default = None, help = "Number of bin edges per axis of the interaction map (default: configuration).")
+    parser.add_argument("--checkpoint-every", type = int, default = 60, help = "Checkpoint every N minutes of budget time (default: 60; 0 disables).")
+    parser.add_argument("--force-max-duration", type = int, default = None, help = "Force the goal time interval of every planning problem to [0, N] (as `evita run --force-max-duration`).")
+    parser.add_argument("--debug", action = "store_true", help = "Enable debug logging and plots.")
 
-    args = parser.parse_args()
+    return parser.parse_args()
+
+def main() -> None:
+    args = parse_arguments()
 
     # Set the random seed for reproducibility, if provided
     if args.seed is not None:
@@ -110,11 +67,7 @@ if __name__ == '__main__':
     # Initialize the scenario generator configuration
     scenario_generator_configuration = ScenarioGeneratorConfig()
 
-    driving_agent_name = "frenetix"
-
     progress_bar_manager = get_progress_bar_manager()
-
-    # By default checkpoint is every 60 minutes after the population evaluation
     termination_criterion = CustomTimeTermination(args.time_budget, checkpoint_every = args.checkpoint_every, progress_bar_manager = progress_bar_manager)
 
     # Initialize the NSGAII algorithm ti generate scenario and the mutation and crossover operators
@@ -128,7 +81,7 @@ if __name__ == '__main__':
                       eliminate_duplicates = ScenarioDuplicateElimination())
     
     problem = NSGAIIproblem(args.scenario_seed_file,
-                            driving_agent_name,
+                            DRIVING_AGENT_NAME,
                             args.population_size,
                             termination_criterion,
                             args.threshold,
@@ -137,7 +90,6 @@ if __name__ == '__main__':
                             debug = args.debug,
                             force_max_duration = args.force_max_duration
                         )
-    termination_criterion.problem_ref = problem
 
     # Copy the base scenario file in the output folder
     shutil.copyfile(args.scenario_seed_file, os.path.join(problem.output_folder, os.path.basename(args.scenario_seed_file)))
@@ -168,15 +120,21 @@ if __name__ == '__main__':
 
     logger.info(f"Execution of {problem.output_folder} is over ")
     
-    
     # Log performance metrics
     logger.info("Generation Performance Metrics")
-    performance_file = os.path.join(problem.output_folder, "performance.csv")
-    with open(performance_file, "w", newline = "") as csvfile:
-        csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"])
-        csv_writer.writerow([str(termination_criterion.all_scenarios), str(termination_criterion.valid_scenarios), str(termination_criterion.invalid_scenarios), str(termination_criterion.total_generation_time)])
+    
+    performance_file_path = os.path.join(problem.output_folder, "performance.csv")
+    write_performance_file(performance_file_path,
+                           termination_criterion.all_scenarios,
+                           termination_criterion.valid_scenarios,
+                           termination_criterion.invalid_scenarios,
+                           termination_criterion.total_generation_time,
+                           termination_criterion.skipped_scenarios)
+    
     logger.info("Saved Performance Metrics")
 
     # Now analysize the data collected so far and output to the scenario folder
     generate_report(problem.output_folder)
+
+if __name__ == '__main__':
+    main()

@@ -1,6 +1,11 @@
+"""
+Interfaces of EVITA's pluggable components: fitness functions, scenario generators, executors and evaluators.
+The orchestrator loads the concrete classes by name, so new components only need to implement these interfaces.
+"""
+import pandas as pd
+
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict
-import pandas as pd
 
 from cr_scenario_handler.simulation.simulation import Simulation
 
@@ -17,7 +22,7 @@ class AbstractFitnessFunction(ABC):
         pass
 
     @abstractmethod
-    def compute(self, agents_data, evaluation_data) -> float|List[float]:
+    def compute(self, agents_data, evaluation_data: pd.DataFrame) -> float | List[float]:
         """
         Return the fitness evaluation, which can be a float or a list of float in the case of Multi-Objective evaluation
         """

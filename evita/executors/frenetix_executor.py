@@ -1,34 +1,34 @@
-from ..interfaces import AbstractScenarioExecutor
-
+"""
+Scenario executor with FrenetiX's multi-agent simulation: every vehicle of the scenario is driven by FrenetiX.
+Each execution has its own folder (named after the scenario's generation id) with the scenario file and the logs.
+"""
 import os
 import sys
+import time
+import copy
 import logging
-import enlighten # Progress bar
-
+import enlighten
 import traceback
-from datetime import datetime
 
+from queue import Empty
+from typing import List
+
+from commonroad.common.file_reader import CommonRoadFileReader
+from commonroad.common.file_writer import CommonRoadFileWriter
+from commonroad.prediction.prediction import TrajectoryPrediction
+from commonroad.scenario.trajectory import Trajectory
+
+import cr_scenario_handler.utils.prediction_helpers as ph
 from cr_scenario_handler.simulation.simulation import Simulation
+from cr_scenario_handler.utils.agent_status import TIMEOUT, AgentStatus
 from cr_scenario_handler.utils.configuration_builder import ConfigurationBuilder
 
-from commonroad.visualization.mp_renderer import MPRenderer
-
-from commonroad.common.file_writer import CommonRoadFileWriter
-from commonroad.common.file_reader import CommonRoadFileReader
-
-from ..utils import FRENETIX_ROOT, EVITA_MAIN_LOGGER_NAME
-
-def _get_cmap(n, name = 'hsv'):
-    """
-    Get a function that maps each index in 0, 1, ..., n - 1 to a distinct RGB color
-    the keyword argument name must be a standard mpl colormap name
-    """
-    import matplotlib.pyplot as plt
-    return plt.cm.get_cmap(name, n)
+from ..interfaces import AbstractScenarioExecutor
+from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT
 
 class PatchedConfigurationBuilder(ConfigurationBuilder):
     """
-    This is a patched version of the ConfigurationBuilder that does not consider the commandline configuration
+    FrenetiX's ConfigurationBuilder without the command-line configuration
     """
     @classmethod
     def build_configuration(cls, scenario_name: str, path_root: str = None, dir_config = "configurations", module = "simulation"):
@@ -52,19 +52,13 @@ class PatchedConfigurationBuilder(ConfigurationBuilder):
 
         return config_default
     
-import copy
-import time
-from queue import Empty
-from typing import List
-from commonroad.scenario.trajectory import Trajectory
-from commonroad.prediction.prediction import TrajectoryPrediction
-from cr_scenario_handler.utils.agent_status import TIMEOUT, AgentStatus
-import cr_scenario_handler.utils.prediction_helpers as ph
-
 class EVITASimulation(Simulation):
     """
-    Custom subclass of the EVITA Simulation to prevent the predictor from 
-    crashing on empty histories when agents collide/finish.
+    FrenetiX's multi-agent Simulation, adapted for EVITA:
+      - progress bar of the simulated time steps, and a callback after every step (e.g., the time-budget bar);
+      - the replanning counter is kept in sync with the planner's replanning cycle;
+      - vehicles involved in a collision stay in the scenario as stationary obstacles;
+      - vehicles that finished keep their history up to the current step, so the predictor does not fail on empty histories.
     """
 
     def __init__(self, config_sim, config_planner, progress_bar_manager, on_step):
@@ -91,9 +85,6 @@ class EVITASimulation(Simulation):
         and visualize current timestep if specified in the simulation configuration
         """
         
-        # TODO How to handle planner.emergency mode here?!
-        # Here we do not start the batch, because we want the execution to take place in the main thread
-
         # Create a progress bar for the scenario execution process
         execution_bar = self.progress_bar_manager.counter(total = self.expected_duration, desc = "Scenario Execution", unit = "timesteps", color = "orange", leave = False)
 
@@ -337,36 +328,34 @@ class EVITASimulation(Simulation):
     
 class FrenetixScenarioExecution(AbstractScenarioExecutor):
     """
-    This class is responsible for executing a scenario using the Frenetix motion planner
+    Executes scenarios with FrenetiX's multi-agent simulation.
     """
-    def __init__(self, output_folder:str, **kwargs) -> None:           
+    def __init__(self, output_folder: str, **kwargs) -> None:           
         if sys.platform == "darwin":
             os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     
-        if "debug" in kwargs and kwargs["debug"]:
-            self.debug = kwargs["debug"]
-        else:
-            self.debug = False
-
+        self.debug = bool(kwargs.get("debug", False))
         self.output_folder = output_folder
         self.execution_counter = 0
         self.driving_agent_name = kwargs["driving_agent_name"]
 
         self.logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
         
-    def visualize_the_scenario(self, scenario, planning_problem_set, output_folder):
+    def visualize_the_scenario(self, scenario, planning_problem_set, output_folder: str) -> None:
         """
-        Visualize and plot the initial scenario
+        Plot the scenario with its planning problems (one color per vehicle, labelled with id and initial
+        velocity) into output_folder/scenario.png.
         """
-        from commonroad.planning.planning_problem import PlanningProblem
-        import matplotlib.pyplot as plt
+        import matplotlib
         import matplotlib.colors as colors
+        import matplotlib.pyplot as plt
+        from commonroad.visualization.mp_renderer import MPRenderer
 
         # Sort the planning problems by their ID to ensure consistent coloring
         planning_problems = sorted(planning_problem_set.planning_problem_dict.values(), key = lambda pp : pp.planning_problem_id)
 
         # Get a unique color for each planning problem
-        unique_colors = _get_cmap(len(planning_problems), 'rainbow')
+        color_map = matplotlib.colormaps.get_cmap("rainbow").resampled(max(len(planning_problems), 1))
 
         # Initialize the renderer
         rnd = MPRenderer(figsize = (20, 10))
@@ -380,20 +369,15 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         
         # Iterate over the planning problems and draw them with unique colors
         for i, planning_problem in enumerate(planning_problems):
-            planning_problem: PlanningProblem
+            color = colors.to_hex(color_map(i))
 
-            # Set renderer draw params
-            rnd.draw_params.planning_problem.initial_state.state.facecolor = colors.to_hex(unique_colors(i))
+            rnd.draw_params.planning_problem.initial_state.state.facecolor = color
             rnd.draw_params.planning_problem.initial_state.state.draw_arrow = True
             rnd.draw_params.planning_problem.initial_state.state.radius = 0.5
-            
-            # Add labels
-            rnd.draw_params.planning_problem.initial_state.label= f"{planning_problem.planning_problem_id} - {planning_problem.initial_state.velocity}"
-
-            rnd.draw_params.planning_problem.goal_region.shape.facecolor = colors.to_hex(unique_colors(i))
+            rnd.draw_params.planning_problem.initial_state.label = f"{planning_problem.planning_problem_id} - {planning_problem.initial_state.velocity}"
+            rnd.draw_params.planning_problem.goal_region.shape.facecolor = color
             rnd.draw_params.planning_problem.goal_region.shape.opacity = 0.5
-                
-            # Plot the planning problem
+
             planning_problem.draw(rnd)
 
         # Render the plot
@@ -401,14 +385,15 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
 
         # Save the plot to a file
         plt.savefig(f"{output_folder}/scenario.png", format = 'png', dpi = 500, bbox_inches = 'tight')
+        plt.close("all")
 
     def execute(self, scenario, planning_problem_set, progress_bar_manager = None, on_step = None) -> Simulation:
         """
-        Return the original scenario, the simulated scenario, and additional information about the AVs
+        Simulate the scenario in a new folder <output_folder>/<generation id>/ (scenario file in scenario/, logs in
+        logs/). Returns the simulation, or None if it failed.
         """
-
-        # Increment the execution counter for each execution
-        self.execution_counter = self.execution_counter + 1 
+        # Increment the execution counter
+        self.execution_counter += 1
 
         # Create the folders for the execution using the generation_id
         execution_folder_name = str(scenario.generation_id).rjust(5, '0')
@@ -429,10 +414,8 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         
         # Load the default simulation configuration from the Frenetix Motion Planner configuration module
         config_sim = PatchedConfigurationBuilder.build_sim_configuration(scenario_name, scenario_folder, root_path = FRENETIX_ROOT, module = "simulation")
-
         # Enable multi-agent simulation
         config_sim.simulation.use_multiagent = True
-        
         # Make sure we write the logs in the right folder
         config_sim.simulation.log_path = logs_folder
         
@@ -446,12 +429,13 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
             config_sim.visualization.save_gif = True
 
         # Iterate over scenario's planning problems
+        replanning_frequency = config_planner.planning.replanning_frequency
         for planning_problem in planning_problem_set.planning_problem_dict.values():
             original_initial_time = planning_problem.initial_state.time_step
             adjusted_initial_time = original_initial_time
            
             # Increment vehicle initial timestep until it matches the planner replanning frequency
-            while adjusted_initial_time % config_planner.planning.replanning_frequency != 0:
+            while adjusted_initial_time % replanning_frequency != 0:
                 adjusted_initial_time = adjusted_initial_time + 1
 
             # If the initial timestep is modified, adjust it and log it
@@ -460,48 +444,38 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
                 planning_problem.initial_state.time_step = adjusted_initial_time
 
         # Write the scenario to a CommonRoad file
-        crfw = CommonRoadFileWriter(
-            scenario,
-            planning_problem_set,
-            author = "EVITA",
-            decimal_precision = 10)
-        crfw.write_to_file(scenario_file_name)
+        CommonRoadFileWriter(scenario, planning_problem_set, author = "EVITA", decimal_precision = 10).write_to_file(scenario_file_name)
+        scenario, planning_problem_set = CommonRoadFileReader(scenario_file_name).open()
 
         # To enforce consistency we re-read what we just wrote to file
         crfr = CommonRoadFileReader(scenario_file_name)
         scenario, planning_problem_set = crfr.open()
 
-        # Plot the scenario for reference
-        self.visualize_the_scenario(scenario, planning_problem_set, scenario_folder)
+        if self.debug:
+            # Plot the scenario for reference
+            self.visualize_the_scenario(scenario, planning_problem_set, scenario_folder)
 
         # All the configurations used for this execution will be stored in simulation.db, table meta
         simulation = None
-
         try:
             # If any agent fails to start, this will trigger an exception, and stop the simulation
             simulation = EVITASimulation(config_sim, config_planner, progress_bar_manager, on_step)
             simulation.run_simulation()
-        except Exception as e:
-            error_traceback = traceback.format_exc()
-            current_time = datetime.now().strftime('%H:%M:%S')
-            
-            # Check if simulation is not None before trying to access current_timestep
-            if simulation:
+        except Exception:
+            if simulation is not None:
                 current_timestep = str(simulation.global_timestep) 
             else:
                 current_timestep = "N/A"
 
-            print("Error time: " + str(current_time) + " ; " + "In Scenario Timestep: " + current_timestep + " ; " + "CODE ERROR: " + str(e) + error_traceback + "\n\n\n\n")
+            self.logger.critical(f"Simulation of scenario {scenario_name} failed at time step {current_timestep}:\n{traceback.format_exc()}")
             
             return None
         finally:
             if simulation is not None:
                 try:
-                    # close sim_logger
                     simulation.sim_logger.con.close()
-                    # close child processes
                     simulation.close_processes()
-                except:
+                except Exception:
                     pass
-        
+
         return simulation

@@ -1,43 +1,69 @@
-import click
-import logging
-import sys
-import importlib
-import time
+"""
+Orchestrator of the generators run outside NSGA-II (DoppelTest, Random, MaxInteractions, MaxDanger): the main
+loop generates scenarios, validates them, executes the valid ones with FrenetiX, evaluates them, and gives the
+results back to the generator, until the time budget is used up.
+
+Budget rules (the same for every generator): generation, execution and evaluation count; validation, debug plots
+and checkpoints do not (the budget is paused).
+"""
 import os
-import enlighten # Progress bar
 import csv
+import sys
+import time
+import click
 import shutil
-import traceback
+import logging
 import tempfile
+import traceback
+import importlib
+from typing import Dict, List, Set, Tuple
 
-from typing import List, Tuple, Set
-
-
-from .utils import EVITA_MAIN_LOGGER_NAME, ROOT_DIR, RESULTS_FOLDER, LANELET_EXTENSION, Budget, extend_scenario_after_goal_areas, time_shift, simulation_folders, get_progress_bar_manager
-
-from .interfaces import AbstractScenarioGenerator, AbstractScenarioExecutor, AbstractScenarioEvaluator
-from .validator import ScenarioValidator
-from .config import ValidationConfig
-from .data_analysis import generate_report
+from commonroad.common.file_reader import CommonRoadFileReader
+from commonroad.planning.goal import Interval
+from commonroad.planning.planning_problem import PlanningProblemSet
+from commonroad.scenario.scenario import Scenario
 
 from cr_scenario_handler.simulation.agent import AgentStatus
 
-from commonroad.planning.goal import Interval
-from commonroad.scenario.scenario import Scenario
-from commonroad.planning.planning_problem import PlanningProblemSet
-from commonroad.common.file_reader import CommonRoadFileReader
+from .config import ValidationConfig
+from .data_analysis import generate_report
+from .interfaces import AbstractScenarioEvaluator, AbstractScenarioExecutor, AbstractScenarioGenerator
+from .utils import (EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, Budget,
+                    extend_scenario_after_goal_areas, get_progress_bar_manager, simulation_folders, time_shift)
+from .validator import ScenarioValidator
 
+# Executor and evaluator used by every generator
+SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS = "evita.executors.frenetix_executor", "FrenetixScenarioExecution"
+SCENARIO_EVALUATOR_MODULE, SCENARIO_EVALUATOR_CLASS = "evita.evaluators.frenetix_evaluator", "FrenetixScenarioEvaluator"
+
+# Validation messages that mark scenarios not executed for reasons other than validity
+TIMEOUT_MESSAGE = "Timeout is over"
+EXECUTION_ERROR_MESSAGE = "Error during the simulation execution"
+
+# Number of scenarios generated so far in this process, used to give each scenario a unique generation id
 TOTAL_GENERATED_SCENARIOS = 0
 
-def backup_debug(_output_folder, _debug_folder, _scenario, _logger):
+# ========== Helpers ==========
+
+def _load_class(path: str, module_name: str, class_name: str, logger: logging.Logger):
     """
-    In case of a critical error during the execution or evaluation of a scenario, we want to move the folder of this scenario into a debug folder for later analysis
+    Class `class_name` of module `module_name`, after adding `path` to the import path.
+    """
+    logger.debug(f"Add {path} to the import path; import {class_name} from {module_name}")
+
+    if path not in sys.path:
+        sys.path.append(path)
+    
+    return getattr(importlib.import_module(module_name), class_name)
+
+def backup_debug(_output_folder: str, _debug_folder: str, _scenario: Scenario, _logger: logging.Logger) -> None:
+    """
+    Move the execution folder of a scenario that failed during execution or evaluation into the debug folder, so the data analysis does not pick up broken data.
     """
     # We need to clean up this folder to avoid the data analysis to pick broken data up!
     _logger.critical(f"Moving problematic folder of invalid scenario {_scenario.generation_id} into debug folder")
     
-    execution_folder_name = str(_scenario.generation_id).rjust(5, '0')
-    execution_folder = os.path.join(_output_folder, execution_folder_name)
+    execution_folder = os.path.join(_output_folder, str(_scenario.generation_id).rjust(5, '0'))
     
     if os.path.exists(execution_folder):
         os.makedirs(_debug_folder, exist_ok=True)
@@ -45,17 +71,9 @@ def backup_debug(_output_folder, _debug_folder, _scenario, _logger):
     else:
         _logger.critical(f"Folder {execution_folder} does not exist")
 
-def _get_cmap(n, name='hsv'):
+def debug_plot_planning_problem_to_file(scenario: Scenario, planning_problem, output_file: str) -> None:
     """
-    Returns a function that maps each index in 0, 1, ..., n - 1 to a distinct
-    RGB color; the keyword argument name must be a standard mpl colormap name
-    """
-    import matplotlib.pyplot as plt
-    return plt.cm.get_cmap(name, n)
-
-def debug_plot_planning_problem_to_file(scenario, planning_problem, output_file):
-    """
-    Visualize and plot the initial scenario for a single planning problem
+    Plot the road network with one planning problem into a PNG file.
     """
     import matplotlib.pyplot as plt
     from commonroad.visualization.mp_renderer import MPRenderer
@@ -76,22 +94,28 @@ def debug_plot_planning_problem_to_file(scenario, planning_problem, output_file)
 
     # Add title
     plt.title(f"Agent {planning_problem.planning_problem_id}")
-
     plt.savefig(f"{output_file}", format = 'png', dpi = 500, bbox_inches = 'tight')
+    plt.close("all")
 
 def debug_plot_to_file(scenario, planning_problem_set, output_file):
     """
-    Visualize and plot the initial scenario
+    Plot the road network with all planning problems (one color per vehicle) into a PNG file
+    The title shows the validation result.
     """
 
-    import matplotlib.pyplot as plt
+    import matplotlib
     import matplotlib.colors as colors
+    import matplotlib.pyplot as plt
     from commonroad.visualization.mp_renderer import MPRenderer
 
     # Sort planning problems by ID
-    planning_problems = sorted(planning_problem_set.planning_problem_dict.values(), key = lambda pp : pp.planning_problem_id)
+    if planning_problem_set:
+        planning_problem_dict = planning_problems = sorted(planning_problem_set.planning_problem_dict.values(), key = lambda pp: pp.planning_problem_id)
+    else:
+        planning_problem_dict = []
+
     # Get a list of unique colors for each planning problem
-    unique_colors = _get_cmap(len(planning_problems), 'rainbow')
+    color_map = matplotlib.colormaps.get_cmap("rainbow").resampled(max(len(planning_problems), 1))
 
     # Initialize the renderer
     rnd = MPRenderer(figsize = (20, 10))
@@ -105,41 +129,46 @@ def debug_plot_to_file(scenario, planning_problem_set, output_file):
     
     # Iterate over each planning problem
     for i, planning_problem in enumerate(planning_problems):
-        # Set renderer draw params
-        rnd.draw_params.planning_problem.initial_state.state.facecolor = colors.to_hex(unique_colors(i))
+        color = colors.to_hex(color_map(i))
+        rnd.draw_params.planning_problem.initial_state.state.facecolor = color
         rnd.draw_params.planning_problem.initial_state.state.draw_arrow = True
         rnd.draw_params.planning_problem.initial_state.state.radius = 0.5
         rnd.draw_params.planning_problem.initial_state.label = f"{planning_problem.planning_problem_id}"
-
-        rnd.draw_params.planning_problem.goal_region.shape.facecolor = colors.to_hex(unique_colors(i))
+        rnd.draw_params.planning_problem.goal_region.shape.facecolor = color
         rnd.draw_params.planning_problem.goal_region.shape.opacity = 0.5
-            
+
         planning_problem.draw(rnd)
 
     # Render the plot
     rnd.render()
 
-    # Add title
-    plt.title(f"Valid?: {scenario.is_valid}" + "" if scenario.is_valid else scenario.validation_message)
-
-    plt.savefig(f"{output_file}", format = 'png', dpi = 500, bbox_inches = 'tight')
+    is_valid = getattr(scenario, "is_valid", None)
+    plt.title(f"Valid?: {is_valid}" + ("" if is_valid else f" {getattr(scenario, 'validation_message', '')}"))
+    plt.savefig(output_file, format = 'png', dpi = 500, bbox_inches = 'tight')
+    plt.close("all")
 
 def ensure_generation_id(scenario_tuples: List[Tuple[Scenario, PlanningProblemSet]]) -> None:
     """
-    Ensure that all the scenarios have a generation_id attribute
-    This is required for the debug plots and for the checkpointing system to work properly
+    Give each scenario a unique `generation_id` (used for folder names, debug plots and checkpoints).
     """
     global TOTAL_GENERATED_SCENARIOS
-
-    # Assign a unique generation_id to each scenario in the list
-    for scenario, planning_problem_set in scenario_tuples:
-        TOTAL_GENERATED_SCENARIOS = TOTAL_GENERATED_SCENARIOS + 1
-        # Tag the scenario with a generation ID
+    for scenario, _ in scenario_tuples:
+        TOTAL_GENERATED_SCENARIOS += 1
         setattr(scenario, "generation_id", TOTAL_GENERATED_SCENARIOS)
+
+def write_performance_file(output_file: str, all_scenarios: int, valid_scenarios: int, invalid_scenarios: int, total_generation_time: float, skipped_scenarios: int = 0) -> None:
+    """
+    Write the generation counters: all, valid (executed and evaluated), invalid, generation time (seconds), and skipped (generated but not executed because the budget ran out).
+    """
+    with open(output_file, "w", newline = "") as csvfile:
+        csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
+        csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time", "skipped_scenarios"])
+        csv_writer.writerow([all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios])
 
 def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid_scenarios: int, invalid_scenarios: int, total_generation_time: int) -> None:
     """
-    Link all the scenario folders generated so far + compute the results for the generation (aka csv files) to the checkpoint folder.
+    Checkpoint the run: list the scenario folders produced so far, write the performance counters, and generate the
+    report from the data available at this point, into checkpoints/<id>.
     """
     logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
@@ -163,11 +192,7 @@ def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid
             csv_writer.writerow([str(scenario_id), str(scenario_file), str(simulation_db)])
 
     # Log performance metrics in the checkpoint folder
-    performance_file = os.path.join(checkpoint_folder, "performance.csv")
-    with open(performance_file, "w", newline = "") as csvfile:
-        csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"])
-        csv_writer.writerow([str(all_scenarios), str(valid_scenarios), str(invalid_scenarios), str(total_generation_time)])
+    write_performance_file(os.path.join(checkpoint_folder, "performance.csv"), all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios)
 
     # Generate the usual report in the checkpoint folder using whatever data is available at this point
     generate_report(output_folder, checkpoint_folder)
@@ -327,16 +352,15 @@ def replay(ctx, scenario_file, driving_agent_name):
 @click.option("--checkpoint-every", type = int, required = False, multiple = False, default = 3600) 
 @click.pass_context 
 def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scenario_generator_class: str, map_file: str, driving_agent_name: str, time_budget: float, force_max_duration: int, checkpoint_every: int):
-
+    """
+    Run a scenario generator on a map for the given time budget (seconds), executing and evaluating its scenarios.
+    """
     debug = ctx.obj["debug"]
-    
-    # Initialize the set of checkpoints
-    checkpoints: Set[int] = set()
-    
     # Get the main logger and log the start of the execution
     logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
     logger.info("Start Execution")
-
+    
+    
     # Generate the Unique ID of this Execution
     # Create the unique folder that will host the results of this execution using the test generator data and a timestamp as ID
     timestamp_id = time.time() * 100000000 // 1000000
@@ -351,76 +375,33 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     all_scenarios = 0
     valid_scenarios = 0
     invalid_scenarios = 0
+    skipped_scenarios = 0
     total_generation_time = 0
+
+    # Initialize the set of checkpoints
+    checkpoints: Set[int] = set()
+
+    # Components: the generator (loaded by name), the FrenetiX executor, the evaluator and the validator
+    sg_class = _load_class(scenario_generator_path, scenario_generator_module, scenario_generator_class, logger)
+    scenario_generator: AbstractScenarioGenerator = sg_class(map_file, debug = debug, debug_folder = debug_folder)
+
+    se_class = _load_class(FRENETIX_ROOT, SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS, logger)
+    sev_class = _load_class(".", SCENARIO_EVALUATOR_MODULE, SCENARIO_EVALUATOR_CLASS, logger)
+
+    os.makedirs(output_folder, exist_ok = True)
+    os.makedirs(debug_folder, exist_ok = True)
+
+    scenario_executor: AbstractScenarioExecutor = se_class(output_folder, driving_agent_name = driving_agent_name, debug = debug)
+    scenario_evaluator: AbstractScenarioEvaluator = sev_class(output_folder)
+    scenario_validator = ScenarioValidator(ValidationConfig())
+
+    logger.info(f"Outputting results to [{output_folder}]")
+    if debug:
+        logger.info(f"Outputting debug data to {debug_folder}")
 
     #
     # Implement the main loop
     #
-
-    # Load the Scenario Generator by dynamically loading it
-    scenario_generator: AbstractScenarioGenerator
-
-    # Log the loading of the scenario generator
-    logger.debug(f"Add scenario generator to path {scenario_generator_path}")
-    sys.path.append(scenario_generator_path)
-    logger.debug(f"Try to import {scenario_generator_class} from {scenario_generator_module}")
-    sg_module = importlib.import_module(scenario_generator_module)
-    sg_class = getattr(sg_module, scenario_generator_class)
-
-    # Instantiate the Scenario Generator
-    commoroad_scenario_seed_file = map_file
-
-    # Set the debug and debug_folder parameters to the scenario generator
-    kwargs = {
-        "debug": debug,
-        "debug_folder": debug_folder
-    }
-    # Instantiate the scenario generator with the map file and any debug settings
-    scenario_generator = sg_class(commoroad_scenario_seed_file, **kwargs)
-
-    # Load the Scenario Executor
-    scenario_executor_path = os.path.join(ROOT_DIR, "Frenetix-Motion-Planner")
-    scenario_executor_module = "evita.executors.frenetix_executor"
-    scenario_executor_class = "FrenetixScenarioExecution"
-
-    # Log the loading of the scenario executor
-    logger.debug(f"Add scenario execution to path {scenario_executor_path}")
-    sys.path.append(scenario_executor_path)
-    logger.debug(f"Try to import {scenario_executor_class} from {scenario_executor_module}")
-    se_module = importlib.import_module(scenario_executor_module)
-    se_class = getattr(se_module, scenario_executor_class)
-
-    # Load the Scenario Evaluator
-    scenario_evaluator_path = "."
-    scenario_evaluator_module = "evita.evaluators.frenetix_evaluator"
-    scenario_evaluator_class = "FrenetixScenarioEvaluator"
-
-    # Log the loading of the scenario evaluator
-    logger.debug(f"Add scenario evaluator to path {scenario_evaluator_path}")
-    sys.path.append(scenario_evaluator_path)
-    logger.debug(f"Try to import {scenario_evaluator_class} from {scenario_evaluator_module}")
-    sev_module = importlib.import_module(scenario_evaluator_module)
-    sev_class = getattr(sev_module, scenario_evaluator_class)
-
-    # Create the output and debug folders
-    os.makedirs(output_folder, exist_ok = True)
-    os.makedirs(debug_folder, exist_ok = True)
-    
-    # Instantiate the scenario executor, evaluator and validator
-    scenario_executor: AbstractScenarioExecutor
-    scenario_executor = se_class(output_folder, driving_agent_name = driving_agent_name, debug = debug)
-
-    scenario_evaluator: AbstractScenarioEvaluator
-    scenario_evaluator = sev_class(output_folder)
-
-    scenario_validator_configuration = ValidationConfig()
-    scenario_validator = ScenarioValidator(scenario_validator_configuration)
-
-    # Log the output folder and debug folder
-    logger.info(f"Outputting results to [{output_folder}]")
-
-    if debug:
-        logger.info(f"Outputting debug data to {debug_folder}")
     
     # Copy the base scenario file in the output folder
     map_file_output_folder = os.path.join(output_folder, os.path.basename(map_file))
@@ -478,32 +459,34 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
         # Notify that some "real time passed since the last time"
         update_main_progress_bar()
 
+        # ===== Validation and debug plots (not counted) =====
+
         # Pause the budget while we validate and plot the scenarios
         budget.pause()
+        try:
+            # Setup the progress bar for the scenario validation
+            scenario_validation_bar = progress_bar_manager.counter(total = len(scenario_tuples), desc = "Scenario Validation", unit = "scenario", color = "blue", leave = False)
 
-        # Setup the progress bar for the scenario validation
-        scenario_validation_bar = progress_bar_manager.counter(total = len(scenario_tuples), desc = "Scenario Validation", unit = "scenario", color = "blue", leave = False)
+            # Validate the generated scenarios
+            # This will add the attribute: is_valid to the scenario object
+            for scenario_tuple in scenario_tuples:
+                scenario_validator.validate_all([scenario_tuple])
+                scenario_validation_bar.update()
 
-        # Validate the generated scenarios
-        # This will add the attribute: is_valid to the scenario object
-        for scenario, planning_problem_set in scenario_tuples:
-            scenario_validator.validate(scenario, planning_problem_set)
-            scenario_validation_bar.update()
+            # Close the scenario validation progress bar
+            scenario_validation_bar.close(clear = True)
 
-        # Close the scenario validation progress bar
-        scenario_validation_bar.close(clear = True)
+            # Plot scenarios if debug is enabled
+            if debug:
+                for scenario, planning_problem_set in scenario_tuples:
+                    debug_plot_file = os.path.join(debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
+                    debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
+        finally:
+            # Resume the budget for the execution and evaluation of the scenarios
+            budget.resume()
 
-        # Plot scenarios if debug is enabled
-        if debug:
-            for scenario, planning_problem_set in scenario_tuples:
-                debug_plot_file = os.path.join(debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
-                debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
-
-        # Resume the budget for the execution and evaluation of the scenarios
-        budget.resume()
-
-        # Try to Execute them
-        simulation_data = []
+        # ===== Execution and evaluation of each scenario =====
+        simulation_data: List[Dict] = []
 
         # Iterate over each scenario and planning problem set tuple
         for scenario, planning_problem_set in scenario_tuples:
@@ -522,24 +505,26 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
             if budget.is_over():
                 logger.critical("Timeout is over. Force the current scenario to be invalid")
                 scenario.is_valid = False
-                scenario.validation_message = "Timeout is over"
+                scenario.validation_message = TIMEOUT_MESSAGE
                 continue
             
             # Execution
+            simulation = None
             if scenario.is_valid:
                 # In some cases, the scenario is valid, but the execution fails because of some critical error
                 try:
                     # Log info of the scenario that is going to be executed
                     logger.info(f"Executing scenario: {scenario.generation_id} - {budget.get_remaining_real_time()}")
-                    [logger.debug(f"- {pp.planning_problem_id} - {pp.initial_state.position} - {pp.initial_state.velocity} - planned start at {pp.initial_state.time_step}") for pp in planning_problem_set.planning_problem_dict.values()]
+                    for pp in planning_problem_set.planning_problem_dict.values():
+                        logger.debug(f"- {pp.planning_problem_id} - {pp.initial_state.position} - {pp.initial_state.velocity} - planned start at {pp.initial_state.time_step}")
 
                     # Extend the scenario by adding some road AFTER the goal areas
                     # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
                     extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
 
                     # Time Shift so at least one agent starts at time_step = 0
-                    time_shifted_planning_problem_set = planning_problem_set
                     # time_shifted_planning_problem_set = time_shift(scenario, planning_problem_set) # ===== For now all planning problems are already starting at time_step = 0, so no need to shift them =====
+                    time_shifted_planning_problem_set = planning_problem_set
 
                     # Make sure we execute the extended_scenario, not the original one
                     # Both will be available afterwards, but the original shall be used for evolution
@@ -547,7 +532,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
                     if simulation is None:
                         scenario.is_valid = False
-                        scenario.validation_message = "Error during the simulation execution"
+                        scenario.validation_message = EXECUTION_ERROR_MESSAGE
 
                         logger.critical(f"Scenario {scenario.generation_id} failed during simulation execution. Continuing with next scenario.")
                     else:
@@ -566,11 +551,12 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     logger.critical( "=" * ( len(msg) + 2) )
 
                     scenario.is_valid = False
-                    scenario.validation_message = "Error during the simulation execution"
+                    scenario.validation_message = EXECUTION_ERROR_MESSAGE
                     
                     raise e
 
             # Executed scenario evaluation
+            evaluation_data, agent_data = None, None
             if scenario.is_valid:
                 try:
                     # Log info of the scenario that is going to be evaluated
@@ -582,17 +568,14 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     finally:
                         # Perform cleanup after evaluation
                         simulation.sim_logger.con.close()
+
                         if simulation.config.simulation.multiprocessing:
                             simulation.close_processes()
 
+                    agent_data = simulation.agents
+                    
                     # Log validation completion and remaining time
                     logger.info(f"Done. - {budget.get_remaining_real_time()}")
-
-                    simulation_data.append({
-                        "individual": (scenario, planning_problem_set),
-                        "agent-data": simulation.agents,
-                        "evaluation-data": criticality_dataframe,
-                    })
                 except Exception as e:
                     msg = f" {scenario.generation_id} to be evaluated. Mark it as invalid"
                     logger.critical( "=" * ( len(msg) + 2 ) )
@@ -603,38 +586,29 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     # This should take care of those DSE error
                     logger.critical(traceback.format_exc())
 
-                    setattr(scenario, "is_valid", False)
-                    
-                    # Try to move any folder away
+                    scenario.is_valid = False
+                    evaluation_data, agent_data = None, None
                     backup_debug(output_folder, debug_folder, scenario, logger)
-                    simulation_data.append({
-                        "individual": (scenario, planning_problem_set),
-                        "agent-data": None,
-                        "evaluation-data": None,
-                    })
-            elif scenario.validation_message == "Error during the simulation execution":
+            elif scenario.validation_message == EXECUTION_ERROR_MESSAGE:
                 # If the scenario is invalid because of an issue during the simulation, move the folder away
                 backup_debug(output_folder, debug_folder, scenario, logger)
-                simulation_data.append({
-                    "individual": (scenario, planning_problem_set),
-                    "agent-data": None,
-                    "evaluation-data": None,
-                })
-            else:
-                # Invalid scenarios have no folder, no need to move it anywhere
-                simulation_data.append({
-                    "individual": (scenario, planning_problem_set),
-                    "agent-data": None,
-                    "evaluation-data": None,
-                })
 
+            # One entry per scenario, in generation order (generators match the results by position)
+            simulation_data.append({
+                "individual": (scenario, planning_problem_set),
+                "agent-data": agent_data,
+                "evaluation-data": evaluation_data
+            })
+
+        # ===== Counters =====
         # Iterate over the scenarios and count how many of them are valid and invalid
-        for scenario, planning_problem_set in scenario_tuples:
-            # Scenarios that were not executed because of a timeout
-            if scenario.is_valid or scenario.validation_message == "Timeout is over":
-                valid_scenarios = valid_scenarios + 1
+        for scenario, _ in scenario_tuples:
+            if scenario.is_valid:
+                valid_scenarios += 1
+            elif getattr(scenario, "validation_message", None) == TIMEOUT_MESSAGE:
+                skipped_scenarios += 1
             else:
-                invalid_scenarios = invalid_scenarios + 1
+                invalid_scenarios += 1
 
         # If there's still some time, inform the generator about newly executed scenario to evaluate the scenarios we managed to simulate
         # If the budget is over, there's no point to ask the algorithm to evaluate the population
@@ -643,31 +617,29 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
         # At this point, we have completed a generation epoch, we can check whether we need to checkpoint it
         elapsed_time = budget.get_elapsed()
-        checkpoint_id = int(elapsed_time / checkpoint_every)
+        if checkpoint_every:
+            checkpoint_id = int(elapsed_time / checkpoint_every)
+        else:
+            checkpoint_id = 0
+        
         if checkpoint_id > 0 and checkpoint_id not in checkpoints:
             budget.pause()
             try:
                 checkpoint(checkpoint_id, output_folder, all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time)
-                checkpoints.add(checkpoint_id)
             except Exception as e:
                 logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
                 raise e
-
-            budget.resume()
+            finally:
+                budget.resume()
 
     logger.info(f"Execution of {output_folder} is over ")
 
-    # Log performance metrics right away - This is difficult/impossible to compute only looking at the simulation dbs
-    logger.info("Generation Performance Metrics")
-    performance_file = os.path.join(output_folder, "performance.csv")
-    with open(performance_file, "w", newline = "") as csvfile:
-        csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"])
-        csv_writer.writerow([str(all_scenarios), str(valid_scenarios), str(invalid_scenarios), str(total_generation_time)])
+    # Performance counters: they cannot be reconstructed from the simulation databases
+    write_performance_file(os.path.join(output_folder, "performance.csv"), all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios)
 
     logger.info("Saved Performance Metrics")
+    
     update_main_progress_bar()
     progress_bar_manager.stop()
 
-    # Now analysize the data collected so far and output to the scenario folder
     generate_report(output_folder)

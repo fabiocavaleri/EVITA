@@ -1,40 +1,37 @@
+"""
+DoppelTest baseline (Huai et al., ICSE 2023) on CommonRoad maps.
+
+DoppelTest's own genetic algorithm (NSGA-II from DEAP, with its scenario representation and operators) generates
+scenarios; each is converted into a CommonRoad scenario (one planning problem per AD agent) and executed with FrenetiX.
+The fitness is computed from the FrenetiX evaluation, as close as possible to DoppelTest's four objectives.
+"""
 import logging
-import random
-import enlighten
 import traceback
-
-from copy import deepcopy
-
-from typing import Optional, List, Dict, Tuple
-
-##### DoppelTest imports from main_ga.py
-from copy import deepcopy
-from random import random, sample, shuffle, randint
-
-from DoppelTest.config import MAX_ADC_COUNT, MAX_PD_COUNT
-
-from DoppelTest.framework.scenario import Scenario
-from DoppelTest.framework.scenario.tc_config import TCSection
-from DoppelTest.framework.scenario.pd_agents import PDAgent, PDSection
-from DoppelTest.framework.scenario.ad_agents import ADAgent, ADSection
-from DoppelTest.hdmap.MapParser import MapParser
-from deap import base, tools, algorithms
+import enlighten
 import numpy as np
 
-###
+from copy import deepcopy
+from random import randint, random, sample, shuffle
+from typing import Dict, List, Optional, Tuple
+from deap import algorithms, base, tools
 
-from commonroad.planning.planning_problem import PlanningProblemSet, PlanningProblem, InitialState
+from commonroad.planning.planning_problem import InitialState, PlanningProblem, PlanningProblemSet
 from commonroad.scenario.lanelet import Lanelet
 
-from ..interfaces import AbstractScenarioGenerator
+from DoppelTest.config import MAX_ADC_COUNT, MAX_PD_COUNT
+from DoppelTest.framework.scenario import Scenario
+from DoppelTest.framework.scenario.ad_agents import ADAgent, ADSection
+from DoppelTest.framework.scenario.pd_agents import PDAgent, PDSection
+from DoppelTest.framework.scenario.tc_config import TCSection
+from DoppelTest.hdmap.MapParser import MapParser
 
 from . import utils as scenario_generation_utils
-from ..utils import EVITA_MAIN_LOGGER_NAME
+from ..interfaces import AbstractScenarioGenerator
 from ..roads import identify_segments
+from ..utils import EVITA_MAIN_LOGGER_NAME
+from ..validator import ScenarioValidator, ValidationConfig
 
-from ..validator import ValidationConfig, ScenarioValidator
-
-# MUTATION OPERATOR
+# ========== DoppelTest's genetic operators (from DoppelTest's main_ga.py, kept as published) ==========
 
 def mut_ad_section(ind: ADSection):
     """
@@ -115,10 +112,13 @@ def mut_pd_section(ind: PDSection):
     return ind
 
 def mut_tc_section(ind: TCSection):
-
-    # If there are no Traffic Controllers, return ind    
+    """
+    Mutation operator for the TCSection (traffic lights): new initial configuration, final configuration or green
+    duration. As published, the last two cases return a new random section instead of the mutated one.
+    """
+    # No traffic lights on the map: nothing to mutate (check added by EVITA)
     ma = MapParser.get_instance()
-    if list(ma.get_signals()) == 0:
+    if len(list(ma.get_signals())) == 0:
         return ind
 
     mut_pb = random()
@@ -135,6 +135,9 @@ def mut_tc_section(ind: TCSection):
     return TCSection.get_one()
 
 def mut_scenario(ind: Scenario):
+    """
+    Mutate one of the three sections of a DoppelTest scenario, chosen with equal probability.
+    """
     mut_pb = random()
 
     # Depending on the random probability, perform mutation on the ADSection, PDSection, or TCSection of the scenario
@@ -173,7 +176,6 @@ def cx_ad_section(ind1: ADSection, ind2: ADSection):
                     adc1.start_s = adc2.start_s
                 else:
                     adc1.start_t = adc2.start_t
-                mutated = True
     if cxed:
         ind1.adjust_time()
         return ind1, ind2
@@ -210,6 +212,9 @@ def cx_ad_section(ind1: ADSection, ind2: ADSection):
     return result1, ind2
 
 def cx_pd_section(ind1: PDSection, ind2: PDSection):
+    """
+    Crossover operator for the PDSection: swap the sections, or build two sections from random samples of both.
+    """
     cx_pb = random()
 
     # Depending on the random probability, perform crossover on the PDSection of the scenarios
@@ -224,6 +229,9 @@ def cx_pd_section(ind1: PDSection, ind2: PDSection):
     return result1, result2
 
 def cx_tc_section(ind1: TCSection, ind2: TCSection):
+    """
+    Crossover operator for the TCSection: swap the sections, or their initial or final configuration or green duration.
+    """
     cx_pb = random()
 
     # Depending on the random probability, perform crossover on the initial configuration, final configuration, or duration of the traffic controller section
@@ -239,6 +247,9 @@ def cx_tc_section(ind1: TCSection, ind2: TCSection):
     return ind1, ind2
 
 def cx_scenario(ind1: Scenario, ind2: Scenario):
+    """
+    Crossover of two DoppelTest scenarios on one of their sections (AD 60%, PD 20%, TC 20%).
+    """
     cx_pb = random()
 
     # Depending on the random probability, perform crossover on the ADSection, PDSection, or TCSection of the scenarios
@@ -251,17 +262,20 @@ def cx_scenario(ind1: Scenario, ind2: Scenario):
 
     return ind1, ind2
 
+# ========== Generator ==========
+
 class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
-    
-    # Maybe there's a way to convert the scenarios to MAPS so DoppelTest can use it.
-    # Since we do not use APOLLO, Maybe it is better to tweak the MapParser and provide whatever info are needed for scenario generation
-    # from commonroad instead
-    # https://github.com/lgsvl/apollo-simulator-map/issues/1
+    """
+    DoppelTest's genetic algorithm (population POP_SIZE, OFF_SIZE offspring per generation, crossover probability CXPB, mutation probability MUTPB, NSGA-II selection) on a CommonRoad map.
+    generate() returns the individuals to evaluate (the initial population, then each generation's offspring) as CommonRoad scenarios;
+    evaluate() receives their results in the same order.
+    """
 
     def __init__(self, commonroad_scenario_seed_file: Optional[str] = None, **kwargs) -> None:
         super(DoppelTestScenarioGenerator, self).__init__(commonroad_scenario_seed_file, **kwargs)
         
-        assert commonroad_scenario_seed_file, "DoppelTestScenarioGenerator Generation requires a Seed File!"
+        if not commonroad_scenario_seed_file:
+            raise ValueError("DoppelTestScenarioGenerator Generation requires a Seed File!")
 
         # Setup the logger (same as orchestrator.py)
         self.logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)        
@@ -292,6 +306,7 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
         self.population = None # Current population
         self.offspring = None # Next generation
         self.hof = None
+        self.individuals_to_evaluate = []
 
         self.toolbox = base.Toolbox()
 
@@ -299,7 +314,7 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
         self.toolbox.register("mutate", mut_scenario)
         self.toolbox.register("select", tools.selNSGA2)
     
-        self.stats = tools.Statistics(key=lambda ind: ind.fitness.values)
+        self.stats = tools.Statistics(key = lambda ind: ind.fitness.values)
         self.stats.register("avg", np.mean, axis = 0)
         self.stats.register("max", np.max, axis = 0)
         self.stats.register("min", np.min, axis = 0)
@@ -307,7 +322,13 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
         self.logbook.header = 'gen', 'avg', 'max', 'min'
 
     def toCommonRoadFormat(self, individual) -> Tuple:
-        
+        """
+        CommonRoad (scenario, planning problem set) of a DoppelTest individual: one planning problem per AD agent,
+        starting at rest at distance start_s along the first lanelet of its routing, at time start_t, with the goal
+        area at the end of the last lanelet of its routing.
+        """
+        config = self.scenario_generator_configuration
+
         # Initialize a new CommonRoad scenario by deep copying the base scenario, and an empty list to hold the planning problems for each agent in the individual scenario
         scenario = deepcopy(self.base_scenario)
         planning_problem_list = list()
@@ -315,13 +336,11 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
         # Iterate over each agent in the ADSection
         for id, agent in enumerate(individual.ad_section.adcs):
             agent: ADAgent
-            initial_lanelet: Lanelet
-            initial_lanelet_id = agent.routing[0] # The first lanelet in the agent's routing is considered the initial lanelet for the agent's starting position
                 
             try:
                 # Find the initial lanelet in the CommonRoad scenario's lanelet network using the initial lanelet ID
                 # Interpolate the agent's starting position along that lanelet based on the agent's start_s value
-                initial_lanelet = scenario.lanelet_network.find_lanelet_by_id(initial_lanelet_id)
+                initial_lanelet = scenario.lanelet_network.find_lanelet_by_id(agent.routing[0])
                 initial_position = initial_lanelet.interpolate_position(agent.start_s)[0]
                 
                 # Determine the orientation of the agent based on its initial lanelet and position
@@ -335,84 +354,68 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
                     velocity = 0.0,
                     acceleration = 0.0,
                     yaw_rate = 0.0,
-                    slip_angle = 0.0
-                )
+                    slip_angle = 0.0)
 
                 # Determine the goal lanelet and generate a goal region for the agent based on its routing
-                goal_lanelet_id = agent.routing[-1]
-                goal_lanelet = scenario.lanelet_network.find_lanelet_by_id(goal_lanelet_id)
-
-                goal_area = scenario_generation_utils.get_possible_goal_for_lanelet(self.scenario_generator_configuration, goal_lanelet)
-                goal_region = scenario_generation_utils.generate_goal(self.scenario_generator_configuration, goal_area)
+                goal_lanelet = scenario.lanelet_network.find_lanelet_by_id(agent.routing[-1])
+                goal_area = scenario_generation_utils.get_possible_goal_for_lanelet(config, goal_lanelet)
+                goal_region = scenario_generation_utils.generate_goal(config, goal_area)
                 
-                planning_problem = PlanningProblem(self.scenario_generator_configuration.av_base_id + id, initial_state, goal_region)
-                
+                planning_problem = PlanningProblem(config.av_base_id + id, initial_state, goal_region)
                 planning_problem_list.append(planning_problem)
             except Exception as e:
                 self.logger.critical(f"Cannot generate commonroad scenario!")
-                self.logger.critical(traceback.format_exc())
-
-                def debug_plot():
-                    from commonroad.visualization.mp_renderer import MPRenderer
-                    import matplotlib.pyplot as plt
-
-                    rnd = MPRenderer()
-                    scenario.lanelet_network.draw(rnd)
-                    rnd.render()
-                    
-                    plt.plot(initial_position[0], initial_position[1], "o", color="green", zorder=100)
-                    plt.plot(
-                        [initial_position[0], initial_lanelet.center_vertices[-1][0], initial_lanelet.center_vertices[-2][0]],
-                        [initial_position[1], initial_lanelet.center_vertices[-1][1], initial_lanelet.center_vertices[-2][1]],
-                        "-", color="red", zorder=100)
-                    
-                    plt.plot(
-                        [initial_position[0], initial_lanelet.center_vertices[0][0], initial_lanelet.center_vertices[1][0]],
-                        [initial_position[1], initial_lanelet.center_vertices[0][1], initial_lanelet.center_vertices[1][1]],
-                        "-", color="blue", zorder=100)
-
-                    plt.show()
-
-                # Use this only during MANUAL debugging
-                # debug_plot()
-                
-                raise e
+                self.logger.critical(traceback.format_exc())                
+                raise
             
         # Convert the DoppelTest Scenario format into a (scenario, planning_problem_set) in CommonRoad format
         planning_problem_set = PlanningProblemSet(planning_problem_list)
 
-        return (scenario, planning_problem_set)
-        
-    def generate(self, progress_bar_manager = None) -> List:
-        """
-        Return new scenarios (in CommonRoad) format
-        """
-        # Retrieve the progress bar manager from the argument or create a new one if not provided
-        if progress_bar_manager:
-            progress_bar_manager = progress_bar_manager
-        else:
-            progress_bar_manager = enlighten.get_manager()
+        return scenario, planning_problem_set
 
+    def _to_scenario_tuples(self, individuals: List) -> List[Tuple]:
+        """
+        CommonRoad scenarios of the individuals, in the same order.
+        An individual that cannot be converted gives an invalid placeholder scenario (without planning problems), so the order is preserved.
+        """
+        scenario_tuples = []
+
+        for individual in individuals:
+            try:
+                scenario_tuples.append(self.toCommonRoadFormat(individual))
+            except Exception:
+                self.logger.critical("Cannot generate commonroad scenario, so force it to be invalid!")
+                faulty_scenario = deepcopy(self.base_scenario)
+                setattr(faulty_scenario, "is_valid", False)
+                setattr(faulty_scenario, "validation_message", "Cannot convert DoppelTest scenario to CommonRoad format!")
+                scenario_tuples.append((faulty_scenario, None))
+
+        return scenario_tuples
+        
+    def generate(self, progress_bar_manager = None, **kwargs) -> List:
+        """
+        The individuals to evaluate: the initial population at the first call, then the offspring of the current population, as CommonRoad scenarios.
+        """
         # Check if this is the first generation
         # Yes -> Generate the initial population
         # No -> Generate the offspring from the current population.
         if self.generation == 0:
             # Create a progress bar for the scenario generation process
+            progress_bar_manager = progress_bar_manager or enlighten.get_manager()
             generation_bar = progress_bar_manager.counter(total = self.POP_SIZE, desc = "Scenario Generation", unit = "scenarios", color = "green", leave = False)
 
             # Generate the Initial Population
             # Scenario class requires a Parsed Map accessed statically via MapParser
             self.logger.info(f' ====== Generating the Initial Population ====== ')
             
-            self.population = list()
+            self.population = []
             
             # Generate the initial population of scenarios using the DoppelTest framework
             for _ in range(self.POP_SIZE):
                 self.population.append(Scenario.get_conflict_one())
                 generation_bar.update()
             
-            # Print newline to separate the progress bar from subsequent log messages
-            print("\n")
+            generation_bar.close(clear = True)
 
             # Update the generation ID and chromosome ID for each scenario in the initial population
             for index, scenario in enumerate(self.population):
@@ -421,115 +424,69 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
 
             # Setup the Hall of Fame (HOF) to keep track of the best individuals found during the evolutionary process
             self.hof = tools.ParetoFront()
-
-            # Close the progress bar after the initial population generation is complete
-            generation_bar.close(clear = True)
-
-            # Setup a way to match invalid_ind with the self.population
-            self.individuals_to_evaluate = [ind for ind in self.population if not ind.fitness.valid]
-
-            # Convert DoppelTest individuals to CommonRoad scenarios
-            common_road_scenario_tuples = list()
-
-            for individual in self.individuals_to_evaluate:
-                try:
-                    common_road_scenario_tuples.append(self.toCommonRoadFormat(individual))
-                except Exception as e:
-                    self.logger.critical("Cannot generate commonraod scenario, so force it to be invalid!")
-                    
-                    # Create a dummy CommonRoad scenario to represent the invalid individual, preserving the order of individuals in the population
-                    faulty_scenario = deepcopy(self.base_scenario)
-                    setattr(faulty_scenario, "is_valid", False)
-                    setattr(faulty_scenario, "validation_message", "Cannot convert Apollo scenario to CommonRoad format!")
-                    
-                    common_road_scenario_tuples.append([faulty_scenario, None])
-
-            return common_road_scenario_tuples
+            candidates = self.population
         else:
             self.logger.info(f' ====== Generating Generation {self.generation} ====== ')
-
-            # Vary the population
             self.offspring = algorithms.varOr(self.population, self.toolbox, self.OFF_SIZE, self.CXPB, self.MUTPB)
 
-            # Update chromosome gid and cid
-            for index, scenario in enumerate(self.offspring):
-                scenario.gid = self.generation
-                scenario.cid = index
-
-            # Evaluate the individuals with an invalid fitness
-            self.individuals_to_evaluate = [individual for individual in self.offspring if not individual.fitness.valid]
+            for index, individual in enumerate(self.offspring):
+                individual.gid = self.generation
+                individual.cid = index
             
-            # Convert DoppelTest individuals to CommonRoad scenarios
-            common_road_scenario_tuples = list()
+            candidates = self.offspring
 
-            for individual in self.individuals_to_evaluate:
-                try:
-                    common_road_scenario_tuples.append(self.toCommonRoadFormat(individual))
-                except Exception as e:
-                    self.logger.critical("Cannot generate commonraod scenario, so force it to be invalid!")
+        # Only individuals without a valid fitness need evaluating
+        self.individuals_to_evaluate = [individual for individual in candidates if not individual.fitness.valid]
 
-                    # Create a dummy CommonRoad scenario to represent the invalid individual, preserving the order of individuals in the population
-                    faulty_scenario = deepcopy(self.base_scenario)
-                    setattr(faulty_scenario, "is_valid", False)
-                    setattr(faulty_scenario, "validation_message", "cannot create a common road scenario!")
-
-                    common_road_scenario_tuples.append((faulty_scenario, None))
-
-            return common_road_scenario_tuples       
+        return self._to_scenario_tuples(self.individuals_to_evaluate)   
 
     def evaluate(self, list_of_simulation_data: List[Dict]) -> None:
-        # According to the paper, DoppelTest requires four fitness functions:
-        # - fmin distance: to encourage AV instances to be in close proximity with other road traffic participants to increase the likelihood of interaction;
-        #     EVITA: We can track this
-    
-        # - fdecision: to maximize the number of decisions to be made by AV instances so that the scenario can be complex in a way that involves multiple AV instances making multiple decisions with regard to each other;
-        #     EVITA: We cannot track this because the planner does not generate high-level action labels.
+        """
+        Assign the fitness of the evaluated individuals (results in the order of generate()), update the hall of fame, and select the next population.
 
-        # - fconflict: to maximize the number of conflicting trajectories between AV instances and other road traffic participants so that a collision violation may occur if an AV instance fails to yield right-of-way;
-        #     EVITA: We can track this as we do in the scenario generation 
-
-        # - fviolation: to maximize the number of violations that occur in a scenario
-        #     EVITA: We can track collisions only. No traffic light, no stop line/sign, 
-
-        # Compute the fitness values of the simulations and assign them to the list of individuals to evaluate
+        DoppelTest's four objectives, computed from the FrenetiX evaluation:
+          - f_min_distance (minimized): smallest distance to collision (dce) reached by any vehicle;
+          - f_decisions: number of turns of all vehicles' driven trajectories (DoppelTest counts the planner's
+            decisions; FrenetiX has no high-level decision labels, so turns approximate them);
+          - f_conflict: number of AD agents whose routes conflict (as in DoppelTest);
+          - f_violations: number of vehicles that collided (FrenetiX has no traffic-rule oracles).
+        Invalid scenarios get the worst values.
+        """
         for simulation_data, individual in zip(list_of_simulation_data, self.individuals_to_evaluate):
             # Extract data about agents and metrics
-            scenario, planning_problem_set = simulation_data["individual"]
-            agent_data = simulation_data["agent-data"]
+            scenario, _ = simulation_data["individual"]
             evaluation_data = simulation_data["evaluation-data"]
 
             # Default a very bad evaluation
             individual.fitness.values = (float('inf'), float('-inf'), float('-inf'), float('-inf'))
 
-            # Compute the four metrics only if the scenario is valid        
-            if scenario.is_valid:
-                # Minimum of the minimum distance
-                f_min_distance = evaluation_data["dce"].min()
-                
-                # Count how many vehicles collided during the simulation, not the number of accidents
-                colliding_vehicles = set()
-                for (agent_id, t) in evaluation_data.index:
-                    if (evaluation_data.loc[(agent_id, t)]["has_collided"] == 1.0):
-                        colliding_vehicles.add(agent_id)
+            if not getattr(scenario, "is_valid", False) or evaluation_data is None:
+                self.logger.critical(f"Scenario {getattr(scenario, 'generation_id', '?')} is not valid")
+                continue
 
-                f_violations = len(colliding_vehicles)
-                
-                # This is the same as DoppelTest: report the amount of AV that have at least an intersection on their planned trajectories
-                f_conflict = individual.has_ad_conflict()
-                
-                # Instead of decisions, we compute how many "segments" comprise the agent final trajectory.
-                # The more segment the richer the movement
-                # We argue that this is a low level metric to capture the same high-level concept of drivers's activity
-                f_decisions = 0
-                for agent in agent_data:
-                    f_local_decisions, segments = identify_segments(agent)
-                    f_decisions = f_decisions + f_local_decisions
+            # Compute the four metrics only if the scenario is valid  
+                  
+            # Minimum of the minimum distance
+            f_min_distance = evaluation_data["dce"].min()
+            if f_min_distance is None or np.isnan(f_min_distance):
+                f_min_distance = float('inf')
+                self.logger.debug(f"Scenario {scenario.generation_id} has no minimum distance, so set to infinity")
 
-                individual.fitness.values = (f_min_distance, f_decisions, f_conflict, f_violations)
+            # Count how many vehicles collided during the simulation, not the number of accidents
+            collided = evaluation_data[evaluation_data["has_collided"] == 1.0]
+            f_violations = len(set(collided.index.get_level_values(0)))
+            
+            # This is the same as DoppelTest: report the amount of AV that have at least an intersection on their planned trajectories
+            f_conflict = individual.has_ad_conflict()
+            
+            # Instead of decisions, we compute how many "segments" comprise the agent final trajectory.
+            # The more segment the richer the movement
+            # We argue that this is a low level metric to capture the same high-level concept of drivers's activity
+            f_decisions = sum(identify_segments(agent)[0] for agent in simulation_data["agent-data"])
 
-                self.logger.critical(f"Scenario {scenario.generation_id} is valid")
-            else:
-                self.logger.critical(f"Scenario {scenario.generation_id} is not valid")
+            individual.fitness.values = (f_min_distance, f_decisions, f_conflict, f_violations)
+
+            self.logger.critical(f"Scenario {scenario.generation_id} is valid")
 
         # Depending whether we are in the first generation or not, the self.individuals_to_evaluate corresponds to the population or the offsprings
         if self.generation  == 0:
@@ -549,12 +506,9 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
             # Select the next generation population
             self.population[:] = self.toolbox.select(self.population + self.offspring, self.POP_SIZE)
 
-            # Log the statistics of the current generation
-            record = self.stats.compile(self.population)
-            self.logbook.record(gen = self.generation, **record)
-            
-            # Log the statistics of the current generation to the logger
-            self.logger.critical(self.logbook.stream)
+        # Log the statistics of the current generation
+        record = self.stats.compile(self.population)
+        self.logbook.record(gen = self.generation, **record)
+        self.logger.critical(self.logbook.stream)
 
-        # Increment the generation count
-        self.generation = self.generation + 1    
+        self.generation += 1

@@ -1,89 +1,59 @@
+"""
+EVITA's search problem for NSGA-II: an individual is a scenario with its planning problems; its three objectives are computed from its simulation with FrenetiX.
+
+EVITADoppelTestNSGAIIproblem (at the end of the file) adapts the problem to the Apollo pipeline.
+"""
 import os
 import sys
+import json
 import time
-import shutil
 import logging
 import traceback
-import importlib
+import subprocess
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from typing import List
+from copy import deepcopy
 
 from pymoo.core.problem import ElementwiseProblem
 
-from ..config import ValidationConfig, ScenarioGeneratorConfig
-from ..generators.utils import compute_interaction_map
-from ..interfaces import AbstractScenarioExecutor, AbstractScenarioEvaluator
-from ..utils import RESULTS_FOLDER, ROOT_DIR, extend_scenario_after_goal_areas, LANELET_EXTENSION, EVITA_MAIN_LOGGER_NAME, time_shift
-from ..data_analysis import _rebuild_trajectory
-from ..validator import ScenarioValidator
-
-import json
-import subprocess
-import pandas as pd
-from copy import deepcopy
-from typing import List, Tuple
-
-from EVITA_DoppelTest.conversion_scripts.utils.RecordFileError import RecordFileError
-
-import matplotlib.pyplot as plt
-from commonroad.visualization.mp_renderer import MPRenderer
-
-from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import build_json_scenario
-from EVITA_DoppelTest.conversion_scripts.utils.interactions_utils import augment_with_interactions, planned_trajectories_to_df, augment_with_collisions
-
-from commonroad.scenario.scenario import Scenario
 from commonroad.common.file_reader import XMLFileReader
 from commonroad.common.file_writer import CommonRoadFileWriter
-from commonroad.planning.planning_problem import PlanningProblemSet
 from commonroad.planning.goal import Interval
+from commonroad.visualization.mp_renderer import MPRenderer
 
 from cr_scenario_handler.utils.agent_status import AgentStatus
 
-import contextlib
-import enlighten  # Progress bars
- 
-TOTAL_GENERATED_SCENARIOS = 0
+from EVITA_DoppelTest.conversion_scripts.utils.RecordFileError import RecordFileError
+from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import build_json_scenario
+from EVITA_DoppelTest.conversion_scripts.utils.interactions_utils import augment_with_collisions, augment_with_interactions, planned_trajectories_to_df
 
-def ensure_generation_id(scenario_tuples: List[Tuple[Scenario, PlanningProblemSet]]) -> None:
-    """
-    Ensure that each scenario has a unique generation ID
-    This is useful for debugging and tracking purposes.
-    The generation ID is a simple integer that is incremented for each scenario generated
-    """
-    global TOTAL_GENERATED_SCENARIOS
-    # Debug Plot
-    for scenario, planning_problem_set in scenario_tuples:
-        TOTAL_GENERATED_SCENARIOS = TOTAL_GENERATED_SCENARIOS + 1
-        # Tag the scenario with a generation ID
-        setattr(scenario, "generation_id", TOTAL_GENERATED_SCENARIOS)
-
-def backup_debug(_output_folder, _debug_folder, _scenario, _logger):
-    """
-    In case of a critical error during the evaluation, we want to move the entire folder of the scenario away from the results folder, to avoid that the data analysis picks up broken data and to keep it for debug.
-    """
-    # We need to clean up this folder to avoid the data analysis to pick broken data up!
-    _logger.critical(f"Moving problematic folder {_output_folder} of invalid scenario {_scenario.generation_id} into debug folder {_debug_folder} ")
-    execution_folder_name = str(_scenario.generation_id).rjust(5, '0')
-    execution_folder = os.path.join(_output_folder, execution_folder_name)
-    if os.path.exists(execution_folder):
-        os.makedirs(_debug_folder, exist_ok = True)
-        shutil.move(execution_folder, _debug_folder)
-    else:
-        _logger.critical(f"Folder {execution_folder} does not exist")
+from ..config import ScenarioGeneratorConfig, ValidationConfig
+from ..generators.utils import compute_interaction_map
+from ..orchestrator import (EXECUTION_ERROR_MESSAGE, SCENARIO_EVALUATOR_CLASS, SCENARIO_EVALUATOR_MODULE, SCENARIO_EXECUTOR_CLASS,
+                            SCENARIO_EXECUTOR_MODULE, TIMEOUT_MESSAGE, _load_class, backup_debug, debug_plot_to_file, ensure_generation_id)
+from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, extend_scenario_after_goal_areas
+from ..validator import ScenarioValidator
 
 class NSGAIIproblem(ElementwiseProblem):
     """
-    This class defines the problem to be solved by the NSGA-II algorithm.
-    The problem is defined as follows:
-    - Decision variables: the scenario and the planning problem set
-    - Objectives:
-        1. Maximize the number of interactions in the scenario
-        2. Maximize the variety of the interaction in the scenario'
-        3. Minimize the number of cars in the scenario
+    EVITA's search problem
+    Decision variables: the scenario and its planning problem set
+    Objectives, are all minimized by pymoo:
+      1. Minus the number of interactions (Maximize);
+      2. The number of vehicles (Minimize);
+      3. Minus the distance between the scenario's interaction map and the closest map of the previous generations (maximize)
+      
+    Scenarios that cannot be evaluated get the worst value of every objective.
     """
+
     def __init__(self, map_file, driving_agent_name, population_size, termination_criterion, trajectory_difference_threshold = 1.0, n_bins = None, **kwargs):
         """
         Initialize the NSGA-II problem
         """
+
         self.debug = kwargs.pop("debug", False)
         self.force_max_duration = kwargs.pop("force_max_duration", None)
 
@@ -91,14 +61,14 @@ class NSGAIIproblem(ElementwiseProblem):
         super().__init__(n_var = 2, n_obj = 3, n_ieq_constr = 0, **kwargs)
 
         self.worst_fitness = [sys.maxsize, sys.maxsize, sys.maxsize]
-        
+
+        # Names recorded in the run's metadata
         self.scenario_generator_module = "evita.generators.nsgaii"
         self.scenario_generator_class = "NSGAIIproblem"
 
         self.map_file = map_file
         self.driving_agent_name = driving_agent_name  # "frenetix"
         self.pop_size = population_size
-
         self.termination_criterion = termination_criterion
 
         self.logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
@@ -112,7 +82,7 @@ class NSGAIIproblem(ElementwiseProblem):
             self.output_folder_name = kwargs["output_folder_name"]
         else:
             self.output_folder_name = "_".join([str(self.scenario_generator_module), str(self.scenario_generator_class), str(self.timestamp_id)])
-        
+    
         self.output_folder = os.path.join(RESULTS_FOLDER, self.output_folder_name)
         self.debug_folder = os.path.join(self.output_folder, "debug")
         
@@ -124,58 +94,55 @@ class NSGAIIproblem(ElementwiseProblem):
         if self.debug:
             self.logger.info(f"Outputting debug data to {self.debug_folder}")
 
+        self.scenario_generator_configuration = ScenarioGeneratorConfig()
         self.scenario_validator_configuration = ValidationConfig()
-        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration)
+        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, self.scenario_generator_configuration)
 
         self.valid_scenarios = 0
         self.invalid_scenarios = 0
         
         if n_bins is None:
-            self.n_bins = ScenarioGeneratorConfig().n_bins
+            self.n_bins = self.scenario_generator_configuration.n_bins
         else:
             self.n_bins = n_bins
 
         self.trajectory_difference_threshold = trajectory_difference_threshold
         
-        self.individual_number = 0
-        self.interaction_maps = list()
-        self.interaction_maps_by_generation = list()
+        self.interaction_maps_by_generation = []
+
+        # Executor and evaluator, created at the first evaluation
+        self.scenario_executor = None
+        self.scenario_evaluator = None
 
         # Progress bar of the generation being evaluated
         self.generation_bar = None
         self.generation_bar_id = None
 
-    def _load_executor_and_evaluator(self):
+    def _load_executor_and_evaluator(self) -> None:
         """
-        Load the Frenetix scenario executor and evaluator once
+        Create the FrenetiX scenario executor and evaluator.
         """
-        scenario_executor_path = os.path.join(ROOT_DIR, "Frenetix-Motion-Planner")
-        self.logger.debug(f"Add scenario execution to path {scenario_executor_path}")
-        sys.path.append(scenario_executor_path)
-        se_class = getattr(importlib.import_module("evita.executors.frenetix_executor"), "FrenetixScenarioExecution")
+        se_class = _load_class(FRENETIX_ROOT, SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS, self.logger)
         self.scenario_executor = se_class(self.output_folder, driving_agent_name = self.driving_agent_name, debug = self.debug)
 
-        scenario_evaluator_path = "."
-        self.logger.debug(f"Add scenario evaluator to path {scenario_evaluator_path}")
-        sys.path.append(scenario_evaluator_path)
-        sev_class = getattr(importlib.import_module("evita.evaluators.frenetix_evaluator"), "FrenetixScenarioEvaluator")
+        sev_class = _load_class(".", SCENARIO_EVALUATOR_MODULE, SCENARIO_EVALUATOR_CLASS, self.logger)
         self.scenario_evaluator = sev_class(self.output_folder)
 
     def _evaluate(self, x, out, *args, **kwargs):
         """
-        This function is called by the NSGA-II algorithm to evaluate the fitness of a scenario
+        Called by pymoo for each individual: validate the scenario, execute and evaluate it if valid and the budget allows, and set its objectives in out["F"].
         """
         # Extract the scenario and the planning problem set from the decision variables
         scenario = x[0]
         planning_problem_set = x[1]
-        
         self.current_generation = kwargs["algorithm"].n_iter
 
         # Ensure that the scenario has an unique number
         ensure_generation_id([(scenario, planning_problem_set)])
 
-        # Load scenario executor and evaluator
-        self._load_executor_and_evaluator()
+        # The executor and evaluator are created once
+        if self.scenario_executor is None or self.scenario_evaluator is None:
+            self._load_executor_and_evaluator()
 
         # Update the progress bar for the current generation
         if self.current_generation != self.generation_bar_id:
@@ -191,7 +158,7 @@ class NSGAIIproblem(ElementwiseProblem):
         # Generation and position of this individual within it
         self.current_individual = self.generation_bar.count
 
-        # Fitness of scenarios that cannot be evaluated; replaced by the computed one on success
+        # Set the default fitness to the worst value, in case the scenario is invalid or cannot be evaluated
         fitness = self.worst_fitness
 
         # ===== 1. Validation =====
@@ -199,8 +166,6 @@ class NSGAIIproblem(ElementwiseProblem):
             self.scenario_validator.validate(scenario, planning_problem_set)
  
             if self.debug:
-                from ..orchestrator import debug_plot_to_file
-
                 debug_plot_file = os.path.join(self.debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
                 debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
 
@@ -208,7 +173,7 @@ class NSGAIIproblem(ElementwiseProblem):
         if self.termination_criterion.is_over():
             self.logger.critical("Timeout is over. Force the current scenario to be invalid")
             scenario.is_valid = False
-            scenario.validation_message = "Timeout is over"
+            scenario.validation_message = TIMEOUT_MESSAGE
         elif scenario.is_valid:
             # ===== 3. Execution (counted in the budget) =====
             simulation = self._execute(scenario, planning_problem_set)
@@ -228,7 +193,9 @@ class NSGAIIproblem(ElementwiseProblem):
 
                     # If an error is triggered during the evaluation, get rid of the scenario
                     self.logger.critical(traceback.format_exc())
+
                     scenario.is_valid = False
+                    fitness = self.worst_fitness
 
                     # Try to move scenario folder away
                     backup_debug(self.output_folder, self.debug_folder, scenario, self.logger)
@@ -239,21 +206,22 @@ class NSGAIIproblem(ElementwiseProblem):
         # ===== Fitness, counters, and progress bars =====
         out["F"] = fitness
 
-        # Count the number of valid and invalid scenarios
-        if scenario.is_valid or getattr(scenario, "validation_message", None) == "Timeout is over":
+        # Skipped scenarios (budget over) are counted separately by the termination criterion
+        if scenario.is_valid:
             self.valid_scenarios += 1
-        else:
+        elif getattr(scenario, "validation_message", None) != TIMEOUT_MESSAGE:
             self.invalid_scenarios += 1
  
         self.termination_criterion.count(scenario)
         self.generation_bar.update()
         self.termination_criterion.update_main_progress_bar()
- 
         self.logger.info(f"Scenario {scenario.generation_id}: fitness {fitness}")
 
     def _execute(self, scenario, planning_problem_set):
         """
-        This function simulates the scenario using the specified scenario executor and returns the data required for the fitness computation
+        Simulate a copy of the scenario with road added after the goal areas
+        The original scenario is kept for the search
+        Returns the simulation, or None if it failed (the scenario is then invalid)
         """
         # Force max planning problem duration if required
         if self.force_max_duration:
@@ -265,7 +233,8 @@ class NSGAIIproblem(ElementwiseProblem):
 
         try:
             self.logger.info(f"Executing scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
-            [self.logger.debug(f"- {pp.planning_problem_id} - {pp.initial_state.position} - {pp.initial_state.velocity} - planned start at {pp.initial_state.time_step}") for pp in planning_problem_set.planning_problem_dict.values()]
+            for pp in planning_problem_set.planning_problem_dict.values():
+                self.logger.debug(f"- {pp.planning_problem_id} - {pp.initial_state.position} - {pp.initial_state.velocity} - planned start at {pp.initial_state.time_step}")
  
             # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
             extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
@@ -280,39 +249,35 @@ class NSGAIIproblem(ElementwiseProblem):
                                                         time_shifted_planning_problem_set, 
                                                         self.termination_criterion.progress_bar_manager,
                                                         on_step = self.termination_criterion.update_main_progress_bar)
-
-            if simulation is None:
-                scenario.is_valid = False
-                scenario.validation_message = "Error during the simulation execution"
-                self.logger.critical(f"Scenario {scenario.generation_id} failed during simulation execution. Continuing with next scenario.")
-                
-                return None
-
-            for agent in simulation.agents:
-                # Invalid if an agent fails at time_step 0 or never moves from its initial time step
-                if (agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0) or \
-                        (agent.planning_problem.initial_state.time_step == agent.agent_state.last_timestep):
-                    self.logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
-                    scenario.is_valid = False
-                    scenario.validation_message = f"Agent {agent.id} could not compute a phyisically possible trajectory since the beginning."
-                    break
- 
-            return simulation
-        except Exception as e:
-            msg = f"A critical error prevented {scenario.generation_id} to complete. Mark it as Error and set the validity flag to False"
-            self.logger.critical("=" * (len(msg) + 2))
-            self.logger.critical(f" {msg} ")
-            self.logger.critical("=" * (len(msg) + 2))
- 
+        except Exception:
+            # A failure of one simulation must not end the run: the scenario is invalid, and the search continues
+            self.logger.critical(f"A critical error prevented {scenario.generation_id} to complete. Mark it as Error and set the validity flag to False")
+            self.logger.critical(traceback.format_exc())
             scenario.is_valid = False
-            scenario.validation_message = "Error during the simulation execution"
- 
-            # Same as the orchestrator: an exception escaping the executor stops the run
-            raise e
+            scenario.validation_message = EXECUTION_ERROR_MESSAGE
+            return None
+        
+        if simulation is None:
+            scenario.is_valid = False
+            scenario.validation_message = EXECUTION_ERROR_MESSAGE
+            self.logger.critical(f"Scenario {scenario.generation_id} failed during simulation execution. Continuing with next scenario.")
+            
+            return None
+
+        for agent in simulation.agents:
+            # Invalid if an agent fails at time_step 0 or never moves from its initial time step
+            if (agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0) or \
+                    (agent.planning_problem.initial_state.time_step == agent.agent_state.last_timestep):
+                self.logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
+                scenario.is_valid = False
+                scenario.validation_message = f"Agent {agent.id} could not compute a physically possible trajectory since the beginning."
+                break
+
+        return simulation
 
     def _evaluate_simulation(self, scenario, simulation):
         """
-        Compute the criticality metrics with the budget paused, then release the simulation's resources
+        Compute the criticality metrics, then release the simulation's resources
         """
         self.logger.info(f"Evaluating scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
  
@@ -336,21 +301,9 @@ class NSGAIIproblem(ElementwiseProblem):
         - the number of cars
         - minus the distance of this interaction map from the closest map of the previous generations
         """
-        # Rebuild the planned trajectories of every agent from its logs.csv
-        rows = list()
-        for agent_id in simulation.agent_id_list:
-            agent_log_file_path = os.path.join(simulation.config.simulation.log_path, str(agent_id), "logs.csv")
-            agent_log = pd.read_csv(agent_log_file_path, sep = ';')
-
-            data = agent_log.to_dict(orient = "records")
-            for timestep, xs, ys, orientations, velocities in sorted([(int(d["trajectory_number"]), d["x_positions_m"], d["y_positions_m"], d["theta_orientations_rad"], d["velocities_mps"]) for d in data], key = lambda tup: tup[0]):
-                rows.append([agent_id, timestep, _rebuild_trajectory(timestep, xs, ys, orientations, velocities)])
-        
-        trajectories_df = pd.DataFrame(rows, columns = ["vehicle_id", "timestep", "trajectory"])
- 
         # Compute the interaction map for the scenario
-        interaction_map = compute_interaction_map(simulation, trajectories_df, criticality_dataframe, self.n_bins)
- 
+        interaction_map = compute_interaction_map(criticality_dataframe, self.n_bins)
+
         fitness_num_interactions = criticality_dataframe["is_interacting"].sum()
         fitness_num_cars = len(simulation.agents)
  
@@ -361,6 +314,8 @@ class NSGAIIproblem(ElementwiseProblem):
         self.interaction_maps_by_generation.append((generation, interaction_map))
  
         return [-fitness_num_interactions, fitness_num_cars, -min_dist]
+
+# ========== Apollo pipeline ==========
 
 class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
     """

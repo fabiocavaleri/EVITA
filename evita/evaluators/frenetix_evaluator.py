@@ -1,8 +1,7 @@
-from ..interfaces import AbstractScenarioEvaluator
-from ..generators.utils import augment_with_danger, augment_with_interactions, augment_with_collisions, augment_with_missed_goals, augment_with_emergencies_and_disengagements
-from ..data_analysis import _rebuild_trajectory
-from ..utils import sanitize_dataframe, EVITA_MAIN_LOGGER_NAME
-
+"""
+Evaluator of FrenetiX simulations: FrenetiX's own criticality metrics, extended with EVITA's metrics
+(danger, interactions, collisions, missed goals, emergencies), stored in the simulation's database (table scenario_evaluation).
+"""
 import os
 import sys
 import logging
@@ -11,11 +10,18 @@ import pandas as pd
 from cr_scenario_handler.evaluation.simulation_evaluation import evaluate_simulation
 from cr_scenario_handler.simulation.simulation import Simulation
 
+from ..data_analysis import _rebuild_trajectory
+from ..generators.utils import (augment_with_collisions, augment_with_danger, augment_with_emergencies_and_disengagements,
+                                augment_with_interactions, augment_with_missed_goals)
+from ..interfaces import AbstractScenarioEvaluator
+from ..utils import EVITA_MAIN_LOGGER_NAME, sanitize_dataframe
+
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
 
 class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
     """
-    This class is responsible for evaluating the simulation using the already implemented metrics, then augment the result with some additional metrics
+    Evaluates a simulation with FrenetiX's criticality metrics, then adds EVITA's metrics.
+    The result, one row per agent and time step, is written to the simulation's database and returned.
     """
     def __init__(self, output_folder: str, **kwargs) -> None:           
         if sys.platform == "darwin":
@@ -23,42 +29,38 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
     
         self.output_folder = output_folder
     
+    @staticmethod
+    def _planned_trajectories(simulation: Simulation) -> pd.DataFrame:
+        """
+        Planned trajectory of each agent at each time step, read from the agents' logs.csv
+        """
+        rows = []
+
+        for agent_id in simulation.agent_id_list:
+            agent_log = pd.read_csv(os.path.join(simulation.config.simulation.log_path, str(agent_id), "logs.csv"), sep = ';')
+            
+            for record in sorted(agent_log.to_dict(orient = "records"), key = lambda r: int(r["trajectory_number"])):
+                timestep = int(record["trajectory_number"])
+                rows.append([agent_id, timestep, _rebuild_trajectory(timestep, record["x_positions_m"], record["y_positions_m"], record["theta_orientations_rad"], record["velocities_mps"])])
+
+        return pd.DataFrame(rows, columns = ["vehicle_id", "timestep", "trajectory"])
+    
     def evaluate(self, simulation: Simulation, trajectory_difference_threshold = 1.0, on_step = None) -> pd.DataFrame:
         """
-        Evaluate the simulation using the already implemented metrics, then augment the result with
-        our additional metrics
+        Evaluation table of the simulation (index: agent, time_step). `trajectory_difference_threshold` is Th_ED of the interaction detection;
+        `on_step` is called after each phase to refresh a progress bar.
         """
         def sync_progress_bar():
             if on_step is not None:
                 on_step()
 
-        # Retrieve scenario agents
-        agent_ids = simulation.agent_id_list
-
-        # Retrieve the path to the logs folder
-        log_files_folder = simulation.config.simulation.log_path
-
-        # Initialize the DataFrame to store the trajectories
-        trajectories_df = pd.DataFrame(columns = ["vehicle_id", "timestep", "trajectory"])
-
-        for agent_id in agent_ids:
-            # Open agent's log file
-            agent_log_file_path = os.path.join(log_files_folder, str(agent_id), "logs.csv")
-            agent_log = pd.read_csv(agent_log_file_path, sep = ';')
-
-            # There's a dictionary for each line, and a line for each time_step
-            data = agent_log.to_dict(orient = "records")
-
-            # Sort by time_step - Reconstruct all the trajectories
-            for timestep, xs, ys, orientations, velocities in sorted([(int(d["trajectory_number"]), d["x_positions_m"], d["y_positions_m"], d["theta_orientations_rad"], d["velocities_mps"]) for d in data], key = lambda tup: tup[0]):
-                trajectories_df.loc[len(trajectories_df)] = [agent_id, timestep, _rebuild_trajectory(timestep, xs, ys, orientations, velocities)]
-
+        trajectories_df = self._planned_trajectories(simulation)
         sync_progress_bar()
 
         for obstacle in simulation.scenario.obstacles:
             module_logger.debug(f"Obstacle {obstacle.obstacle_id} has initial state at timestep {obstacle.initial_state.time_step} and final state at timestep {obstacle.prediction.trajectory.state_list[-1].time_step}")
 
-        # Invoke the original code - this also stores the DB
+        # FrenetiX's own evaluation (it also stores the database)
         module_logger.info("Evaluating simulation...")
         criticality_dataframe = evaluate_simulation(simulation).criticality_dataframe
 
@@ -111,20 +113,17 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
 
         # Add missing columns to the database if they don't exist yet
         con = simulation.sim_logger.con
-
         existing = {row[1] for row in con.execute("PRAGMA table_info(scenario_evaluation)")}
 
         for col in criticality_dataframe.columns:
             if col not in existing:
                 con.execute(f'ALTER TABLE scenario_evaluation ADD COLUMN "{col}" ANY')
 
-        simulation.sim_logger.con.execute("DELETE FROM scenario_evaluation WHERE scenario=?", (simulation.config.simulation.name_scenario,))
-
+        con.execute("DELETE FROM scenario_evaluation WHERE scenario=?", (simulation.config.simulation.name_scenario,))
         con.commit()
 
         # Make sure we log everything inside the dataframe
         simulation.sim_logger.log_evaluation(criticality_dataframe)
-
         sync_progress_bar()
 
         return criticality_dataframe

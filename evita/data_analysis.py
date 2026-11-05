@@ -1,31 +1,39 @@
-import logging
-import os
-import csv
-import sqlite3
+"""
+Analysis of the results.
+
+- generate_report(): per-run metrics, written at the end of every run (and at checkpoints) into the run folder:
+  requirements_violations.csv (timeouts, missed goals, collisions, unique collisions), behavior.csv (emergencies,
+  disengagements, vehicles, interactions, unique interactions), and the collision and interaction maps (.npy).
+- `evita analyse`: comparison of several runs (statistics, plots, Venn diagrams, HTML tables).
+
+Unique collisions (paper, Section 5.2.2) combine the point of impact of both vehicles, the relative impact velocity
+(RIV, 10 partitions of 0-100 km/h plus one for faster impacts) and the relative impact angle (RIA, 10 partitions
+of 0-180 degrees plus one). The database stores RIV in m/s and RIA in radians; they are converted when binned.
+"""
 import ast
-import click
+import csv
+import logging
 import math
-import json
+import os
+import sqlite3
+from bisect import bisect_left
+from typing import Dict, List, Optional, Tuple
+
+import click
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.stats as ss
 import seaborn as sns
 
-from venny4py.venny4py import *
-
-from typing import Tuple, List 
-from bisect import bisect_left
-from commonroad.scenario.trajectory import Trajectory
-from commonroad.scenario.state import CustomState
 from commonroad.common.file_reader import CommonRoadFileReader
-from commonroad.visualization.mp_renderer import MPRenderer
 from commonroad.scenario.scenario import Scenario
-from typing import Dict
-from .config import ScenarioGeneratorConfig
-from .generators.utils import compute_difference_in_cc_space
-from .utils import EVITA_MAIN_LOGGER_NAME, simulation_folders, collisions_folders, find_csv_files, folders_of_completed_runs, RESULTS_FOLDER
+from commonroad.scenario.state import CustomState
+from commonroad.scenario.trajectory import Trajectory
+from commonroad.visualization.mp_renderer import MPRenderer
 
-TIMEOUT = 200
+from .config import ScenarioGeneratorConfig
+from .utils import EVITA_MAIN_LOGGER_NAME, RESULTS_FOLDER, collisions_folders, find_csv_files, folders_of_completed_runs, simulation_folders
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
@@ -49,10 +57,6 @@ def remap_generator_name(fullname:str) -> str:
     return GENERATORS[fullname] if fullname in GENERATORS else fullname
 
 # Calculate Pearson's correlation
-def compute_correlation(d1, d2):
-    corr, _ = ss.pearsonr(d1, d2)
-    return corr
-
 def compute_p_value(treatment, control) -> float:
     _, p_value = ss.mannwhitneyu(treatment, control)
     return p_value
@@ -535,9 +539,6 @@ def collisions_analysis(requirements_violations_df: pd.DataFrame, collision_sets
         # The scenario is always the same so we load the map only once (the first we get matching the conditions)
         # But we plot it separatedly for each generator and once for all together
         for base_scenario in base_scenarios:
-            from commonroad.scenario.scenario import Scenario
-            from commonroad.common.file_reader import CommonRoadFileReader
-
             # Extract the scenario file for the current base scenario
             scenario_file = str(collisions_df[collisions_df["base_scenario"] == base_scenario]["scenario_file"].values[0])
 
@@ -589,7 +590,7 @@ def collisions_analysis(requirements_violations_df: pd.DataFrame, collision_sets
 
         # What is the distribution of collisions (for all the scenarios)?
         all_collisions_df = collisions_df[ collisions_df["base_scenario"] == "all" ]
-        distribution_of_impact_location_file = os.path.join(collisions_analysis_output_folder, f"impact_locations_all.png")
+        distribution_of_impact_location_file = os.path.join(collisions_analysis_output_folder, "impact_locations_all.png")
         fig, ax = plt.subplots(figsize=(8, 4))
         ax = sns.histplot(data=all_collisions_df, x="impact_location", hue="generator")
         ax.set_xlabel("Impact Location")
@@ -918,7 +919,7 @@ def plot_interaction_map(interaction_map_df: pd.DataFrame, base_scenario: str, g
 
     # Plot data
     try:
-        im = ax.imshow(masked_data, cmap = colMap)
+        ax.imshow(masked_data, cmap = colMap)
     except Exception as exc:
         raise exc
 
@@ -1011,7 +1012,6 @@ def test_generation_analysis(performace_df: pd.DataFrame, output_folder, detaile
 
         # Plot the position of the vehicles when they crashed for each generator (color) in each scenario (map)
         base_scenarios = [ s for s in test_generation_df["base_scenario"].unique().tolist() if str(s) != "all"]
-        generators = test_generation_df["generator"].unique().tolist()
 
         for base_scenario in base_scenarios:
             # What is the distribution of collisions (per scenario)?
@@ -1032,7 +1032,7 @@ def test_generation_analysis(performace_df: pd.DataFrame, output_folder, detaile
 
         # What is the distribution of collisions (for all the scenarios)?
         all_scenario_test_generation_df = test_generation_df[ test_generation_df["base_scenario"] == "all" ]
-        distribution_of_scenario_complexity_file = os.path.join(test_generation_analysis_output_folder, f"impact_locations_all.png")
+        distribution_of_scenario_complexity_file = os.path.join(test_generation_analysis_output_folder, "scenario_complexity_all.png")
         fig, ax = plt.subplots(figsize = (8, 4))
         ax = sns.histplot(data = all_scenario_test_generation_df, x = "n_agents", hue = "generator")
         ax.set_xlabel("# Agents")
@@ -1122,454 +1122,271 @@ def analyse(ctx, results_folders: List, perform_full_analysis: bool):
     # Print the banner with the input and output folders at the end of the analysis
     plot_the_banner()
 
-def count_metric(simulation_db, metric: str) -> int:
-    """
-    Count how many `metric` == 1.0 are stored in the DB
-    """
-    # Open connection with database
-    connection = sqlite3.connect(simulation_db)
-    try:
-        # Count how many unique collisions are stored
-        result = connection.execute(f"SELECT timestep from scenario_evaluation WHERE {metric} = 1.0;")
+# ========== Per-run report ==========
 
-        return len(result.fetchall())
-    finally:
-        try:
-            connection.close()
-        except:
-            pass
-
-def count_collisions(simulation_db) -> int:
-    """
-    Count how many unique collisions are stored in the DB
-    """
-    # Open connection with database
-    connection = sqlite3.connect(simulation_db)
-    try:
-        # Count how many unique collisions are stored
-        result = connection.execute("SELECT agent_id, has_collided_with from scenario_evaluation WHERE has_collided = 1.0 GROUP BY agent_id, has_collided_with;")
-        collisions = set()
-
-        # Iterate over the results and count unique collisions
-        for tup in result.fetchall():
-            # Extract the collided vehicles
-            collision_group = str(tup[1])
-            collisions.add(collision_group)
-
-        return len(collisions)
-    finally:
-        try:
-            connection.close()
-        except:
-            pass
-
-def _agent_ids_from_db(simulation_db) -> List:
-    """
-    Get the list of agent ids from the DB
-    """
-    # Open connection
-    connection = sqlite3.connect(simulation_db)
-
-    try:
-        # Make the query
-        result = connection.execute("SELECT agent_ids from meta;")
-        result_as_string = result.fetchone()[0]
-
-        return ast.literal_eval(result_as_string)
-    finally:
-        try:
-            connection.close()
-        except:
-            pass
-
-def _to_float(value) -> float:
-    """
-    Convert a value stored as text in the DB ('1.5', 'None', 'nan', NULL) to float or None.
-    """
-    if value is None:
-        return None
-
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    
-    if math.isnan(result):
-        return None
-    else:
-        return result
-
-def _interactions_from_db_for_agent(simulation_db, agent_id) -> List[int]:
-    """
-    Get the list of time steps at which the given agent interacted with other agents from the DB
-    """
-    # Open connection
-    connection = sqlite3.connect(simulation_db)
-
-    try:
-        # Make the query
-        result = connection.execute(f"SELECT timestep, diff_long, diff_lat from scenario_evaluation where agent_id = {agent_id} and is_interacting == 1.0;")
-        return [(int(t[0]), _to_float(t[1]), _to_float(t[2])) for t in result.fetchall()]
-    finally:
-        try:
-            connection.close()
-        except:
-            pass
-
-def _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder) -> List[Tuple[str, float, float]]:
-    """
-    Get the features of the impacts from the DB, such as the impact location, RIV, and RIA
-    """
-    
-    # Open connection with database
-    connection = sqlite3.connect(simulation_db)
-
-    try:
-        # Retrieve collisions data from the DB
-        # Group data by agent_id and has_collided_with to get unique collisions
-        result = connection.execute('SELECT MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_location from scenario_evaluation where has_collided = 1.0 group by agent_id, has_collided_with order by MIN(timestep), has_collided_with;')
-        metrics = result.fetchall()
-
-        collisions = dict()
-        impacts = list()
-
-        # Iterate over extracted collision data
-        for time_step, agent_id, most_critical_agent, has_collided_with_str, riv, ria, impact_location in metrics:
-            agent_id = int(agent_id)
-            time_step = int(time_step)
-            
-            # Keep this a string
-            has_collided_with_str = str(has_collided_with_str)
-
-            # Parse to array
-            has_collided_with = ast.literal_eval(has_collided_with_str)
-            if len(has_collided_with) == 1:
-                module_logger.critical(f"Agent {agent_id} collided with the road - {simulation_db}")
-                most_critical_agent = "ROAD"
-            else:
-                assert most_critical_agent != "None", f"Missing most critical agent. Check {simulation_db}"
-                most_critical_agent = int(most_critical_agent)
-
-            riv = float(riv)
-            ria = float(ria)
-            # If there's no impact location default to ROAD
-            if impact_location != "None":
-                impact_location = str(impact_location)
-            else:
-                impact_location = "-+"
-
-            # Filter out spurious entries across accidents order matter
-            if [agent_id, most_critical_agent] in impacts:
-                module_logger.debug(f"We already have an entry for {agent_id} - {most_critical_agent} - {impact_location} - {simulation_db}")
-                continue
-            else:
-                module_logger.debug(f"Adding entry {agent_id} - {most_critical_agent} - {impact_location} - {simulation_db}")
-                impacts.append([agent_id, most_critical_agent])
-
-            if has_collided_with_str not in collisions:
-                # Register the data for the collisions
-                collisions[has_collided_with_str] = {
-                    "v1": None,
-                    "v2": None,
-                    "ria": abs(ria),
-                    "riv": riv,
-                    "impact_location": None,
-                    "v1_impact_location": None,
-                    "v2_impact_location": None,
-                }
-                collisions[has_collided_with_str]["v1_impact_location"] = impact_location # FB, -+, etc
-                collisions[has_collided_with_str]["v1"] = agent_id
-
-                if most_critical_agent == "ROAD":
-                    collisions[has_collided_with_str]["v2_impact_location"] = "-+" # Default
-                    collisions[has_collided_with_str]["v2"] = "ROAD" # Default
-            else:
-                # Register the data about the impact location of the second vehicle. This cannot be the road
-                collisions[has_collided_with_str]["v2_impact_location"] = impact_location
-                collisions[has_collided_with_str]["v2"] = agent_id
-
-        # A this point we need to merge the impact locations together
-        for collision in collisions.values():
-            collision["impact_location"] = frozenset((collision["v1_impact_location"], collision["v2_impact_location"]))
-            module_logger.debug(f"Register {collision}")
-
-        return [(c["impact_location"], c["riv"], c["ria"]) for c in collisions.values()]
-    finally:
-        try:
-            connection.close()
-        except:
-            pass            
-
-def _rebuild_trajectory(initial_time_step: str, xs: str, ys: str, orientations:str, velocities:str) -> Trajectory:
-    """
-    Rebuild the trajectory of an agent from the logs.csv file.
-    The trajectory is represented as a list of states, each containing the time step, position, orientation, and velocity of the agent at that time step
-    """
-    state_list = list()
-    initial_time_step = int(initial_time_step)
-
-    # Iterate over the state variables and build the trajectory
-    for idx, state_vars, in enumerate(zip(xs.split(","), ys.split(","), orientations.split(","), velocities.split(","))):
-        # Extract position, orientation, and velocity
-        x, y = float(state_vars[0]), float(state_vars[1])
-        orientation = float(state_vars[2])
-        velocity = float(state_vars[3])
-       
-        # Create state object and add it to the list of states
-        state = CustomState(time_step = initial_time_step + idx, position = np.array([x, y]), orientation = orientation, velocity = velocity)
-        state_list.append(state)
-        
-    return Trajectory(initial_time_step, state_list)
-
-def get_interaction_map_bins(n_bins: int = None):
-    """
-    Define the bins of the interaction map
-    """
-    from evita.config import ScenarioGeneratorConfig
-    scenario_generator_config = ScenarioGeneratorConfig()
-
-    if n_bins is None:
-        n_bins = scenario_generator_config.n_bins
-
-    # One car in front/one car behind - How can one retrieve difference in speed/acc?
-    long_bins = np.linspace(-scenario_generator_config.length, +scenario_generator_config.length, n_bins)
-
-    # In the United States, the Interstate Highway standards for the Interstate Highway System
-    # use a 12 ft (3.7 m) standard lane width, while narrower lanes are used on lower classification roads.
-    lane_width = 3.7
-    lat_bins = np.linspace(-lane_width, lane_width, n_bins)
-    
-    return long_bins, lat_bins
+# Bins of the collision features (paper, Section 5.2.2): 11 edges, i.e., 10 partitions plus one for larger values
+COLLISION_FEATURE_EDGES = 11
+RIV_BINS_KMH = np.linspace(0, 100, COLLISION_FEATURE_EDGES)
+RIA_BINS_DEG = np.linspace(0, 180, COLLISION_FEATURE_EDGES)
 
 # Columns written by EVITA's evaluator: a scenario_evaluation table without them was never evaluated
 EVALUATION_COLUMNS = {"is_interacting", "diff_long", "diff_lat", "has_collided", "has_collided_with",
                       "ria", "riv", "impact_location", "most_critical_agent", "has_timeout", "has_missed_goal"}
 
-def _is_evaluated(simulation_db: str) -> bool:
+
+def _query(simulation_db: str, sql: str, params: tuple = ()) -> list:
     """
-    True if the scenario was evaluated: the evaluation table has EVITA's columns and at least one row.
-    Executed but invalid scenarios (e.g. an agent did not start) keep the fork's bare table and are not evaluated.
+    All rows of a query on a simulation database.
     """
     connection = sqlite3.connect(simulation_db)
     try:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(scenario_evaluation);")}
-        if not EVALUATION_COLUMNS.issubset(columns):
-            return False
-        return connection.execute("SELECT COUNT(*) FROM scenario_evaluation;").fetchone()[0] > 0
-    except sqlite3.Error:
-        return False
+        return connection.execute(sql, params).fetchall()
     finally:
         connection.close()
 
+
+def count_metric(simulation_db: str, metric: str) -> int:
+    """
+    Number of (agent, time step) rows where `metric` is 1.0.
+    """
+    return len(_query(simulation_db, f"SELECT timestep FROM scenario_evaluation WHERE {metric} = 1.0;"))
+
+
+def count_agents_with(simulation_db: str, metric: str) -> int:
+    """
+    Number of agents for which `metric` is 1.0 at some time step (for per-agent outcomes, which the evaluator
+    repeats on every time step).
+    """
+    return _query(simulation_db, f"SELECT COUNT(DISTINCT agent_id) FROM scenario_evaluation WHERE {metric} = 1.0;")[0][0]
+
+
+def count_collisions(simulation_db: str) -> int:
+    """
+    Number of collisions: distinct groups of vehicles involved in a collision.
+    """
+    rows = _query(simulation_db, "SELECT agent_id, has_collided_with FROM scenario_evaluation WHERE has_collided = 1.0 GROUP BY agent_id, has_collided_with;")
+    return len({str(has_collided_with) for _, has_collided_with in rows})
+
+
+def _agent_ids_from_db(simulation_db: str) -> List:
+    """
+    Ids of the simulated agents.
+    """
+    return ast.literal_eval(_query(simulation_db, "SELECT agent_ids FROM meta;")[0][0])
+
+
+def _to_float(value) -> Optional[float]:
+    """
+    A value stored in the database ('1.5', 'None', 'nan', NULL, 1.5) as float, or None.
+    """
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(result) else result
+
+
+def _interactions_from_db(simulation_db: str) -> List[Tuple[int, int, Optional[float], Optional[float]]]:
+    """
+    (agent id, time step, diff_long, diff_lat) of every interaction of the scenario.
+    """
+    rows = _query(simulation_db, "SELECT agent_id, timestep, diff_long, diff_lat FROM scenario_evaluation WHERE is_interacting = 1.0;")
+    return [(int(agent_id), int(t), _to_float(diff_long), _to_float(diff_lat)) for agent_id, t, diff_long, diff_lat in rows]
+
+
+def _get_impacts_features_from_db(simulation_db: str, run_folder: str = None, simulation_folder: str = None) -> List[Tuple[frozenset, float, float]]:
+    """
+    (points of impact of the two vehicles, RIV in m/s, |RIA| in radians) of each collision of the scenario.
+    A collision is identified by the group of vehicles involved; the first entry of each (agent, other vehicle)
+    pair is used. Collisions with the road have the point of impact "-+" for the road.
+    """
+    rows = _query(simulation_db, 'SELECT MIN(timestep), agent_id, most_critical_agent, has_collided_with, riv, ria, impact_location FROM scenario_evaluation WHERE has_collided = 1.0 GROUP BY agent_id, has_collided_with ORDER BY MIN(timestep), has_collided_with;')
+
+    collisions = {}
+    impacts = set()
+
+    for _, agent_id, most_critical_agent, has_collided_with_str, riv, ria, impact_location in rows:
+        agent_id = int(agent_id)
+        has_collided_with_str = str(has_collided_with_str)
+        has_collided_with = ast.literal_eval(has_collided_with_str)
+
+        if len(has_collided_with) == 1:
+            module_logger.critical(f"Agent {agent_id} collided with the road - {simulation_db}")
+            most_critical_agent = "ROAD"
+        else:
+            if most_critical_agent in (None, "None"):
+                module_logger.warning(f"Missing most critical agent for agent {agent_id} in {simulation_db}")
+                continue
+            most_critical_agent = int(float(most_critical_agent))
+
+        riv, ria = _to_float(riv), _to_float(ria)
+        impact_location = str(impact_location) if impact_location not in (None, "None") else "-+"
+
+        # One entry per (agent, other vehicle), the earliest
+        if (agent_id, most_critical_agent) in impacts:
+            module_logger.debug(f"We already have an entry for {agent_id} - {most_critical_agent} - {impact_location} - {simulation_db}")
+            continue
+        impacts.add((agent_id, most_critical_agent))
+
+        if has_collided_with_str not in collisions:
+            # First vehicle of this collision; for a collision with the road, the road is the second
+            collisions[has_collided_with_str] = {"ria": abs(ria) if ria is not None else None,
+                                                 "riv": riv,
+                                                 "v1_impact_location": impact_location,
+                                                 "v2_impact_location": "-+" if most_critical_agent == "ROAD" else None}
+        else:
+            # Second vehicle of this collision (never the road)
+            collisions[has_collided_with_str]["v2_impact_location"] = impact_location
+
+    # A collision whose second vehicle has no entry keeps None, and is skipped by the report
+    return [(frozenset((c["v1_impact_location"], c["v2_impact_location"])), c["riv"], c["ria"]) for c in collisions.values()]
+
+
+def _rebuild_trajectory(initial_time_step, xs: str, ys: str, orientations: str, velocities: str) -> Trajectory:
+    """
+    Planned trajectory from one row of an agent's logs.csv (comma-separated positions, orientations and velocities,
+    the first one at `initial_time_step`).
+    """
+    initial_time_step = int(initial_time_step)
+    state_list = [CustomState(time_step = initial_time_step + idx, position = np.array([float(x), float(y)]), orientation = float(orientation), velocity = float(velocity))
+                  for idx, (x, y, orientation, velocity) in enumerate(zip(xs.split(","), ys.split(","), orientations.split(","), velocities.split(",")))]
+    return Trajectory(initial_time_step, state_list)
+
+
+def get_interaction_map_bins(n_bins: int = None) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Bin edges of the interaction map (as in generators/utils.py compute_interaction_map): n_bins edges per axis,
+    one vehicle length each way longitudinally, one lane width (3.7 m) each way laterally.
+    """
+    scenario_generator_config = ScenarioGeneratorConfig()
+    if n_bins is None:
+        n_bins = scenario_generator_config.n_bins
+
+    lane_width = 3.7
+    long_bins = np.linspace(-scenario_generator_config.length, +scenario_generator_config.length, n_bins)
+    lat_bins = np.linspace(-lane_width, lane_width, n_bins)
+    return long_bins, lat_bins
+
+
+def _is_evaluated(simulation_db: str) -> bool:
+    """
+    True if the scenario was evaluated: the evaluation table has EVITA's columns and at least one row.
+    Executed but invalid scenarios (e.g. an agent did not start) keep FrenetiX's bare table and are not evaluated.
+    """
+    try:
+        columns = {row[1] for row in _query(simulation_db, "PRAGMA table_info(scenario_evaluation);")}
+        if not EVALUATION_COLUMNS.issubset(columns):
+            return False
+        return _query(simulation_db, "SELECT COUNT(*) FROM scenario_evaluation;")[0][0] > 0
+    except sqlite3.Error:
+        return False
+
+
+def _impact_location_bins() -> List[frozenset]:
+    """
+    Every combination of the points of impact of two vehicles (unordered; "-+" is the road).
+    """
+    locations = [f"{p}{s}" for p in ["F", "M", "B", "-"] for s in ["L", "C", "R", "+"]]
+    bins = []
+    for first in locations:
+        for second in locations:
+            pair = frozenset((first, second))
+            if pair not in bins:
+                bins.append(pair)
+    return bins
+
+
 def generate_report(run_folder: str, _output_to: str = None) -> None:
     """
-    Generate the "final" reports of the entire generation as csv files.
+    Write the run's metrics into `_output_to` (default: the run folder):
+      - requirements_violations.csv: total_timeouts and total_missed_goals (vehicles), total_collisions, and the
+        unique collisions by point of impact, by point of impact and RIV, and by point of impact, RIV and RIA;
+      - behavior.csv: total_emergency and total_disengagement (time steps), total_agents, total_interactions,
+        unique_interactions (occupied cells of the interaction map);
+      - collision_map_only_impact_location.npy, collision_map_impact_location_and_riv.npy, collision_map.npy,
+        interaction_map.npy.
+    Only evaluated scenarios are considered.
     """
-    # Define output folder
-    if _output_to:
-        output_to = _output_to
-    else:
-        output_to = run_folder
-
+    output_to = _output_to or run_folder
     module_logger.critical(f"Generating report for {run_folder} at {output_to}")
-    
-    # Build requirement violation report file path
-    requirements_violations = os.path.join(output_to, "requirements_violations.csv")
 
+    evaluated_dbs = []
+    for _, simulation_folder in simulation_folders(run_folder):
+        simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
+        if _is_evaluated(simulation_db):
+            evaluated_dbs.append((simulation_folder, simulation_db))
+        else:
+            module_logger.debug(f"Skipping {simulation_folder}: not evaluated (invalid scenario)")
+
+    # ===== Requirement violations =====
     module_logger.critical("Computing Requirement Violation Metrics")
-    with open(requirements_violations, "w", newline = "") as csvfile:
-        # Write the header of the csv file
+
+    impact_location_bins = _impact_location_bins()
+    collision_map_only_impact_location = np.zeros(len(impact_location_bins))
+    collision_map_impact_location_and_riv = np.zeros((len(impact_location_bins), len(RIV_BINS_KMH) + 1))
+    collision_map = np.zeros((len(impact_location_bins), len(RIV_BINS_KMH) + 1, len(RIA_BINS_DEG) + 1))
+
+    total_timeouts, total_missed_goals, total_collisions = 0, 0, 0
+
+    for simulation_folder, simulation_db in evaluated_dbs:
+        module_logger.debug(f"Processing {simulation_folder}")
+
+        # Per-vehicle outcomes, repeated on every time step by the evaluator: count vehicles
+        total_timeouts += count_agents_with(simulation_db, "has_timeout")
+        total_missed_goals += count_agents_with(simulation_db, "has_missed_goal")
+        total_collisions += count_collisions(simulation_db)
+
+        for impact_location, riv, ria in _get_impacts_features_from_db(simulation_db):
+            if None in impact_location or riv is None or ria is None:
+                module_logger.warning(f"Skipping collision with missing features: impact_location = {impact_location}, riv = {riv}, ria = {ria} in {simulation_db}")
+                continue
+
+            # RIV from m/s to km/h, |RIA| from radians to degrees (the paper's bins)
+            location_index = impact_location_bins.index(impact_location)
+            riv_index = np.digitize(riv * 3.6, RIV_BINS_KMH)
+            ria_index = np.digitize(math.degrees(ria), RIA_BINS_DEG)
+
+            collision_map_only_impact_location[location_index] += 1.0
+            collision_map_impact_location_and_riv[location_index][riv_index] += 1.0
+            collision_map[location_index][riv_index][ria_index] += 1.0
+
+    mapped_collisions = int(np.sum(collision_map_only_impact_location))
+    if total_collisions != mapped_collisions:
+        module_logger.warning(f"Collision count mismatch in {run_folder}: {total_collisions} counted, {mapped_collisions} mapped")
+
+    with open(os.path.join(output_to, "requirements_violations.csv"), "w", newline = "") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
         csv_writer.writerow(["total_timeouts", "total_missed_goals", "total_collisions", "unique_collisions_only_impact_location", "unique_collisions_impact_location_and_riv", "unique_collisions"])
+        csv_writer.writerow([total_timeouts, total_missed_goals, total_collisions,
+                             np.count_nonzero(collision_map_only_impact_location), np.count_nonzero(collision_map_impact_location_and_riv), np.count_nonzero(collision_map)])
 
-        # Requirement Violations
-        # - [x] Total Collision Count - counted on the side
-        # - [x] Total Missed Goals (Timeout)
-        # - [x] Total Missed Goals (Missed)
-        
-        # - Total Collision Features -> Unique Collision (using the map as filter)
-        #       - Number of vehicles involved ?
-        #       - Angle (RIA)
-        #       - Velocity (RIV)
-        #       - Impact Location
-        
-        # Generate all possible pairs of impact locations
-        impact_location_bins = list()
-        # 
-        # "-+" denotes the road we need two symbols
-
-        for p1 in ["F", "M", "B", "-"]:
-            for s1 in ["L", "C", "R", "+"]:
-                for p2 in ["F", "M", "B", "-"]:
-                    for s2 in ["L", "C", "R", "+"]:
-                        s = frozenset( (f"{p1}{s1}", f"{p2}{s2}") )
-                        
-                        impact_location_bins.append(s)
-        
-        # Initialize RIA and RIV bins       
-        n_bins = 10
-        riv_bins = np.linspace(0, 100, n_bins)
-        ria_bins = np.linspace(0, 180, n_bins)
-    
-        # Initialize collision maps
-        collision_map_only_impact_location = np.zeros(len(impact_location_bins))
-        collision_map_impact_location_and_riv = np.zeros( (len(impact_location_bins), len(riv_bins) + 1))
-        collision_map = np.zeros((len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1))
-
-        total_timeouts, total_missed_goals, total_collisions = 0, 0, 0
-    
-        # Iterate over the simulations
-        for _, simulation_folder in simulation_folders(run_folder):
-            module_logger.debug(f"Processing {simulation_folder}")
-            
-            # Build scenario's DB file path
-            simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
-
-            if not _is_evaluated(simulation_db):
-                module_logger.debug(f"Skipping {simulation_folder}: not evaluated (invalid scenario)")
-                continue
-
-            total_timeouts += count_metric(simulation_db, "has_timeout")
-            total_missed_goals += count_metric(simulation_db, "has_missed_goal")
-
-            # Initialize local collision maps
-            local_only_impact_location = np.zeros(len(impact_location_bins))
-            local_impact_location_and_riv = np.zeros((len(impact_location_bins), len(riv_bins) + 1))
-            local_collision_map = np.zeros((len(impact_location_bins), len(riv_bins) + 1, len(ria_bins) + 1))
-
-            # Count collisions
-            total_collisions += count_collisions(simulation_db)
-
-            # Get the features of the collisions from the DB
-            collision_features = _get_impacts_features_from_db(simulation_db, run_folder, simulation_folder)
-
-            # It might happen that those features were not stored, in this case we need to recompute them!
-            # Iterate over the features of the collisions and update the collision maps            
-            for impact_location_as_frozenset, riv, ria in collision_features:
-                # Check that the impact location is not None
-                if None in impact_location_as_frozenset or riv is None or ria is None:
-                    module_logger.warning(f"Skipping collision with missing features: impact_location = {impact_location_as_frozenset}, riv = {riv}, ria = {ria} in {simulation_db}")
-                    continue
-
-                # Map the impact location, RIV, and RIA to the corresponding bins
-                impact_location_mapped = impact_location_bins.index(impact_location_as_frozenset)
-                digitized_riv = np.digitize(riv, riv_bins)
-                digitized_ria = np.digitize(ria, ria_bins)
-
-                # Update local collision maps
-                local_only_impact_location[impact_location_mapped] += 1.0
-                local_impact_location_and_riv[impact_location_mapped][digitized_riv] += 1.0
-                local_collision_map[impact_location_mapped][digitized_riv][digitized_ria] += 1.0
-            
-            # Update collision maps
-            collision_map_only_impact_location += local_only_impact_location
-            collision_map_impact_location_and_riv += local_impact_location_and_riv
-            collision_map += local_collision_map
-
-        # Compute total and unique collisions
-        total_collisions_double_check = int(np.sum(collision_map_only_impact_location))
-        unique_collisions_only_impact_location = np.count_nonzero(collision_map_only_impact_location)
-        unique_collisions_impact_location_and_riv = np.count_nonzero(collision_map_impact_location_and_riv)
-        unique_collisions = np.count_nonzero(collision_map)
-
-        # Check that the total number of collisions we counted on the side is the same as the one we get from the collision map
-        if total_collisions != total_collisions_double_check:
-            module_logger.warning(f"Collision count mismatch in {run_folder}: {total_collisions} counted, {total_collisions_double_check} mapped")
-        
-        # Merge all the counts together and write them to the csv file
-        values = [total_timeouts, total_missed_goals, total_collisions, unique_collisions_only_impact_location, unique_collisions_impact_location_and_riv, unique_collisions]
-
-        csv_writer.writerow([str(v) for v in values])
-    
-    # Behavioral/Interaction Diversity
-    #   - [x] Total time spent in emergency "", total number of  "has_disengagement"
-    #   - Avg emergency/disengagement per vehicle?
-    #     
-    #   - Number of Vehicles/Complexity - NO
-    #   - Initial Positioning of Vehicle  - NO
-    #   - Initial Speed of Vehicles  - NO
-    #   - Position of Goal  - NO
-    #   - Route Complexity (Distance, Number of Lane Switches)  - NO
-    #   - [x] Total Interaction Count
-    #   - [x] Unique Interactions using the defined Interaction Map (10 bins 2 * lane widht, 10 bins 2 * vehicle lenght)
-    
+    # ===== Behaviour and interactions =====
     module_logger.info("Computing Behavior and Interaction Metrics")
 
-    # Build behavior report file path
-    behavior = os.path.join(output_to, "behavior.csv")
-    with open(behavior, "w", newline = "") as csvfile:
-        # Write the header of the csv file
+    long_bins, lat_bins = get_interaction_map_bins()
+    interaction_map = np.zeros((len(long_bins) + 1, len(lat_bins) + 1))
+    total_emergency, total_disengagement, total_agents = 0, 0, 0
+
+    for simulation_folder, simulation_db in evaluated_dbs:
+        total_emergency += count_metric(simulation_db, "has_emergency")
+        total_disengagement += count_metric(simulation_db, "has_disengagement")
+        total_agents += len(_agent_ids_from_db(simulation_db))
+
+        for agent_id, t, diff_long, diff_lat in _interactions_from_db(simulation_db):
+            if diff_long is None or diff_lat is None:
+                module_logger.warning(f"Interaction at timestep {t} for agent {agent_id} has None values for diff_long or diff_lat.")
+                continue
+            interaction_map[np.digitize(diff_long, long_bins)][np.digitize(diff_lat, lat_bins)] += 1.0
+
+    with open(os.path.join(output_to, "behavior.csv"), "w", newline = "") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
         csv_writer.writerow(["total_emergency", "total_disengagement", "total_agents", "total_interactions", "unique_interactions"])
+        csv_writer.writerow([total_emergency, total_disengagement, total_agents, int(np.sum(interaction_map)), np.count_nonzero(interaction_map)])
 
-        # Get the bins of the interaction map
-        long_bins, lat_bins = get_interaction_map_bins()
-
-        # Include 0 - B[0]:B[9] - 10 and len(bins)
-        rows = len(long_bins) + 1
-        cols = len(lat_bins) + 1
-
-        # Initialize the interaction map and the counters for the requirement violations
-        interaction_map = np.zeros((rows, cols))
-        total_emergency, total_disengagement, total_agents = 0, 0, 0
-
-        # Iterate over the simulations folders
-        for _, simulation_folder in simulation_folders(run_folder):
-            module_logger.debug(f"Processing {simulation_folder}")
-
-            # Build scenario's DB and scenario's file paths
-            simulation_db = os.path.join(run_folder, simulation_folder, "logs", "simulation.db")
-            scenario_file = os.path.join(run_folder, simulation_folder, "scenario", f"scenario_{simulation_folder}.xml")
-
-            if not _is_evaluated(simulation_db):
-                module_logger.debug(f"Skipping {simulation_folder}: not evaluated (invalid scenario)")
-                continue
-
-            total_emergency += count_metric(simulation_db, "has_emergency")
-            total_disengagement += count_metric(simulation_db, "has_disengagement")
-
-            # Extract the agent ids from the DB and update the total count of agents
-            agent_ids = _agent_ids_from_db(simulation_db)
-            total_agents = total_agents + len(agent_ids)
-
-            # Initialize local interaction map
-            local_interaction_map = np.zeros((rows, cols))
-            for agent_id in agent_ids:
-                # Extract the timesteps at which the agent interacted with other agents
-                interactions = _interactions_from_db_for_agent(simulation_db, agent_id)
-
-                # Iterate over agent's interaction timesteos
-                for t, diff_long, diff_lat in interactions:
-                    if diff_long is None or diff_lat is None:
-                        module_logger.warning(f"Interaction at timestep {t} for agent {agent_id} has None values for diff_long or diff_lat.")
-                        continue
-
-                    # If values in x are beyond the bounds of bins, 0 or len(bins) is returned as appropriate.
-                    # Retrieve the trajectories for the interactions and fill up the local map
-                    digitized_long = np.digitize(diff_long, long_bins)
-                    digitized_lat = np.digitize(diff_lat, lat_bins)
-
-                    local_interaction_map [digitized_long][digitized_lat] = local_interaction_map [digitized_long][digitized_lat] + 1.0
-
-            # Update the interaction map with the local interaction map
-            interaction_map = interaction_map + local_interaction_map
-
-        # Update the interaction map with the local interaction map
-        total_interactions = int(np.sum(interaction_map))
-        unique_interactions = np.count_nonzero(interaction_map)
-        merged_results = [total_emergency, total_disengagement, total_agents, total_interactions, unique_interactions]
-        
-        csv_writer.writerow([str(v) for v in merged_results])
-
-    # Store all the results also as npy files
-    collision_map_only_impact_location_file = os.path.join(output_to, "collision_map_only_impact_location.npy")
-    np.save(collision_map_only_impact_location_file, collision_map_only_impact_location)
-
-    collision_map_impact_location_and_riv_file = os.path.join(output_to, "collision_map_impact_location_and_riv.npy")
-    np.save(collision_map_impact_location_and_riv_file, collision_map_impact_location_and_riv)
-
-    collision_map_file = os.path.join(output_to, "collision_map.npy")
-    np.save(collision_map_file, collision_map)
-
-    interaction_map_file = os.path.join(output_to, "interaction_map.npy")
-    np.save(interaction_map_file, interaction_map)
+    # ===== Maps =====
+    np.save(os.path.join(output_to, "collision_map_only_impact_location.npy"), collision_map_only_impact_location)
+    np.save(os.path.join(output_to, "collision_map_impact_location_and_riv.npy"), collision_map_impact_location_and_riv)
+    np.save(os.path.join(output_to, "collision_map.npy"), collision_map)
+    np.save(os.path.join(output_to, "interaction_map.npy"), interaction_map)
