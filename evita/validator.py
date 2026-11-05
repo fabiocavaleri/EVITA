@@ -161,13 +161,13 @@ class ScenarioValidator:
                     return validity_flag, validity_message
         
         # Validate initial distances between agents and obstacles on the same lanelet
-        validity_flag, validity_message = self._validate_init_distances(scenario, problem_set)
+        validity_flag, validity_message = self._validate_init_distances(scenario, planning_problems)
         # Exit if any initial state is not valid
         if not validity_flag:
             return validity_flag, validity_message
         
         # Validate goal areas positionings
-        validity_flag, validity_message = self._validate_goal_areas_placement(scenario, problem_set)
+        validity_flag, validity_message = self._validate_goal_areas_placement(scenario, planning_problems)
 
         return validity_flag, validity_message
 

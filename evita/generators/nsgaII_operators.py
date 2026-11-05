@@ -225,7 +225,7 @@ class ScenarioMutation(Mutation):
                     for operator in self.planning_problem_mutation_operators:
                         # Apply the mutation operator with a probability of 1 / number of mutation operators
                         if random.random() <= 1 / len(self.planning_problem_mutation_operators):
-                            print(f"Mutating Planning Problem {mutated_planning_problem.planning_problem_id} with {operator.__name__}")
+                            self.logger.debug(f"Mutating Planning Problem {mutated_planning_problem.planning_problem_id} with {operator.__name__}")
                             mutated_planning_problem = operator(self.scenario_generator_configuration, mutated_planning_problem, _scenario, self.map_file_path)
 
                     # Save mutated planning problem
@@ -496,11 +496,8 @@ class CustomTimeTermination(Termination):
  
     def count(self, scenario) -> None:
         """
-        Count a processed scenario
-        scenarios skipped because the budget was over are counted as valid
+        Count a processed scenario valid (executed and evaluated), skipped (not executed because the budget ran out) or invalid
         """
-        self.all_scenarios += 1
-
         self.all_scenarios += 1
         if getattr(scenario, "is_valid", False):
             self.valid_scenarios += 1

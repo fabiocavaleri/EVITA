@@ -110,9 +110,9 @@ def debug_plot_to_file(scenario, planning_problem_set, output_file):
 
     # Sort planning problems by ID
     if planning_problem_set:
-        planning_problem_dict = planning_problems = sorted(planning_problem_set.planning_problem_dict.values(), key = lambda pp: pp.planning_problem_id)
+        planning_problems = planning_problems = sorted(planning_problem_set.planning_problem_dict.values(), key = lambda pp: pp.planning_problem_id)
     else:
-        planning_problem_dict = []
+        planning_problems = []
 
     # Get a list of unique colors for each planning problem
     color_map = matplotlib.colormaps.get_cmap("rainbow").resampled(max(len(planning_problems), 1))
@@ -165,7 +165,7 @@ def write_performance_file(output_file: str, all_scenarios: int, valid_scenarios
         csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time", "skipped_scenarios"])
         csv_writer.writerow([all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios])
 
-def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid_scenarios: int, invalid_scenarios: int, total_generation_time: int) -> None:
+def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid_scenarios: int, invalid_scenarios: int, total_generation_time: float, skipped_scenarios: int = 0) -> None:
     """
     Checkpoint the run: list the scenario folders produced so far, write the performance counters, and generate the
     report from the data available at this point, into checkpoints/<id>.
@@ -441,7 +441,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
         generation_start = time.time()
         logger.info("")
         
-        scenario_tuples = scenario_generator.generate(progress_bar_manager = progress_bar_manager)
+        scenario_tuples = scenario_generator.generate(progress_bar_manager = progress_bar_manager, budget = budget)
 
         # If no scenarios were generated, we can skip the rest of the loop and continue to the next iteration
         if scenario_tuples is None:
@@ -553,8 +553,6 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     scenario.is_valid = False
                     scenario.validation_message = EXECUTION_ERROR_MESSAGE
                     
-                    raise e
-
             # Executed scenario evaluation
             evaluation_data, agent_data = None, None
             if scenario.is_valid:
@@ -564,7 +562,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     
                     try:
                         # Compute the criticality metrics for this scenario and planning problem set
-                        criticality_dataframe = scenario_evaluator.evaluate(simulation, on_step = update_main_progress_bar)
+                        evaluation_data = scenario_evaluator.evaluate(simulation, on_step = update_main_progress_bar)
                     finally:
                         # Perform cleanup after evaluation
                         simulation.sim_logger.con.close()
@@ -623,12 +621,13 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
             checkpoint_id = 0
         
         if checkpoint_id > 0 and checkpoint_id not in checkpoints:
+            checkpoints.add(checkpoint_id)
             budget.pause()
             try:
-                checkpoint(checkpoint_id, output_folder, all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time)
+                checkpoint(checkpoint_id, output_folder, all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios)
             except Exception as e:
                 logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
-                raise e
+                logger.critical(traceback.format_exc())
             finally:
                 budget.resume()
 

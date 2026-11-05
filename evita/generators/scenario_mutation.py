@@ -51,11 +51,11 @@ def _initial_lanelet(planning_problem: PlanningProblem, scenario: Scenario) -> L
     """
     Lanelet the vehicle starts on.
     """
-    if isinstance(planning_problem, EVITAPlanningProblem):
-        return lanelet_network.find_lanelet_by_id(planning_problem.path[0])
-    
     lanelet_network = scenario.lanelet_network
     lanelet_ids = lanelet_network.find_lanelet_by_position([planning_problem.initial_state.position])[0]
+
+    if isinstance(planning_problem, EVITAPlanningProblem):
+        return lanelet_network.find_lanelet_by_id(planning_problem.path[0])
 
     if lanelet_ids:
         return lanelet_network.find_lanelet_by_id(lanelet_ids[0])
@@ -66,7 +66,8 @@ def _place_on_line(initial_state: InitialState, center_line: LineString, s: floa
     """
     Move the initial state to distance `s` along the centre line (clamped to the line), heading along it.
     """
-    s = min(max(s, 0.0), center_line.length)
+    margin = min(0.5, center_line.length / 2)
+    s = min(max(s, margin), center_line.length - margin)
     point = center_line.interpolate(s)
     ahead = center_line.interpolate(min(s + 0.5, center_line.length))
     behind = center_line.interpolate(max(s - 0.5, 0.0))
@@ -178,11 +179,11 @@ def add_random_planning_problem(config: ScenarioGeneratorConfig, scenario: Scena
 
         random_route = random.choice(routes)
 
-        init_state = generation_utils.get_random_init_state(config, random_route[0])
+        init_state = generation_utils.get_random_init_state(config, random_route)
         if init_state is None:
             continue
 
-        goal = generation_utils.generate_goal(config, generation_utils.get_possible_goal_for_lanelet(config, random_route[-1]))
+        goal = generation_utils.generate_goal(config, generation_utils.get_possible_goal_for_lanelet(config, random_route))
         _problem_set.add_planning_problem(PlanningProblem(_next_planning_problem_id(config, _problem_set), init_state, goal))
 
         return _problem_set

@@ -123,20 +123,20 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
             # Iterate over the mutation operators and apply them with a certain probability
             for operator in self.planning_problem_mutation_operators:
                 if random.random() <= 1 / len(self.planning_problem_mutation_operators):
-                    print(f"Mutating {mutated_planning_problem} with {operator.__name__}")
+                    self.logger.debug(f"Mutating {mutated_planning_problem} with {operator.__name__}")
                     mutated_planning_problem = operator(config, mutated_planning_problem, _scenario)
             
             # Update the planning problem set with the mutated planning problem
             _planning_problem_set.planning_problem_dict[key] = mutated_planning_problem
              
         # Possibly remove an existing planning problem
-        if len(_planning_problem_set.planning_problem_dict) > config.min_amount_pp and random.random() <= (1 / _planning_problem_set.planning_problem_dict.keys()):
-             print(f"Mutating {mutated_planning_problem} with {self.remove_random_planning_problem.__name__}")
+        if len(_planning_problem_set.planning_problem_dict) > config.min_amount_pp and random.random() <= (1 / len(_planning_problem_set.planning_problem_dict.keys())):
+             self.logger.debug(f"Mutating {mutated_planning_problem} with {self.remove_random_planning_problem.__name__}")
              _planning_problem_set = self.remove_random_planning_problem(config, _scenario, _planning_problem_set)
 
         # Possibly add a new planning problem
-        if len(_planning_problem_set.planning_problem_dict) < config.max_amount_pp and random.random() <= (1 / _planning_problem_set.planning_problem_dict.keys()):
-             print(f"Mutating {mutated_planning_problem} with {self.add_random_planning_problem.__name__}")
+        if len(_planning_problem_set.planning_problem_dict) < config.max_amount_pp and random.random() <= (1 / len(_planning_problem_set.planning_problem_dict.keys())):
+             self.logger.debug(f"Mutating {mutated_planning_problem} with {self.add_random_planning_problem.__name__}")
              _planning_problem_set = self.add_random_planning_problem(config, _scenario, _planning_problem_set)
         
         return _scenario, _planning_problem_set

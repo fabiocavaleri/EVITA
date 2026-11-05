@@ -71,6 +71,10 @@ class ScenarioGeneratorConfig:
         self.min_init_velocity = 5
         self.max_init_velocity = 10
 
+        # Range (m/s) of the velocity of new vehicles, also used as the range of velocity mutations
+        self.max_velocity = 25
+        self.min_velocity = 0
+
         # Safety distance between vehicles in the same lane
         self.car_distance_formula = ValidationConfig().car_distance_formula
 

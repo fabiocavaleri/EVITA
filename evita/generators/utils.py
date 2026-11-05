@@ -8,7 +8,6 @@ The evaluation functions build, for each agent, a table with one row per time st
 import math
 import random
 import logging
-from turtle import position
 import numpy as np
 import pandas as pd
 
@@ -74,9 +73,6 @@ def get_random_init_state(config: ScenarioGeneratorConfig, lanelet: Lanelet) -> 
     """
     Return a random Initial State of the vehicle
     """
-    # Extract a random velocity between min and max
-    velocity = random.uniform(config.min_init_velocity, config.max_init_velocity)
-
     # Skip if the lanelet is too short to generate a valid initial state
     center_vertices = lanelet.center_vertices
     if len(center_vertices) < 2:
@@ -429,7 +425,7 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
             if not nearby_agent_ids:
                 continue
                 
-            diff_0, diff_1 = compute_difference_in_cc_space(simulation.scenario, trajectory_at_time_t, trajectory_at_time_t_1)
+            diff_0, diff_1 = compute_difference_in_cc_space(trajectory_at_time_t, trajectory_at_time_t_1)
 
             # Skip interaction in case of errors in trajectory difference computation
             if diff_0 is None or diff_1 is None:
@@ -766,9 +762,8 @@ def compute_collision_features(time_step: int, agent, other_agents, scenario: Sc
         other_obstacle = scenario.obstacle_by_id(other_agent.id)
         other_occupancy = other_obstacle.occupancy_at_time(time_step)
         other_state = other_obstacle.state_at_time(time_step)
-        other_state_before = other_obstacle.state_at_time(time_step - 1)
 
-        if other_occupancy is None or other_state is None or other_state_before is None:
+        if other_occupancy is None or other_state is None:
             continue
 
         # Only vehicles touching the agent take part in this collision
@@ -778,7 +773,7 @@ def compute_collision_features(time_step: int, agent, other_agents, scenario: Sc
         # Compute RIV and check if it is the most critical collision (i.e., the one with the highest RIV)
         current_riv = compute_RIV(agent_state, other_state)
         if current_riv > riv:
-            ria = compute_RIA(agent_state, agent_state_before, other_state, other_state_before)
+            ria = compute_RIA(agent_state, other_state)
             impact_position = compute_impact_position(agent_occupancy, agent_state, other_occupancy, other_state)
             riv = current_riv
             most_critical_agent = other_agent.id
