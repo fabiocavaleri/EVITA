@@ -14,6 +14,7 @@ from ..data_analysis import _rebuild_trajectory
 from ..generators.utils import (augment_with_collisions, augment_with_danger, augment_with_emergencies_and_disengagements,
                                 augment_with_interactions, augment_with_missed_goals)
 from ..interfaces import AbstractScenarioEvaluator
+from ..timing import TASK_TIMER
 from ..utils import EVITA_MAIN_LOGGER_NAME, sanitize_dataframe
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
@@ -54,7 +55,8 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
             if on_step is not None:
                 on_step()
 
-        trajectories_df = self._planned_trajectories(simulation)
+        with TASK_TIMER.measure("evaluation.planned_trajectories"):
+            trajectories_df = self._planned_trajectories(simulation)
         sync_progress_bar()
 
         for obstacle in simulation.scenario.obstacles:
@@ -62,7 +64,8 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
 
         # FrenetiX's own evaluation (it also stores the database)
         module_logger.info("Evaluating simulation...")
-        criticality_dataframe = evaluate_simulation(simulation).criticality_dataframe
+        with TASK_TIMER.measure("evaluation.frenetix_metrics"):
+            criticality_dataframe = evaluate_simulation(simulation).criticality_dataframe
 
         sync_progress_bar()
 
@@ -77,29 +80,34 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
         criticality_dataframe.reset_index(inplace = True)
 
         module_logger.info("Computing danger criticality metric...")
-        criticality_dataframe = augment_with_danger(simulation, criticality_dataframe)
+        with TASK_TIMER.measure("evaluation.danger"):
+            criticality_dataframe = augment_with_danger(simulation, criticality_dataframe)
 
         sync_progress_bar()
 
         module_logger.info("Computing interactions...")
-        criticality_dataframe = augment_with_interactions(simulation, trajectories_df, criticality_dataframe, trajectory_difference_threshold)
+        with TASK_TIMER.measure("evaluation.interactions"):
+            criticality_dataframe = augment_with_interactions(simulation, trajectories_df, criticality_dataframe, trajectory_difference_threshold)
 
         sync_progress_bar()
 
         module_logger.info("Computing collisions...")
-        criticality_dataframe = augment_with_collisions(simulation, criticality_dataframe)
+        with TASK_TIMER.measure("evaluation.collisions"):
+            criticality_dataframe = augment_with_collisions(simulation, criticality_dataframe)
 
         sync_progress_bar()
 
         # collect data about missed goals/timeouts
         module_logger.info("Computing missed goals and timeouts...")
-        criticality_dataframe = augment_with_missed_goals(simulation, criticality_dataframe)
+        with TASK_TIMER.measure("evaluation.missed_goals"):
+            criticality_dataframe = augment_with_missed_goals(simulation, criticality_dataframe)
 
         sync_progress_bar()
 
         # collect data about emergency behaviors and disengagement
         module_logger.info("Computing emergencies and disengagements...")
-        criticality_dataframe = augment_with_emergencies_and_disengagements(simulation, criticality_dataframe)
+        with TASK_TIMER.measure("evaluation.emergencies"):
+            criticality_dataframe = augment_with_emergencies_and_disengagements(simulation, criticality_dataframe)
 
         sync_progress_bar()
         
@@ -112,18 +120,19 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
         criticality_dataframe = sanitize_dataframe(criticality_dataframe)
 
         # Add missing columns to the database if they don't exist yet
-        con = simulation.sim_logger.con
-        existing = {row[1] for row in con.execute("PRAGMA table_info(scenario_evaluation)")}
+        with TASK_TIMER.measure("evaluation.database"):
+            con = simulation.sim_logger.con
+            existing = {row[1] for row in con.execute("PRAGMA table_info(scenario_evaluation)")}
 
-        for col in criticality_dataframe.columns:
-            if col not in existing:
-                con.execute(f'ALTER TABLE scenario_evaluation ADD COLUMN "{col}" ANY')
+            for col in criticality_dataframe.columns:
+                if col not in existing:
+                    con.execute(f'ALTER TABLE scenario_evaluation ADD COLUMN "{col}" ANY')
 
-        con.execute("DELETE FROM scenario_evaluation WHERE scenario=?", (simulation.config.simulation.name_scenario,))
-        con.commit()
+            con.execute("DELETE FROM scenario_evaluation WHERE scenario=?", (simulation.config.simulation.name_scenario,))
+            con.commit()
 
-        # Make sure we log everything inside the dataframe
-        simulation.sim_logger.log_evaluation(criticality_dataframe)
+            # Make sure we log everything inside the dataframe
+            simulation.sim_logger.log_evaluation(criticality_dataframe)
         sync_progress_bar()
 
         return criticality_dataframe

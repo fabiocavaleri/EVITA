@@ -30,6 +30,7 @@ from .data_analysis import generate_report
 from .interfaces import AbstractScenarioEvaluator, AbstractScenarioExecutor, AbstractScenarioGenerator
 from .utils import (EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, Budget,
                     extend_scenario_after_goal_areas, get_progress_bar_manager, simulation_folders, time_shift)
+from .timing import TASK_TIMER
 from .validator import ScenarioValidator
 
 # Executor and evaluator used by every generator
@@ -418,6 +419,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     # Start generation and execution loop
     budget = Budget(time_budget)
     budget.start()
+    TASK_TIMER.reset()
 
     # Define a progress bar with time
     progress_bar_manager = get_progress_bar_manager()
@@ -440,8 +442,9 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
         # Generate some scenarios
         generation_start = time.time()
         logger.info("")
-        
-        scenario_tuples = scenario_generator.generate(progress_bar_manager = progress_bar_manager, budget = budget)
+
+        with TASK_TIMER.measure("generation"):
+            scenario_tuples = scenario_generator.generate(progress_bar_manager = progress_bar_manager, budget = budget)
 
         # If no scenarios were generated, we can skip the rest of the loop and continue to the next iteration
         if scenario_tuples is None:
@@ -478,9 +481,10 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
             # Plot scenarios if debug is enabled
             if debug:
-                for scenario, planning_problem_set in scenario_tuples:
-                    debug_plot_file = os.path.join(debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
-                    debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
+                with TASK_TIMER.measure("debug_plots"):
+                    for scenario, planning_problem_set in scenario_tuples:
+                        debug_plot_file = os.path.join(debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
+                        debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
         finally:
             # Resume the budget for the execution and evaluation of the scenarios
             budget.resume()
@@ -520,7 +524,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
                     # Extend the scenario by adding some road AFTER the goal areas
                     # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
-                    extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
+                    with TASK_TIMER.measure("execution_preparation", key = scenario.generation_id):
+                        extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
 
                     # Time Shift so at least one agent starts at time_step = 0
                     # time_shifted_planning_problem_set = time_shift(scenario, planning_problem_set) # ===== For now all planning problems are already starting at time_step = 0, so no need to shift them =====
@@ -528,7 +533,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
                     # Make sure we execute the extended_scenario, not the original one
                     # Both will be available afterwards, but the original shall be used for evolution
-                    simulation = scenario_executor.execute(extended_scenario, time_shifted_planning_problem_set, progress_bar_manager, on_step = update_main_progress_bar)
+                    with TASK_TIMER.measure("simulation", key = scenario.generation_id):
+                        simulation = scenario_executor.execute(extended_scenario, time_shifted_planning_problem_set, progress_bar_manager, on_step = update_main_progress_bar)
 
                     if simulation is None:
                         scenario.is_valid = False
@@ -562,7 +568,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     
                     try:
                         # Compute the criticality metrics for this scenario and planning problem set
-                        evaluation_data = scenario_evaluator.evaluate(simulation, on_step = update_main_progress_bar)
+                        with TASK_TIMER.measure("evaluation", key = scenario.generation_id):
+                            evaluation_data = scenario_evaluator.evaluate(simulation, on_step = update_main_progress_bar)
                     finally:
                         # Perform cleanup after evaluation
                         simulation.sim_logger.con.close()
@@ -611,7 +618,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
         # If there's still some time, inform the generator about newly executed scenario to evaluate the scenarios we managed to simulate
         # If the budget is over, there's no point to ask the algorithm to evaluate the population
         if not budget.is_over():
-            scenario_generator.evaluate(simulation_data)
+            with TASK_TIMER.measure("fitness"):
+                scenario_generator.evaluate(simulation_data)
 
         # At this point, we have completed a generation epoch, we can check whether we need to checkpoint it
         elapsed_time = budget.get_elapsed()
@@ -624,7 +632,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
             checkpoints.add(checkpoint_id)
             budget.pause()
             try:
-                checkpoint(checkpoint_id, output_folder, all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios)
+                with TASK_TIMER.measure("checkpoints"):
+                    checkpoint(checkpoint_id, output_folder, all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios)
             except Exception as e:
                 logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
                 logger.critical(traceback.format_exc())
@@ -641,4 +650,11 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     update_main_progress_bar()
     progress_bar_manager.stop()
 
-    generate_report(output_folder)
+    budget_elapsed_seconds = budget.get_time_budget() - budget.get_remaining_real_time()
+    
+    with TASK_TIMER.measure("report"):
+        generate_report(output_folder)
+
+    # Time spent in each task (task_times.csv, task_times_per_scenario.csv)
+    TASK_TIMER.write(output_folder, budget_elapsed_seconds)
+    logger.info("Saved Task Times")

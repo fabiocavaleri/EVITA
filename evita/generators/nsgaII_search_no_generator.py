@@ -26,6 +26,7 @@ from evita.generators.NSGAIIproblem import NSGAIIproblem
 from evita.generators.nsgaII_operators import (CustomTimeTermination, ScenarioCrossover, ScenarioDuplicateElimination,
                                                ScenarioMutation, ScenarioSampling)
 from evita.orchestrator import write_performance_file
+from evita.timing import TASK_TIMER
 from evita.utils import EVITA_MAIN_LOGGER_NAME, get_progress_bar_manager, initialize_main_logger
 
 # FrenetiX is the driving agent of every vehicle
@@ -105,6 +106,7 @@ def main() -> None:
 
     # Start the time budget
     termination_criterion.start()
+    TASK_TIMER.reset()
 
     try:
         algorithm.run()
@@ -133,8 +135,17 @@ def main() -> None:
     
     logger.info("Saved Performance Metrics")
 
+    # Budget time actually used, for the cross-check in task_times.csv
+    budget = termination_criterion.budget
+    budget_elapsed_seconds = budget.get_time_budget() - budget.get_remaining_real_time()
+
     # Now analysize the data collected so far and output to the scenario folder
-    generate_report(problem.output_folder)
+    with TASK_TIMER.measure("report"):
+        generate_report(problem.output_folder)
+
+    # Time spent in each task (task_times.csv, task_times_per_scenario.csv)
+    TASK_TIMER.write(problem.output_folder, budget_elapsed_seconds)
+    logger.info("Saved Task Times")
 
 if __name__ == '__main__':
     main()

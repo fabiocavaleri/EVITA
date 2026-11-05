@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from typing import List
 from copy import deepcopy
 
 from pymoo.core.problem import ElementwiseProblem
@@ -35,6 +34,7 @@ from ..generators.utils import compute_interaction_map
 from ..orchestrator import (EXECUTION_ERROR_MESSAGE, SCENARIO_EVALUATOR_CLASS, SCENARIO_EVALUATOR_MODULE, SCENARIO_EXECUTOR_CLASS,
                             SCENARIO_EXECUTOR_MODULE, TIMEOUT_MESSAGE, _load_class, backup_debug, debug_plot_to_file, ensure_generation_id)
 from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, extend_scenario_after_goal_areas
+from ..timing import TASK_TIMER
 from ..validator import ScenarioValidator
 
 class NSGAIIproblem(ElementwiseProblem):
@@ -166,8 +166,9 @@ class NSGAIIproblem(ElementwiseProblem):
             self.scenario_validator.validate(scenario, planning_problem_set)
  
             if self.debug:
-                debug_plot_file = os.path.join(self.debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
-                debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
+                with TASK_TIMER.measure("debug_plots"):
+                    debug_plot_file = os.path.join(self.debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
+                    debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
 
         # ===== 2. Budget check: no new scenario is executed once the budget is over =====
         if self.termination_criterion.is_over():
@@ -184,7 +185,8 @@ class NSGAIIproblem(ElementwiseProblem):
                     criticality_dataframe = self._evaluate_simulation(scenario, simulation)
 
                     # ===== 5. Fitness =====
-                    fitness = self._compute_fitness(simulation, criticality_dataframe, self.current_generation)
+                    with TASK_TIMER.measure("fitness", key = scenario.generation_id):
+                        fitness = self._compute_fitness(simulation, criticality_dataframe, self.current_generation)
                 except Exception:
                     msg = f" {scenario.generation_id} to be evaluated. Mark it as invalid"
                     self.logger.critical("=" * (len(msg) + 2))
@@ -237,7 +239,8 @@ class NSGAIIproblem(ElementwiseProblem):
                 self.logger.debug(f"- {pp.planning_problem_id} - {pp.initial_state.position} - {pp.initial_state.velocity} - planned start at {pp.initial_state.time_step}")
  
             # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
-            extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
+            with TASK_TIMER.measure("execution_preparation", key = scenario.generation_id):
+                extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
  
             # Time Shift so at least one agent starts at time_step = 0
             # time_shifted_planning_problem_set = time_shift(scenario, planning_problem_set)
@@ -245,10 +248,11 @@ class NSGAIIproblem(ElementwiseProblem):
  
             # Execute the extended scenario; the original one is the one used for evolution.
             # The executor shares the progress bar manager and advances the main bar at every simulation step
-            simulation = self.scenario_executor.execute(extended_scenario, 
-                                                        time_shifted_planning_problem_set, 
-                                                        self.termination_criterion.progress_bar_manager,
-                                                        on_step = self.termination_criterion.update_main_progress_bar)
+            with TASK_TIMER.measure("simulation", key = scenario.generation_id):
+                simulation = self.scenario_executor.execute(extended_scenario, 
+                                                            time_shifted_planning_problem_set, 
+                                                            self.termination_criterion.progress_bar_manager,
+                                                            on_step = self.termination_criterion.update_main_progress_bar)
         except Exception:
             # A failure of one simulation must not end the run: the scenario is invalid, and the search continues
             self.logger.critical(f"A critical error prevented {scenario.generation_id} to complete. Mark it as Error and set the validity flag to False")
@@ -282,7 +286,8 @@ class NSGAIIproblem(ElementwiseProblem):
         self.logger.info(f"Evaluating scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
  
         try:
-            criticality_dataframe = self.scenario_evaluator.evaluate(simulation, self.trajectory_difference_threshold, on_step = self.termination_criterion.update_main_progress_bar)
+            with TASK_TIMER.measure("evaluation", key = scenario.generation_id):
+                criticality_dataframe = self.scenario_evaluator.evaluate(simulation, self.trajectory_difference_threshold, on_step = self.termination_criterion.update_main_progress_bar)
         finally:
             # Perform cleanup after evaluation
             simulation.sim_logger.con.close()

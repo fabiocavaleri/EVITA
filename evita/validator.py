@@ -18,6 +18,7 @@ from commonroad_route_planner.route_planner import RoutePlanner
 from commonroad.planning.planning_problem import PlanningProblem, PlanningProblemSet
 
 from .config import ScenarioGeneratorConfig, ValidationConfig
+from .timing import TASK_TIMER
 from .utils import EVITA_MAIN_LOGGER_NAME
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
@@ -80,6 +81,13 @@ class ScenarioValidator:
             self.validate(scenario, planning_problem_set)
 
     def is_scenario_valid(self, scenario: Scenario, problem_set: PlanningProblemSet) -> Tuple[bool, str]:
+        """
+        (validity, reason) of the scenario; the reason is empty for valid scenarios. Timed as task "validation".
+        """
+        with TASK_TIMER.measure("validation"):
+            return self._is_scenario_valid(scenario, problem_set)
+
+    def _is_scenario_valid(self, scenario: Scenario, problem_set: PlanningProblemSet) -> Tuple[bool, str]:
         """
         (validity, reason) of the scenario; the reason is empty for valid scenarios.
         """
