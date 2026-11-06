@@ -170,3 +170,5 @@ EVITA_DoppelTest/collisions_experiments/
 EVITA_DoppelTest/test
 EVITA_DoppelTest/old-plots
 results/
+calibration/
+logs/
