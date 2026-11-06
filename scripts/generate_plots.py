@@ -974,6 +974,157 @@ def initialize_effect_size(experiments_folder_paths: list, experiments_labels: l
 
     return effect_size_results, effect_size_data, maps_folders
 
+# ========== TASK TIMES ==========
+ 
+# Tasks measured by EVITA's task timer, in pipeline order ("unmeasured" is the time between measured tasks)
+TASK_TIMES_TASKS = ["generation", "validation", "debug_plots", "execution_preparation", "simulation",
+                    "evaluation", "evaluation.planned_trajectories", "evaluation.frenetix_metrics", "evaluation.danger",
+                    "evaluation.interactions", "evaluation.collisions", "evaluation.missed_goals", "evaluation.emergencies",
+                    "evaluation.database", "fitness", "checkpoints", "report", "unmeasured"]
+ 
+# Aggregated view: each group adds up its tasks (mutation, crossover and sampling are part of "generation")
+TASK_TIMES_GROUPS = {
+    "Generation": ["generation"],
+    "Validation": ["validation"],
+    "Simulation": ["execution_preparation", "simulation"],
+    "Evaluation": ["evaluation", "evaluation.planned_trajectories", "evaluation.frenetix_metrics", "evaluation.danger",
+                   "evaluation.interactions", "evaluation.collisions", "evaluation.missed_goals", "evaluation.emergencies",
+                   "evaluation.database", "fitness"],
+    "Other": ["debug_plots", "checkpoints", "report", "unmeasured"],
+}
+ 
+# Denominator of the percentages: the run's wall-clock time (all tasks, counted in the budget or not, add up to it)
+TASK_TIMES_TOTAL = "total (wall clock)"
+ 
+def load_task_times(task_times_data_map: dict) -> pd.DataFrame:
+    """
+    One row per (map, framework, run, task) with the task's seconds, from the task_times.json files
+    ({task: {run: seconds}}). Runs without a value for a task (e.g., no debug plots) get 0 for that task.
+    """
+    rows = []
+ 
+    for map_name, map_data in task_times_data_map.items():
+        for framework, file_path in map_data.items():
+            if not file_path or not os.path.exists(file_path):
+                continue
+ 
+            with open(file_path, "r") as f:
+                task_times = json.load(f)
+ 
+            runs = sorted({run for values in task_times.values() for run in values})
+            for run in runs:
+                # Wall clock of the run; if missing, the sum of its tasks (the same by construction)
+                total = task_times.get(TASK_TIMES_TOTAL, {}).get(run)
+                if total is None:
+                    total = sum(task_times.get(task, {}).get(run, 0.0) for task in TASK_TIMES_TASKS)
+ 
+                for task in TASK_TIMES_TASKS + [TASK_TIMES_TOTAL]:
+                    seconds = total if task == TASK_TIMES_TOTAL else task_times.get(task, {}).get(run, 0.0)
+                    rows.append({"Map": MAP_NAMES_MAPPING.get(map_name, map_name), "Framework": framework, "Run": run, "Task": task, "Seconds": float(seconds)})
+ 
+    return pd.DataFrame(rows)
+ 
+def _task_times_table(df: pd.DataFrame, components: dict) -> tuple:
+    """
+    For each (map, framework): mean minutes per run of each component, and its percentage of the wall-clock time.
+    `components` maps each plotted component to the tasks it adds up.
+    """
+    task_to_component = {task: component for component, tasks in components.items() for task in tasks}
+ 
+    tasks_df = df[df["Task"] != TASK_TIMES_TOTAL].copy()
+    tasks_df["Component"] = tasks_df["Task"].map(task_to_component)
+    tasks_df = tasks_df.dropna(subset = ["Component"])
+ 
+    # Seconds of each component in each run, then mean over runs (minutes) and sum over runs
+    per_run = tasks_df.groupby(["Map", "Framework", "Run", "Component"])["Seconds"].sum().reset_index()
+    absolute = per_run.groupby(["Map", "Framework", "Component"])["Seconds"].mean().unstack("Component").fillna(0.0) / 60.0
+    component_sums = per_run.groupby(["Map", "Framework", "Component"])["Seconds"].sum().unstack("Component").fillna(0.0)
+ 
+    wall_clock = df[df["Task"] == TASK_TIMES_TOTAL].groupby(["Map", "Framework"])["Seconds"].sum()
+    percentage = component_sums.div(wall_clock, axis = 0) * 100.0
+ 
+    order = [component for component in components if component in absolute.columns]
+    return absolute[order], percentage[order]
+ 
+def _plot_task_times(table: pd.DataFrame, framework_labels: list, ylabel: str, title: str, output_file: str, colors: dict) -> None:
+    """
+    One panel per map; in each panel, one stacked bar per framework with the components of `table`.
+    """
+    maps = list(dict.fromkeys(table.index.get_level_values("Map")))
+
+    # The virtual map "All" comes last, as in the other plots
+    maps = [m for m in maps if m != "All"] + [m for m in maps if m == "All"]
+    fig, axes = plt.subplots(1, len(maps), figsize = (max(4.0, 2.2 * len(maps) + 2.5), 5), sharey = True, squeeze = False)
+ 
+    for ax, map_name in zip(axes[0], maps):
+        map_table = table.xs(map_name, level = "Map")
+        frameworks = [framework for framework in framework_labels if framework in map_table.index]
+        bottom = np.zeros(len(frameworks))
+ 
+        for component in table.columns:
+            values = map_table.reindex(frameworks)[component].to_numpy()
+            ax.bar(range(len(frameworks)), values, bottom = bottom, color = colors[component], label = component, width = 0.7, edgecolor = "white", linewidth = 0.3)
+            bottom += values
+ 
+        ax.set_title(map_name)
+        ax.set_xticks(range(len(frameworks)))
+        ax.set_xticklabels(frameworks, rotation = 45, ha = "right")
+        ax.grid(axis = "y", alpha = 0.3)
+ 
+    axes[0][0].set_ylabel(ylabel)
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles[::-1], labels[::-1], loc = "center left", bbox_to_anchor = (1.0, 0.5), fontsize = 8, frameon = False)
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(output_file, dpi = 500, bbox_inches = "tight")
+    plt.close(fig)
+ 
+def generate_task_times_plots(task_times_data_map: dict, framework_labels: list, output_folder_path: str) -> None:
+    """
+    Plots of the time spent in each task, per map (and all maps together) and framework:
+      - per task and grouped (Generation, Validation, Simulation, Evaluation, Other);
+      - absolute (mean minutes per run) and percentage (of the runs' wall-clock time).
+    Also saves the plotted values in task_times_summary.json.
+    """
+    df = load_task_times(task_times_data_map)
+    if df.empty:
+        print("No task_times.json found. Skipping task times plots.")
+        return
+ 
+    # Virtual map "All" aggregating all maps
+    if df["Map"].nunique() > 1:
+        all_df = df.copy()
+        # Run names repeat across maps (e.g., run_1 on every map): identify each run by its map too
+        all_df["Run"] = all_df["Map"] + "/" + all_df["Run"].astype(str)
+        all_df["Map"] = "All"
+        df = pd.concat([df, all_df], ignore_index = True)
+ 
+    output_folder = os.path.join(output_folder_path, "time_task_plots")
+    os.makedirs(output_folder, exist_ok = True)
+ 
+    task_cmap = plt.get_cmap("tab20")
+    configurations = {
+        "tasks": ({task: [task] for task in TASK_TIMES_TASKS}, {task: task_cmap(i % 20) for i, task in enumerate(TASK_TIMES_TASKS)}),
+        "groups": (TASK_TIMES_GROUPS, dict(zip(TASK_TIMES_GROUPS, ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8C8C8C"]))),
+    }
+ 
+    summary = {}
+    for configuration, (components, colors) in configurations.items():
+        absolute, percentage = _task_times_table(df, components)
+ 
+        _plot_task_times(absolute, framework_labels, "Mean time per run (minutes)", f"Time per {'task' if configuration == 'tasks' else 'task group'}",
+                         os.path.join(output_folder, f"task_times_{configuration}_absolute.png"), colors)
+        _plot_task_times(percentage, framework_labels, "Share of the run's wall-clock time (%)", f"Time per {'task' if configuration == 'tasks' else 'task group'} (%)",
+                         os.path.join(output_folder, f"task_times_{configuration}_percentage.png"), colors)
+ 
+        summary[configuration] = {
+            "absolute_minutes": {f"{m} | {f}": row.round(3).to_dict() for (m, f), row in absolute.iterrows()},
+            "percentage_of_wall_clock": {f"{m} | {f}": row.round(3).to_dict() for (m, f), row in percentage.iterrows()},
+        }
+ 
+    with open(os.path.join(output_folder_path, "time_task_plots", "task_times_summary.json"), "w") as f:
+        json.dump(summary, f, indent = 4)
+
 def generate_comparison_plots(experiments_folder_paths: list, experiments_labels: list, output_folder_path: str):
     """
     Generates the comparison plots between Evita and DoppelTest for the Borregas Ave map and saves the results in the output folder
@@ -991,7 +1142,9 @@ def generate_comparison_plots(experiments_folder_paths: list, experiments_labels
         "generated": "total_generated_scenarios.json",
         "valid": "total_valid_scenarios.json",
         "invalid": "total_invalid_scenarios.json",
-        "vehicles_number": "vehicles_number.json"
+        "skipped": "total_skipped_scenarios.json",
+        "vehicles_number": "vehicles_number.json",
+        "task_times": "task_times.json"
     }
 
     # Same colour for each framework in every plot
@@ -1027,7 +1180,7 @@ def generate_comparison_plots(experiments_folder_paths: list, experiments_labels
                     print(f"Warning: {effect_size_column} file not found for experiment '{experiment_label}' in map '{map_folder}'. Expected at: {effect_size_file_path}")
                 
     print("Generated interactions maps plot")
-
+    
     for effect_size_column in effect_size_columns.keys():
         files_list = effect_size_data[effect_size_column]
 
@@ -1057,7 +1210,8 @@ def generate_comparison_plots(experiments_folder_paths: list, experiments_labels
     data = {
         "generated": effect_size_data["generated"],
         "valid": effect_size_data["valid"],
-        "invalid": effect_size_data["invalid"]
+        "invalid": effect_size_data["invalid"],
+        "skipped": effect_size_data["skipped"]
     }
     
     effect_size_list = generate_statistics_plots(data, experiments_labels, output_folder_path)
@@ -1070,6 +1224,11 @@ def generate_comparison_plots(experiments_folder_paths: list, experiments_labels
     agents_number_plots(effect_size_data["vehicles_number"], effect_size_data["valid"], output_folder_path)
 
     print("Generated agents number comparison plots")
+    
+    # ========== PLOT TASK TIMES =========
+    generate_task_times_plots(effect_size_data["task_times"], experiments_labels, output_folder_path)
+ 
+    print("Generated task times plots")
 
     effect_size_data_file_path = os.path.join(output_folder_path, "effect_size_data.json")
     with open(effect_size_data_file_path, "w") as f:

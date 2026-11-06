@@ -59,7 +59,27 @@ def main(experiments_folder_path: str, max_workers: int = 5):
     total_generated_scenarios = {exp_id: -1 for exp_id in experiments_ids}
     total_valid_scenarios = {exp_id: -1 for exp_id in experiments_ids}
     total_invalid_scenarios = {exp_id: -1 for exp_id in experiments_ids}
+    total_skipped_scenarios = {exp_id: -1 for exp_id in experiments_ids}
     total_generation_time = {exp_id: -1 for exp_id in experiments_ids}
+
+    # Initialize a dictionary to store the time taken by each task
+    task_times = {}
+
+    ##################################################
+
+    def read_task_times(experiment_folder_path: str) -> dict:
+        """
+        Seconds spent in each task of a run, from its task_times.csv: {task: total_seconds}.
+        Includes the summary rows ("unmeasured", "total (wall clock)", "total counted in budget", "budget elapsed (from the budget)").
+        """
+        task_times_file = os.path.join(experiment_folder_path, "task_times.csv")
+        if not os.path.exists(task_times_file):
+            return {}
+
+        task_times = pd.read_csv(task_times_file)
+        task_times = task_times.dropna(subset = ["total_seconds"])
+
+        return {str(task).strip(): round(float(seconds), 3) for task, seconds in zip(task_times["task"], task_times["total_seconds"])}
 
     ##################################################
 
@@ -234,7 +254,15 @@ def main(experiments_folder_path: str, max_workers: int = 5):
             total_generated_scenarios[experiment_id] = int(performances["all_scenarios"].iloc[0])
             total_valid_scenarios[experiment_id] = int(performances["valid_scenarios"].iloc[0])
             total_invalid_scenarios[experiment_id] = int(performances["invalid_scenarios"].iloc[0])
+            total_skipped_scenarios[experiment_id] = int(performances["skipped_scenarios"].iloc[0])
             total_generation_time[experiment_id] = round(float(performances["total_generation_time"].iloc[0]), 2)
+
+        # ============================================================
+        # Read the time spent in each task (task_times.csv)
+        # ============================================================
+ 
+        for task, seconds in read_task_times(experiment_folder_path).items():
+            task_times.setdefault(task, {})[experiment_id] = seconds
 
         # ============================================================
         # Find scenarios
@@ -375,8 +403,16 @@ def main(experiments_folder_path: str, max_workers: int = 5):
         save_list(total_generated_scenarios, "total_generated_scenarios.json")
         save_list(total_valid_scenarios, "total_valid_scenarios.json")
         save_list(total_invalid_scenarios, "total_invalid_scenarios.json")
+        save_list(total_skipped_scenarios, "total_skipped_scenarios.json")
         save_list(total_generation_time, "total_generation_time.json")
 
+    # ================================================================
+    # SAVE TASK TIMES
+    # ================================================================
+ 
+    if task_times:
+        save_list(task_times, "task_times.json")
+        
     print("Analysis completed.")
 
 ##################################################
