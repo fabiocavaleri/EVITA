@@ -76,7 +76,23 @@ def extend_the_outgoing_lanelets_with_a_straight(lanelet_network: LaneletNetwork
                            traffic_signs = lanelet.traffic_signs,
                            traffic_lights = lanelet.traffic_lights)
         
-        new_lanelet_network.remove_lanelet(lanelet.lanelet_id)
-        new_lanelet_network.add_lanelet(extended)
-
+        new_lanelet_network.remove_lanelet(lanelet.lanelet_id, rtree = False)
+        new_lanelet_network.add_lanelet(extended, rtree = False)
+ 
+    # remove_lanelet() also deletes every reference to the removed id from all other lanelets
+    # (LaneletNetwork.cleanup_lanelet_references), e.g. the predecessors lose their successor link.
+    # Restore the original topology so the extended lanelets stay reachable.
+    for original in lanelet_network.lanelets:
+        restored = new_lanelet_network.find_lanelet_by_id(original.lanelet_id)
+        # Private attributes, as in cleanup_lanelet_references: the public setters reject None
+        restored._predecessor = list(original.predecessor)
+        restored._successor = list(original.successor)
+        restored._adj_left = original.adj_left
+        restored._adj_left_same_direction = original.adj_left_same_direction
+        restored._adj_right = original.adj_right
+        restored._adj_right_same_direction = original.adj_right_same_direction
+ 
+    # Rebuild the spatial index once, now that all the geometries are final
+    new_lanelet_network._create_strtree()
+    
     return new_lanelet_network

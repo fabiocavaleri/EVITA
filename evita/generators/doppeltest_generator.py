@@ -404,18 +404,19 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
             progress_bar_manager = progress_bar_manager or enlighten.get_manager()
             generation_bar = progress_bar_manager.counter(total = self.POP_SIZE, desc = "Scenario Generation", unit = "scenarios", color = "green", leave = False)
 
-            # Generate the Initial Population
-            # Scenario class requires a Parsed Map accessed statically via MapParser
-            self.logger.info(f' ====== Generating the Initial Population ====== ')
-            
-            self.population = []
-            
-            # Generate the initial population of scenarios using the DoppelTest framework
-            for _ in range(self.POP_SIZE):
-                self.population.append(Scenario.get_conflict_one())
-                generation_bar.update()
-            
-            generation_bar.close(clear = True)
+            try:
+                # Generate the Initial Population
+                # Scenario class requires a Parsed Map accessed statically via MapParser
+                self.logger.info(f' ====== Generating the Initial Population ====== ')
+                
+                self.population = []
+                
+                # Generate the initial population of scenarios using the DoppelTest framework
+                for _ in range(self.POP_SIZE):
+                    self.population.append(Scenario.get_conflict_one())
+                    generation_bar.update()
+            finally:
+                generation_bar.close(clear = True)
 
             # Update the generation ID and chromosome ID for each scenario in the initial population
             for index, scenario in enumerate(self.population):

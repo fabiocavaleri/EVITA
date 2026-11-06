@@ -268,7 +268,7 @@ class ScenarioValidator:
 
         for lanelet in lanelet_network.lanelets:
             # This one MERGEs the lanelets into a big one
-            full_lanelets = self.get_successor_lanelets(lanelet, lanelet_network)
+            full_lanelets = self._successor_paths(scenario, lanelet)
 
             for full_ll in full_lanelets:        
                 polygon = full_ll.polygon

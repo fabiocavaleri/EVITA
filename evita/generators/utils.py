@@ -265,7 +265,10 @@ def _merge_into(criticality_dataframe: pd.DataFrame, tables: List[pd.DataFrame])
     if not tables:
         return criticality_dataframe
     
-    return pd.merge(criticality_dataframe, pd.concat(tables, ignore_index = True), on = [AGENT_COLUMN, TIME_COLUMN], how = "left")
+    columns = tables[0].columns
+    agents_table = pd.DataFrame({column: [value for table in tables for value in table[column].tolist()] for column in columns}, columns = columns)
+ 
+    return pd.merge(criticality_dataframe, agents_table, on = [AGENT_COLUMN, TIME_COLUMN], how = "left")
 
 def _scenario_final_time_step(simulation: Simulation) -> int:
     """

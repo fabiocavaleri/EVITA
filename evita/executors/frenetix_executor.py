@@ -87,43 +87,43 @@ class EVITASimulation(Simulation):
         
         # Create a progress bar for the scenario execution process
         execution_bar = self.progress_bar_manager.counter(total = self.expected_duration, desc = "Scenario Execution", unit = "timesteps", color = "orange", leave = False)
+        try:
+            running = True
+            while running:
 
-        running = True
-        while running:
+                if self.config.occlusion.use_occlusion_module:
+                    if self.agents[0].planner_interface.occlusion_module is not None:
+                        for agent in self.agents[0].planner_interface.occlusion_module.agent_manager.real_agents:
+                            if agent.commonroad_dynamic_obstacle not in self.scenario.obstacles:
+                                self.scenario.add_objects(agent.commonroad_dynamic_obstacle)
 
-            if self.config.occlusion.use_occlusion_module:
-                if self.agents[0].planner_interface.occlusion_module is not None:
-                    for agent in self.agents[0].planner_interface.occlusion_module.agent_manager.real_agents:
-                        if agent.commonroad_dynamic_obstacle not in self.scenario.obstacles:
-                            self.scenario.add_objects(agent.commonroad_dynamic_obstacle)
+                    self._set_collision_check()
 
-                self._set_collision_check()
+                #######################
+                # Here time progresses
+                self.global_timestep += 1
+                #######################
 
-            #######################
-            # Here time progresses
-            self.global_timestep += 1
-            #######################
+                self.process_times = {}
+                step_time_start = time.perf_counter()
 
-            self.process_times = {}
-            step_time_start = time.perf_counter()
+                # Execute one simulation step for all the agents
+                running = self.step_sequential_simulation()
 
-            # Execute one simulation step for all the agents
-            running = self.step_sequential_simulation()
+                self.visualize_simulation(self.global_timestep)
+                self.process_times.update({"total_sim_step": time.perf_counter() - step_time_start})
 
-            self.visualize_simulation(self.global_timestep)
-            self.process_times.update({"total_sim_step": time.perf_counter() - step_time_start})
+                # get batch process times
+                self.process_times[self.batch_list[0].name] = self.batch_list[0].process_times
 
-            # get batch process times
-            self.process_times[self.batch_list[0].name] = self.batch_list[0].process_times
+                if self.config.evaluation.evaluate_runtime:
+                    self.sim_logger.log_global_time(self.global_timestep, self.process_times)
 
-            if self.config.evaluation.evaluate_runtime:
-                self.sim_logger.log_global_time(self.global_timestep, self.process_times)
-
-            execution_bar.update()
-            if self.on_step is not None:
-                self.on_step()
-
-        execution_bar.close(clear = True)
+                execution_bar.update()
+                if self.on_step is not None:
+                    self.on_step()
+        finally:
+            execution_bar.close(clear = True)
 
     def _step_parallel_simulation(self):
             """
