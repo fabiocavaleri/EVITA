@@ -38,7 +38,7 @@ module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
 # Two vehicle shapes closer than this (metres) are touching: they collided
 MIN_DISTANCE_FOR_COLLISION = 0.1
 # Distance (metres) below which another vehicle counts as nearby (condition C2 of the interaction definition)
-NEARBY_DISTANCE = 10.0
+NEARBY_DISTANCE = 12.5
 # Distance (metres) used instead of zero when two vehicle centres coincide, to keep the danger metric finite
 MIN_DANGER_DISTANCE = 0.1
 # Columns identifying the rows of the evaluator's table

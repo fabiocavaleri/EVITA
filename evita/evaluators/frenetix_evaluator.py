@@ -46,7 +46,7 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
 
         return pd.DataFrame(rows, columns = ["vehicle_id", "timestep", "trajectory"])
     
-    def evaluate(self, simulation: Simulation, trajectory_difference_threshold = 1.0, on_step = None) -> pd.DataFrame:
+    def evaluate(self, simulation: Simulation, trajectory_difference_threshold, on_step = None) -> pd.DataFrame:
         """
         Evaluation table of the simulation (index: agent, time_step). `trajectory_difference_threshold` is Th_ED of the interaction detection;
         `on_step` is called after each phase to refresh a progress bar.

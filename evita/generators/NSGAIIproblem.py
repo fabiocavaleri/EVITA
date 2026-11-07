@@ -49,7 +49,7 @@ class NSGAIIproblem(ElementwiseProblem):
     Scenarios that cannot be evaluated get the worst value of every objective.
     """
 
-    def __init__(self, map_file, driving_agent_name, population_size, termination_criterion, trajectory_difference_threshold = 1.0, n_bins = None, **kwargs):
+    def __init__(self, map_file, driving_agent_name, population_size, termination_criterion, trajectory_difference_threshold, n_bins = None, **kwargs):
         """
         Initialize the NSGA-II problem
         """
@@ -332,7 +332,7 @@ class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
         2. Maximize the variety of the interaction in the scenario'
         3. Minimize the number of cars in the scenario
     """
-    def __init__(self, map_file_path, driving_agent_name, pop_size, termination_criterion, records_file_path, trajectory_difference_threshold = 1.0, n_bins = None, **kwargs):
+    def __init__(self, map_file_path, driving_agent_name, pop_size, termination_criterion, records_file_path, trajectory_difference_threshold, n_bins = None, **kwargs):
         """
         Use parent constructor to initialize the NSGAIIproblem and then add the specific attributes for EVITA + DoppelTest
         """

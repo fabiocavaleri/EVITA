@@ -31,7 +31,10 @@ from .interfaces import AbstractScenarioEvaluator, AbstractScenarioExecutor, Abs
 from .utils import (EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, Budget,
                     extend_scenario_after_goal_areas, get_progress_bar_manager, simulation_folders, time_shift)
 from .timing import TASK_TIMER
-from .validator import ScenarioValidator
+ from .validator import ScenarioValidator
+ 
+# Th_ED: a replanning (condition C1) is detected when a planned position moves by at least this many metres
+TRAJECTORY_DIFFERENCE_THRESHOLD = 2.5
 
 # Executor and evaluator used by every generator
 SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS = "evita.executors.frenetix_executor", "FrenetixScenarioExecution"
@@ -322,7 +325,7 @@ def replay(ctx, scenario_file, driving_agent_name):
         # For invalid ones we just want to keep track of the fact that they were invalid and the reason why
         if scenario.is_valid:
             logger.info(f"Evaluate the Scenario")
-            scenario_evaluator.evaluate(simulation)
+            scenario_evaluator.evaluate(simulation, TRAJECTORY_DIFFERENCE_THRESHOLD)
         
             logger.info(f"Generate the report")
             performance_file = os.path.join(output_folder, "performance.csv")

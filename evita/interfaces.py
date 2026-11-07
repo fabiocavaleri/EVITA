@@ -77,7 +77,7 @@ class AbstractScenarioEvaluator(ABC):
         pass
 
     @abstractmethod
-    def evaluate(self, simulation: Simulation) -> pd.DataFrame:
+    def evaluate(self, simulation: Simulation, trajectory_difference_threshold: float, on_step = None) -> pd.DataFrame:
         """
         Return a Evaluator object
         """

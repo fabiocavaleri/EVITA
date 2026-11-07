@@ -32,6 +32,9 @@ from evita.utils import EVITA_MAIN_LOGGER_NAME, get_progress_bar_manager, initia
 # FrenetiX is the driving agent of every vehicle
 DRIVING_AGENT_NAME = "frenetix"
 
+# Th_ED: a replanning (condition C1) is detected when a planned position moves by at least this many metres
+TRAJECTORY_DIFFERENCE_THRESHOLD = 2.5
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description = "Run EVITA's NSGA-II search.")
 
@@ -41,7 +44,7 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument("--output-folder-name", type = str, default = None, help = "Output folder name. Defaults to an automatically generated name.")
     parser.add_argument("--seed", type = int, default = None, help = "Random seed for reproducibility.")
-    parser.add_argument("--threshold", type = float, default = 1.0, help = "Trajectory difference threshold Th_ED in metres (default: 1.0).")
+    parser.add_argument("--threshold", type = float, default = TRAJECTORY_DIFFERENCE_THRESHOLD, help = "Trajectory difference threshold Th_ED in metres (default: 1.0).")
     parser.add_argument("--n-bins", type = int, default = None, help = "Number of bin edges per axis of the interaction map (default: configuration).")
     parser.add_argument("--checkpoint-every", type = int, default = 60, help = "Checkpoint every N minutes of budget time (default: 60; 0 disables).")
     parser.add_argument("--force-max-duration", type = int, default = None, help = "Force the goal time interval of every planning problem to [0, N] (as `evita run --force-max-duration`).")
