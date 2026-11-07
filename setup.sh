@@ -14,7 +14,7 @@ command -v python3.10 >/dev/null 2>&1 || { echo "python3.10 not found"; exit 1; 
 
 echo "Creating virtual environments..."
 # ----- Create Python 3.8 venv -----
-#python3.8 -m venv .venv38
+python3.8 -m venv .venv38
 
 # ----- Create Python 3.10 venv -----
 python3.10 -m venv .venv310
@@ -48,13 +48,11 @@ pip install -qr requirements.txt
 pip install -qe .
 
 echo "Cloning Frenetix-Motion-Planner repository..."
-git submodule sync -q
-git submodule update --init --force -q Frenetix-Motion-Planner
+git submodule sync --recursive
+git submodule init
+git submodule update --remote --init --recursive --force
 
 cd Frenetix-Motion-Planner/
-# # ----- Patch config_sim None check -----
-sed -i 's/if config_sim.visualization.ref_path_debug:/if config_sim is not None and config_sim.visualization.ref_path_debug:/' cr_scenario_handler/utils/utils_coordinate_system.py
-# sed -i 's/evaluate_simulation: False/evaluate_simulation: True/' configurations/simulation/evaluation.yaml
 
 echo "Installing Frenetix-Motion-Planner in Python 3.10 virtual environment..."
 pip install -qe .

@@ -572,7 +572,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     try:
                         # Compute the criticality metrics for this scenario and planning problem set
                         with TASK_TIMER.measure("evaluation", key = scenario.generation_id):
-                            evaluation_data = scenario_evaluator.evaluate(simulation, on_step = update_main_progress_bar)
+                            evaluation_data = scenario_evaluator.evaluate(simulation, TRAJECTORY_DIFFERENCE_THRESHOLD, on_step = update_main_progress_bar)
                     finally:
                         # Perform cleanup after evaluation
                         simulation.sim_logger.con.close()

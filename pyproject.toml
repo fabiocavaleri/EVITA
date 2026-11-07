@@ -9,6 +9,7 @@ name = "evita"
 version = "0.1.0"
 description = "An application to test autonomous vehicle interactions using simulations."
 readme = "README.md"
+requires-python = ">=3.10,<3.11"
 authors = [{ name = "Anonymous" }]
 dependencies = [
     "click >= 8.1.3",

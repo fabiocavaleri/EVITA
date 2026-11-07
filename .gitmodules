@@ -1,3 +1,4 @@
 [submodule "Frenetix-Motion-Planner"]
 	path = Frenetix-Motion-Planner
-	url = git@github.com:alessiogambi/Evita-Frenetix-Motion-Planner.git
+	url = https://github.com/alessiogambi/Evita-Frenetix-Motion-Planner
+	branch = main

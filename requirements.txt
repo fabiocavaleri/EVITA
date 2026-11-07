@@ -1,7 +1,28 @@
-geopandas==1.1.4
-pymoo==0.6.2
+# Python 3.10 only (the working venv is 3.10; setup.sh uses python3.10).
+-c constraints.txt
+
+# --- EVITA direct imports ---
+click==8.5.0
+numpy==1.26.4
 scipy==1.13.1
-enlighten==1.14.1
-venny4py==1.0.4
+pandas==2.3.3
+matplotlib==3.8.4
+shapely==2.0.4
+tqdm==4.66.4
 seaborn==0.13.2
+venny4py==1.0.4
+pymoo==0.6.2
 deap==1.4.4
+enlighten==1.14.1
+geopandas==1.1.4
+
+# --- Frenetix planner stack (pinned here so they install under the constraints,
+#     instead of being resolved fresh when Frenetix-Motion-Planner is installed) ---
+commonroad-io==2024.1
+commonroad-drivability-checker==2024.1
+commonroad-route-planner==2024.1.1
+commonroad-vehicle-models==3.0.2
+frenetix==0.3.1
+wale-net==3.0.3
+torch==2.3.1
+onnxruntime==1.18.1
