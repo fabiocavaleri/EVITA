@@ -1021,7 +1021,7 @@ def make_plots(replans, summaries: Dict[str, Dict], plots_folder: str) -> None:
             axis.grid(alpha = 0.3)
             axis.legend(fontsize = 8)
             figure.tight_layout()
-            figure.savefig(os.path.join(plots_folder, f"ecdf_{measure}_{scope}.png"), dpi = 120)
+            figure.savefig(os.path.join(plots_folder, f"ecdf_{measure}_{scope}.png"), dpi = 500)
             plt.close(figure)
 
         if not len(noise):
@@ -1043,7 +1043,7 @@ def make_plots(replans, summaries: Dict[str, Dict], plots_folder: str) -> None:
             axis.set_yscale("log")
         figure.suptitle(f"{scope}: structure of the noise (single-vehicle runs)")
         figure.tight_layout()
-        figure.savefig(os.path.join(plots_folder, f"noise_structure_{scope}.png"), dpi = 120)
+        figure.savefig(os.path.join(plots_folder, f"noise_structure_{scope}.png"), dpi = 500)
         plt.close(figure)
 
 def command_analyze(args) -> int:
@@ -1155,7 +1155,7 @@ def command_analyze(args) -> int:
                            "consider a threshold relative to the planned path length (see relative_candidates)")
 
     logger.info(f"Analysis written to {analysis_folder}")
-    
+
     return 1 if errors else 0
 
 # ========== Command line ==========

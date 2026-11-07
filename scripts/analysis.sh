@@ -51,6 +51,10 @@ FRAMEWORKS=()
 
 for framework_path in "$EXPERIMENTS_FOLDER"/*/; do
     [[ -d "$framework_path" ]] || continue
+
+    # The plot output folder is not a framework
+    [[ "$(basename "$framework_path")" == "comparison_plots" ]] && continue
+
     FRAMEWORKS+=("${framework_path%/}")
 done
 
@@ -124,7 +128,7 @@ run_plot() {
         FRAMEWORK_LABELS+=("$(basename "$framework_path")")
     done
 
-    OUTPUT_FOLDER="$EXPERIMENTS_FOLDER/comparison plots"
+    OUTPUT_FOLDER="$EXPERIMENTS_FOLDER/comparison_plots"
 
     mkdir -p "$OUTPUT_FOLDER"
 

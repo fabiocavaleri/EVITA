@@ -51,8 +51,8 @@ for map_path in "${maps_paths[@]}"; do
     fi
 done
 
-log_parent_dir="./logs/test/DoppelTest"
-output_parent_dir="./results/test/DoppelTest"
+log_parent_dir="./logs/test_2/run_1/DoppelTest"
+output_parent_dir="./results/test_2/run_1/DoppelTest"
 
 mkdir -p "$log_parent_dir" "$output_parent_dir"
 
