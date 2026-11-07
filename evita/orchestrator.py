@@ -31,7 +31,7 @@ from .interfaces import AbstractScenarioEvaluator, AbstractScenarioExecutor, Abs
 from .utils import (EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, Budget,
                     extend_scenario_after_goal_areas, get_progress_bar_manager, simulation_folders, time_shift)
 from .timing import TASK_TIMER
- from .validator import ScenarioValidator
+from .validator import ScenarioValidator
  
 # Th_ED: a replanning (condition C1) is detected when a planned position moves by at least this many metres
 TRAJECTORY_DIFFERENCE_THRESHOLD = 2.5

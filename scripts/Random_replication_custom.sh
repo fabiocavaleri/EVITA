@@ -2,7 +2,10 @@
 set -Eeuo pipefail
 
 # Usage:
-#   ./run_Random.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
+#   [CPUS=<cpu-list>] ./run_Random.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
+#
+# CPUS (optional) pins every run of this script to the given cores, e.g. CPUS=0-3 or CPUS=0,2,4,6,
+# and limits the numerical libraries to that many threads. Give each terminal its own, disjoint list.
 #
 # Examples:
 #   ./run_Random.sh 1 10 ../base-scenarios/CHN_Cho-2_2_I-1-1.cr.xml
@@ -40,6 +43,18 @@ fi
 
 end=$((start + number_of_repetitions - 1))
 
+# Optional CPU pinning (see CPUS above)
+cpus="${CPUS:-}"
+pin=()
+if [[ -n "$cpus" ]]; then
+    if ! n_threads=$(taskset -c "$cpus" nproc 2>/dev/null); then
+        echo "Error: invalid CPU list in CPUS: $cpus" >&2
+        exit 2
+    fi
+    export OMP_NUM_THREADS=$n_threads MKL_NUM_THREADS=$n_threads OPENBLAS_NUM_THREADS=$n_threads NUMEXPR_NUM_THREADS=$n_threads
+    pin=(taskset -c "$cpus")
+fi
+
 time_budget_hours=3
 total_runs=$(( ${#maps_paths[@]} * number_of_repetitions ))
 
@@ -51,8 +66,8 @@ for map_path in "${maps_paths[@]}"; do
     fi
 done
 
-log_parent_dir="./logs/test_2/run_1/Random"
-output_parent_dir="./results/test_2/run_1/Random"
+log_parent_dir="./logs/Main-Experiment/Random"
+output_parent_dir="./results/Main-Experiment/Random"
 
 mkdir -p "$log_parent_dir" "$output_parent_dir"
 
@@ -88,16 +103,27 @@ for map_path in "${maps_paths[@]}"; do
     for ((j = start; j <= end; j++)); do
         run_count=$((run_count + 1))
 
-        # Skip only if the output directory for this specific repetition
-        # already exists. This avoids incorrectly skipping repetitions
-        # when existing runs are not consecutive.
-        existing_run=$(find "$output_base_dir" \
+        # Skip only if this repetition already finished: a completed run writes
+        # performance.csv at the top of its output folder. A folder without it
+        # is an interrupted run: it is moved to _incomplete/ and repeated.
+        completed_run=""
+        while IFS= read -r -d '' run_dir; do
+            if [[ -f "${run_dir}/performance.csv" ]]; then
+                completed_run="$run_dir"
+                break
+            fi
+            # Move it out of the results, so the analysis never reads it
+            incomplete_dir="${output_parent_dir%/}/_incomplete/${map_name}"
+            mkdir -p "$incomplete_dir"
+            mv -- "$run_dir" "$incomplete_dir/"
+            echo "[$(date +"%Y-%m-%d %H:%M:%S")] WARNING: incomplete run moved to ${incomplete_dir}/, repeating it: $(basename -- "$run_dir")"
+        done < <(find "$output_base_dir" \
             -mindepth 1 -maxdepth 1 -type d \
             -name "${experiment_name_prefix}_REPETITION_${j}_*" \
-            -print -quit)
+            -print0)
 
-        if [[ -n "$existing_run" ]]; then
-            echo "[$(date +"%Y-%m-%d %H:%M:%S")] SKIPPED: repetition ${j} already exists for ${map_name}"
+        if [[ -n "$completed_run" ]]; then
+            echo "[$(date +"%Y-%m-%d %H:%M:%S")] SKIPPED: repetition ${j} already completed for ${map_name}"
             skipped_runs=$((skipped_runs + 1))
             continue
         fi
@@ -115,12 +141,13 @@ for map_path in "${maps_paths[@]}"; do
         echo "  Time budget: ${time_budget_hours}h"
         echo "  Output name: ${output_folder}"
         echo "  Log file:    ${log_file}"
+        echo "  CPUs:        ${cpus:-all}"
         echo "=================================================================="
 
         # Run the experiment from the repository root.
         # Temporarily disable errexit to handle failures explicitly.
         set +e
-        evita --output-folder-name "$output_folder" \
+        ${pin[@]+"${pin[@]}"} evita --output-folder-name "$output_folder" \
             run --scenario-generator-path . \
             --scenario-generator-module evita.generators.random_generator \
             --scenario-generator-class RandomScenarioGenerator \
@@ -178,6 +205,6 @@ if (( overall_failed_runs > 0 || overall_analysis_failures > 0 )); then
     exit 1
 fi
 
-echo "All TIAV experiments completed successfully."
+echo "All Random experiments completed successfully."
 echo "Logs saved under: ${log_parent_dir}/"
 echo "Results saved under: ${output_parent_dir}/"
