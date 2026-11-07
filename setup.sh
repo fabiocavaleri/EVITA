@@ -5,7 +5,6 @@ set -e
 echo "Removing existing virtual environments and Frenetix-Motion-Planner repository directory..."
 rm -rf .venv3*
 rm -rf Frenetix-Motion-Planner
-mkdir Frenetix-Motion-Planner
 
 # Check required python versions availability
 echo "Checking required python versions availability..."
@@ -47,12 +46,15 @@ echo "Installing EVITA in Python 3.10 virtual environment..."
 pip install -qr requirements.txt
 pip install -qe .
 
-echo "Cloning Frenetix-Motion-Planner repository..."
-git submodule sync --recursive
-git submodule init
-git submodule update --remote --init --recursive --force
+echo "Cloning/updating Frenetix-Motion-Planner repository..."
+
+git submodule sync --recursive --quiet
+git submodule update --quiet --init --remote --recursive --force
 
 cd Frenetix-Motion-Planner/
+
+git checkout -q main
+git pull -q origin main
 
 echo "Installing Frenetix-Motion-Planner in Python 3.10 virtual environment..."
 pip install -qe .
