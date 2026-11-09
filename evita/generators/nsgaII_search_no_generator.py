@@ -144,7 +144,7 @@ def main() -> None:
 
     # Now analysize the data collected so far and output to the scenario folder
     with TASK_TIMER.measure("report"):
-        generate_report(problem.output_folder)
+        generate_report(problem.output_folder, n_bins = args.n_bins)
 
     # Time spent in each task (task_times.csv, task_times_per_scenario.csv)
     TASK_TIMER.write(problem.output_folder, budget_elapsed_seconds)

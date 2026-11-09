@@ -1298,7 +1298,7 @@ def _impact_location_bins() -> List[frozenset]:
     return bins
 
 
-def generate_report(run_folder: str, _output_to: str = None) -> None:
+def generate_report(run_folder: str, _output_to: str = None, n_bins = None) -> None:
     """
     Write the run's metrics into `_output_to` (default: the run folder):
       - requirements_violations.csv: total_timeouts and total_missed_goals (vehicles), total_collisions, and the
@@ -1365,7 +1365,7 @@ def generate_report(run_folder: str, _output_to: str = None) -> None:
     # ===== Behaviour and interactions =====
     module_logger.info("Computing Behavior and Interaction Metrics")
 
-    long_bins, lat_bins = get_interaction_map_bins()
+    long_bins, lat_bins = get_interaction_map_bins(n_bins)
     interaction_map = np.zeros((len(long_bins) + 1, len(lat_bins) + 1))
     total_emergency, total_disengagement, total_agents = 0, 0, 0
 

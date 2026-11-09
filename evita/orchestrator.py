@@ -169,7 +169,7 @@ def write_performance_file(output_file: str, all_scenarios: int, valid_scenarios
         csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time", "skipped_scenarios"])
         csv_writer.writerow([all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios])
 
-def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid_scenarios: int, invalid_scenarios: int, total_generation_time: float, skipped_scenarios: int = 0) -> None:
+def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid_scenarios: int, invalid_scenarios: int, total_generation_time: float, skipped_scenarios: int = 0, n_bins = None) -> None:
     """
     Checkpoint the run: list the scenario folders produced so far, write the performance counters, and generate the
     report from the data available at this point, into checkpoints/<id>.
@@ -199,7 +199,7 @@ def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid
     write_performance_file(os.path.join(checkpoint_folder, "performance.csv"), all_scenarios, valid_scenarios, invalid_scenarios, total_generation_time, skipped_scenarios)
 
     # Generate the usual report in the checkpoint folder using whatever data is available at this point
-    generate_report(output_folder, checkpoint_folder)
+    generate_report(output_folder, checkpoint_folder, n_bins = n_bins)
 
 @click.command()
 @click.option("--scenario-file", type=click.Path(exists=True), required=True, multiple=False)
