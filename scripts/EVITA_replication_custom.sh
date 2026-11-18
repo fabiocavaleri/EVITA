@@ -7,6 +7,14 @@ set -Eeuo pipefail
 # CPUS (optional) pins every run of this script to the given cores, e.g. CPUS=0-3 or CPUS=0,2,4,6,
 # and limits the numerical libraries to that many threads. Give each terminal its own, disjoint list.
 #
+# TH_ED (optional) sets the trajectory difference threshold Th_ED in metres, e.g. TH_ED=1.25, for the
+# sensitivity analysis. Without it, EVITA uses its default (2.5 m). With it, runs are stored apart, under
+# EVITA_ThED_<value>, so they never mix with the main experiment.
+#
+# N_BINS (optional) sets the number of bin edges per axis of the interaction map, e.g. N_BINS=20, for the
+# sensitivity analysis (use even values: an odd number of edges puts 0 on an edge and removes the centre cell).
+# Without it, EVITA uses its default (10). With it, runs are stored under EVITA[_ThED_<value>]_NBINS_<value>.
+#
 # Examples:
 #   ./run_EVITA.sh 1 5 ../base-scenarios/DEU_Cologne-79_2_I-1.cr.xml
 #   ./run_EVITA.sh 3 5 ../base-scenarios/DEU_Cologne-79_2_I-1.cr.xml ../base-scenarios/USA_US101-23_1_T-1.xml
@@ -72,8 +80,36 @@ for map_path in "${maps_paths[@]}"; do
     fi
 done
 
-log_parent_dir="./logs/Main-Experiment/EVITA/"
-output_parent_dir="./results/Main-Experiment/EVITA/"
+# Optional Th_ED (see TH_ED above)
+th_ed="${TH_ED:-}"
+threshold_args=()
+generator_label="EVITA"
+if [[ -n "$th_ed" ]]; then
+    if [[ ! "$th_ed" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo "Error: TH_ED must be a positive number in metres, e.g. 1.25" >&2
+        exit 2
+    fi
+    threshold_args=(--threshold "$th_ed")
+    generator_label="EVITA_ThED_${th_ed}"
+fi
+
+# Optional interaction map resolution (see N_BINS above)
+n_bins="${N_BINS:-}"
+if [[ -n "$n_bins" ]]; then
+    if [[ ! "$n_bins" =~ ^[0-9]+$ ]] || (( 10#$n_bins < 2 )); then
+        echo "Error: N_BINS must be an integer of at least 2 (bin edges per axis), e.g. 20" >&2
+        exit 2
+    fi
+    n_bins=$((10#$n_bins))
+    if (( n_bins % 2 == 1 )); then
+        echo "Warning: N_BINS=${n_bins} is odd: 0 falls on a bin edge and the interaction map has no centre cell" >&2
+    fi
+    threshold_args+=(--n-bins "$n_bins")
+    generator_label="${generator_label}_NBINS_${n_bins}"
+fi
+
+log_parent_dir="./logs/Ablation-Study/Frenetix/TotalInts-UniqueInts/${generator_label}/"
+output_parent_dir="./results/Ablation-Study/Frenetix/TotalInts-UniqueInts/${generator_label}/"
 
 mkdir -p "$log_parent_dir" "$output_parent_dir"
 
@@ -99,7 +135,7 @@ for map_path in "${maps_paths[@]}"; do
     skipped_runs=0
     failed_runs=0
 
-    experiment_name_prefix="EVITA_RUN_FOR_${time_budget_hours}_HOURS_SCENARIO_MAP_${map_name}"
+    experiment_name_prefix="${generator_label}_RUN_FOR_${time_budget_hours}_HOURS_SCENARIO_MAP_${map_name}"
 
     echo
     echo "##################################################################"
@@ -136,7 +172,7 @@ for map_path in "${maps_paths[@]}"; do
         fi
 
         experiment_time=$(date +"%Y%m%d%H%M%S")
-        experiment_name="EVITA_RUN_FOR_${time_budget_hours}_HOURS_SCENARIO_MAP_${map_name}_REPETITION_${j}_${experiment_time}"
+        experiment_name="${generator_label}_RUN_FOR_${time_budget_hours}_HOURS_SCENARIO_MAP_${map_name}_REPETITION_${j}_${experiment_time}"
 
         # Output paths are relative to the repository root.
         output_folder="$(realpath -m "${output_base_dir}/${experiment_name}")"
@@ -150,6 +186,8 @@ for map_path in "${maps_paths[@]}"; do
         echo "  Output name: ${output_folder}"
         echo "  Log file:    ${log_file}"
         echo "  CPUs:        ${cpus:-all}"
+        echo "  Th_ED:       ${th_ed:-default (2.5 m)}"
+        echo "  n_bins:      ${n_bins:-default (10)}"
         echo "=================================================================="
 
         # Run from the evita directory, as in the original script.
@@ -161,7 +199,8 @@ for map_path in "${maps_paths[@]}"; do
             --population-size 10 \
             --time-budget "$((time_budget_hours * 60))" \
             --scenario-seed-file "../${map_path#../}" \
-            --output-folder-name "$output_folder"
+            --output-folder-name "$output_folder" \
+            ${threshold_args[@]+"${threshold_args[@]}"}
         ) 2>&1 | tee "$log_file"
 
         pipeline_status=("${PIPESTATUS[@]}")
