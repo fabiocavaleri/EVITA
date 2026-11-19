@@ -95,14 +95,14 @@ def _merge_short_groups(groups: Iterable[List[str]]) -> Iterator[List[str]]:
     if group:
         yield group
 
-def identify_segments(agent) -> Tuple[int, List[List]]:
+def identify_segments(driven_states) -> Tuple[int, List[List]]:
     """
     Split the trajectory driven by `agent` (its recorded states) into straight parts and turns.
 
     Returns the number of turns and the segments, each a list of [point, heading change] pairs.
     Steps where the vehicle did not move are skipped: they have no direction, and would register as heading changes.
     """
-    positions = [np.asarray(state.position, dtype = float) for state in sorted(agent.record_state_list, key = lambda s: s.time_step)]
+    positions = [np.asarray(state.position, dtype = float) for state in sorted(driven_states, key = lambda s: s.time_step)]
     nodes = [p for i, p in enumerate(positions) if i == 0 or not np.allclose(p, positions[i - 1])]
     
     if len(nodes) < 2:

@@ -483,7 +483,7 @@ class DoppelTestScenarioGenerator(AbstractScenarioGenerator):
             # Instead of decisions, we compute how many "segments" comprise the agent final trajectory.
             # The more segment the richer the movement
             # We argue that this is a low level metric to capture the same high-level concept of drivers's activity
-            f_decisions = sum(identify_segments(agent)[0] for agent in simulation_data["agent-data"])
+            f_decisions = sum(identify_segments(agent.driven_states)[0] for agent in simulation_data["execution"].agents.values())
 
             individual.fitness.values = (f_min_distance, f_decisions, f_conflict, f_violations)
 

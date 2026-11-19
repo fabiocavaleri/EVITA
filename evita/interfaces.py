@@ -7,7 +7,7 @@ import pandas as pd
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict
 
-from cr_scenario_handler.simulation.simulation import Simulation
+from .execution import ExecutionResult
 
 class AbstractFitnessFunction(ABC):
     """
@@ -22,7 +22,7 @@ class AbstractFitnessFunction(ABC):
         pass
 
     @abstractmethod
-    def compute(self, agents_data, evaluation_data: pd.DataFrame) -> float | List[float]:
+    def compute(self, execution: ExecutionResult, evaluation_data: pd.DataFrame) -> float | List[float]:
         """
         Return the fitness evaluation, which can be a float or a list of float in the case of Multi-Objective evaluation
         """
@@ -61,10 +61,13 @@ class AbstractScenarioExecutor(ABC):
         pass
 
     @abstractmethod
-    def execute(self, scenario, planning_problem_set) -> Simulation:
+    def execute(self, scenario, planning_problem_set, progress_bar_manager = None, on_step = None) -> Optional[ExecutionResult]:
         """
         Return a Simulation Object
         """
+        pass
+
+    def release(self, execution: ExecutionResult) -> None:
         pass
 
 class AbstractScenarioEvaluator(ABC):
@@ -77,7 +80,7 @@ class AbstractScenarioEvaluator(ABC):
         pass
 
     @abstractmethod
-    def evaluate(self, simulation: Simulation, trajectory_difference_threshold: float, on_step = None) -> pd.DataFrame:
+    def evaluate(self, execution: ExecutionResult, trajectory_difference_threshold: float, on_step = None) -> pd.DataFrame:
         """
         Return a Evaluator object
         """

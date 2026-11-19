@@ -10,12 +10,13 @@ import pandas as pd
 from cr_scenario_handler.evaluation.simulation_evaluation import evaluate_simulation
 from cr_scenario_handler.simulation.simulation import Simulation
 
+from ..timing import TASK_TIMER
+from ..execution import ExecutionResult
 from ..data_analysis import _rebuild_trajectory
+from ..interfaces import AbstractScenarioEvaluator
+from ..utils import EVITA_MAIN_LOGGER_NAME, sanitize_dataframe
 from ..generators.utils import (augment_with_collisions, augment_with_danger, augment_with_emergencies_and_disengagements,
                                 augment_with_interactions, augment_with_missed_goals)
-from ..interfaces import AbstractScenarioEvaluator
-from ..timing import TASK_TIMER
-from ..utils import EVITA_MAIN_LOGGER_NAME, sanitize_dataframe
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
 
@@ -46,15 +47,18 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
 
         return pd.DataFrame(rows, columns = ["vehicle_id", "timestep", "trajectory"])
     
-    def evaluate(self, simulation: Simulation, trajectory_difference_threshold, on_step = None) -> pd.DataFrame:
+    def evaluate(self, execution: ExecutionResult, trajectory_difference_threshold, on_step = None) -> pd.DataFrame:
         """
         Evaluation table of the simulation (index: agent, time_step). `trajectory_difference_threshold` is Th_ED of the interaction detection;
         `on_step` is called after each phase to refresh a progress bar.
+        The FrenetiX-specific parts (FrenetiX's own metrics, its database) use the execution's Simulation (`native`).
         """
         def sync_progress_bar():
             if on_step is not None:
                 on_step()
 
+        simulation: Simulation = execution.native
+        
         with TASK_TIMER.measure("evaluation.planned_trajectories"):
             trajectories_df = self._planned_trajectories(simulation)
         sync_progress_bar()

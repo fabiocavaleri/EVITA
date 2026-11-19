@@ -15,21 +15,21 @@ import contextlib
 
 from copy import deepcopy
 
-from pymoo.core.crossover import Crossover
-from pymoo.core.duplicate import ElementwiseDuplicateElimination
 from pymoo.core.mutation import Mutation
 from pymoo.core.sampling import Sampling
+from pymoo.core.crossover import Crossover
 from pymoo.core.termination import Termination
+from pymoo.core.duplicate import ElementwiseDuplicateElimination
 
 from commonroad.planning.planning_problem import PlanningProblemSet
 
-from conversion_scripts.utils.conversion_utils import generate_traffic_lights
+# from conversion_scripts.utils.conversion_utils import generate_traffic_lights
 
+from evita.timing import TASK_TIMER
 from evita.config import ValidationConfig
+from evita.validator import ScenarioValidator
 from evita.generators import scenario_mutation
 from evita.utils import EVITA_MAIN_LOGGER_NAME, Budget
-from evita.timing import TASK_TIMER
-from evita.validator import ScenarioValidator
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 

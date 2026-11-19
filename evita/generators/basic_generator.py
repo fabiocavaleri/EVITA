@@ -158,7 +158,7 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
 
         # Invoke the given fitness function and return a fitness evaluation that can be a value or a list of value depending on the
         # used fitness function. In this case, we expect a single value
-        fitness_value = self.fitness.compute(simulation_data["agent-data"], simulation_data["evaluation-data"])
+        fitness_value = self.fitness.compute(simulation_data["execution"], simulation_data["evaluation-data"])
         self.logger.info(f"Current fitness value {fitness_value}")
 
         # This algorithm assumes Maximization of the fitness function

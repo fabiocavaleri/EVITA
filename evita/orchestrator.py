@@ -516,7 +516,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                 continue
             
             # Execution
-            simulation = None
+            execution = None
             if scenario.is_valid:
                 # In some cases, the scenario is valid, but the execution fails because of some critical error
                 try:
@@ -537,51 +537,41 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     # Make sure we execute the extended_scenario, not the original one
                     # Both will be available afterwards, but the original shall be used for evolution
                     with TASK_TIMER.measure("simulation", key = scenario.generation_id):
-                        simulation = scenario_executor.execute(extended_scenario, time_shifted_planning_problem_set, progress_bar_manager, on_step = update_main_progress_bar)
+                        execution = scenario_executor.execute(extended_scenario, time_shifted_planning_problem_set, progress_bar_manager, on_step = update_main_progress_bar)
 
-                    if simulation is None:
+                    if execution is None:
                         scenario.is_valid = False
                         scenario.validation_message = EXECUTION_ERROR_MESSAGE
 
                         logger.critical(f"Scenario {scenario.generation_id} failed during simulation execution. Continuing with next scenario.")
-                    else:
-                        for agent in simulation.agents:
-                            # Check if any agent has an ERROR state at time_step == 0 or if the agent did not reach the goal area
-                            if (agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0) or \
-                            (agent.planning_problem.initial_state.time_step == agent.agent_state.last_timestep):
-                                logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
-                                scenario.is_valid = False
-                                scenario.validation_message = f"Agent {agent.id} could not compute a phyisically possible trajectory since the beginning."
+                    elif execution.not_started:
+                        # An agent failed at its first time step, or never moved past its initial time step
+                        agent_id = execution.not_started[0]
+                        logger.critical(f"The scenario is invalid. Agent {agent_id} did not even start")
+                        scenario.is_valid = False
+                        scenario.validation_message = f"Agent {agent_id} could not compute a phyisically possible trajectory since the beginning."
                 except Exception as e:
                     # It might fail, log the error and move on to the next scenario, but mark this one as invalid
                     msg = f"A critical error prevented {scenario.generation_id} to complete. Mark it as Error and set the validity flag to False"
                     logger.critical( "=" * ( len(msg) + 2 ) )
                     logger.critical( f" {msg} ")
                     logger.critical( "=" * ( len(msg) + 2) )
+                    logger.critical(traceback.format_exc())
 
                     scenario.is_valid = False
                     scenario.validation_message = EXECUTION_ERROR_MESSAGE
-                    
+
             # Executed scenario evaluation
-            evaluation_data, agent_data = None, None
+            evaluation_data = None
             if scenario.is_valid:
                 try:
                     # Log info of the scenario that is going to be evaluated
                     logger.info(f"Evaluating scenario: {scenario.generation_id} - {budget.get_remaining_real_time()}")
-                    
-                    try:
-                        # Compute the criticality metrics for this scenario and planning problem set
-                        with TASK_TIMER.measure("evaluation", key = scenario.generation_id):
-                            evaluation_data = scenario_evaluator.evaluate(simulation, TRAJECTORY_DIFFERENCE_THRESHOLD, on_step = update_main_progress_bar)
-                    finally:
-                        # Perform cleanup after evaluation
-                        simulation.sim_logger.con.close()
 
-                        if simulation.config.simulation.multiprocessing:
-                            simulation.close_processes()
+                    # Compute the criticality metrics for this scenario and planning problem set
+                    with TASK_TIMER.measure("evaluation", key = scenario.generation_id):
+                        evaluation_data = scenario_evaluator.evaluate(execution, TRAJECTORY_DIFFERENCE_THRESHOLD, on_step = update_main_progress_bar)
 
-                    agent_data = simulation.agents
-                    
                     # Log validation completion and remaining time
                     logger.info(f"Done. - {budget.get_remaining_real_time()}")
                 except Exception as e:
@@ -595,16 +585,20 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     logger.critical(traceback.format_exc())
 
                     scenario.is_valid = False
-                    evaluation_data, agent_data = None, None
+                    evaluation_data = None
                     backup_debug(output_folder, debug_folder, scenario, logger)
             elif scenario.validation_message == EXECUTION_ERROR_MESSAGE:
                 # If the scenario is invalid because of an issue during the simulation, move the folder away
                 backup_debug(output_folder, debug_folder, scenario, logger)
 
+            # Free the simulator's resources (database, FrenetiX's processes), whether the scenario was evaluated or not
+            if execution is not None:
+                scenario_executor.release(execution)
+
             # One entry per scenario, in generation order (generators match the results by position)
             simulation_data.append({
                 "individual": (scenario, planning_problem_set),
-                "agent-data": agent_data,
+                "execution": execution if scenario.is_valid else None,
                 "evaluation-data": evaluation_data
             })
 

@@ -23,19 +23,18 @@ from commonroad.common.file_writer import CommonRoadFileWriter
 from commonroad.planning.goal import Interval
 from commonroad.visualization.mp_renderer import MPRenderer
 
-from cr_scenario_handler.utils.agent_status import AgentStatus
-
 from EVITA_DoppelTest.conversion_scripts.utils.RecordFileError import RecordFileError
 from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import build_json_scenario
 from EVITA_DoppelTest.conversion_scripts.utils.interactions_utils import augment_with_collisions, augment_with_interactions, planned_trajectories_to_df
 
-from ..config import ScenarioGeneratorConfig, ValidationConfig
+from ..timing import TASK_TIMER
+from ..execution import ExecutionResult
+from ..validator import ScenarioValidator
 from ..generators.utils import compute_interaction_map
+from ..config import ScenarioGeneratorConfig, ValidationConfig
+from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, extend_scenario_after_goal_areas
 from ..orchestrator import (EXECUTION_ERROR_MESSAGE, SCENARIO_EVALUATOR_CLASS, SCENARIO_EVALUATOR_MODULE, SCENARIO_EXECUTOR_CLASS,
                             SCENARIO_EXECUTOR_MODULE, TIMEOUT_MESSAGE, _load_class, backup_debug, debug_plot_to_file, ensure_generation_id)
-from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, extend_scenario_after_goal_areas
-from ..timing import TASK_TIMER
-from ..validator import ScenarioValidator
 
 class NSGAIIproblem(ElementwiseProblem):
     """
@@ -177,33 +176,15 @@ class NSGAIIproblem(ElementwiseProblem):
             scenario.validation_message = TIMEOUT_MESSAGE
         elif scenario.is_valid:
             # ===== 3. Execution (counted in the budget) =====
-            simulation = self._execute(scenario, planning_problem_set)
+            execution = self._execute(scenario, planning_problem_set)
 
-            if scenario.is_valid:
-                try:
-                    # ===== 4. Evaluation =====
-                    criticality_dataframe = self._evaluate_simulation(scenario, simulation)
-
-                    # ===== 5. Fitness =====
-                    with TASK_TIMER.measure("fitness", key = scenario.generation_id):
-                        fitness = self._compute_fitness(simulation, criticality_dataframe, self.current_generation)
-                except Exception:
-                    msg = f" {scenario.generation_id} to be evaluated. Mark it as invalid"
-                    self.logger.critical("=" * (len(msg) + 2))
-                    self.logger.critical(f" {msg} ")
-                    self.logger.critical("=" * (len(msg) + 2))
-
-                    # If an error is triggered during the evaluation, get rid of the scenario
-                    self.logger.critical(traceback.format_exc())
-
-                    scenario.is_valid = False
-                    fitness = self.worst_fitness
-
-                    # Try to move scenario folder away
+            try:
+                if scenario.is_valid:
+                    fitness = self._evaluate_and_score(scenario, execution)
+                elif scenario.validation_message == "Error during the simulation execution":
                     backup_debug(self.output_folder, self.debug_folder, scenario, self.logger)
-            elif scenario.validation_message == "Error during the simulation execution":
-                # If the scenario is invalid because of an issue during the simulation, move the folder away
-                backup_debug(self.output_folder, self.debug_folder, scenario, self.logger)
+            finally:
+                self._release(execution)
 
         # ===== Fitness, counters, and progress bars =====
         out["F"] = fitness
@@ -249,7 +230,7 @@ class NSGAIIproblem(ElementwiseProblem):
             # Execute the extended scenario; the original one is the one used for evolution.
             # The executor shares the progress bar manager and advances the main bar at every simulation step
             with TASK_TIMER.measure("simulation", key = scenario.generation_id):
-                simulation = self.scenario_executor.execute(extended_scenario, 
+                execution = self.scenario_executor.execute(extended_scenario, 
                                                             time_shifted_planning_problem_set, 
                                                             self.termination_criterion.progress_bar_manager,
                                                             on_step = self.termination_criterion.update_main_progress_bar)
@@ -261,45 +242,70 @@ class NSGAIIproblem(ElementwiseProblem):
             scenario.validation_message = EXECUTION_ERROR_MESSAGE
             return None
         
-        if simulation is None:
+        if execution is None:
             scenario.is_valid = False
             scenario.validation_message = EXECUTION_ERROR_MESSAGE
             self.logger.critical(f"Scenario {scenario.generation_id} failed during simulation execution. Continuing with next scenario.")
-            
+
             return None
 
-        for agent in simulation.agents:
-            # Invalid if an agent fails at time_step 0 or never moves from its initial time step
-            if (agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0) or \
-                    (agent.planning_problem.initial_state.time_step == agent.agent_state.last_timestep):
-                self.logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
-                scenario.is_valid = False
-                scenario.validation_message = f"Agent {agent.id} could not compute a physically possible trajectory since the beginning."
-                break
+        # Invalid if an agent fails at time_step 0 or never moves from its initial time step
+        if execution.not_started:
+            agent_id = execution.not_started[0]
+            self.logger.critical(f"The scenario is invalid. Agent {agent_id} did not even start")
+            scenario.is_valid = False
+            scenario.validation_message = f"Agent {agent_id} could not compute a physically possible trajectory since the beginning."
 
-        return simulation
+        return execution
 
-    def _evaluate_simulation(self, scenario, simulation):
+    def _evaluate_and_score(self, scenario, execution):
+        """
+        Evaluate the executed scenario and compute its fitness.
+        A failure makes the scenario invalid (worst fitness), and its folder is moved to the debug folder.
+        """
+        try:
+            criticality_dataframe = self._evaluate_simulation(scenario, execution)
+
+            with TASK_TIMER.measure("fitness", key = scenario.generation_id):
+                return self._compute_fitness(execution, criticality_dataframe, self.current_generation)
+        except Exception:
+            msg = f" {scenario.generation_id} to be evaluated. Mark it as invalid"
+            self.logger.critical("=" * (len(msg) + 2))
+            self.logger.critical(f" {msg} ")
+            self.logger.critical("=" * (len(msg) + 2))
+
+            # If an error is triggered during the evaluation, get rid of the scenario
+            self.logger.critical(traceback.format_exc())
+
+            scenario.is_valid = False
+
+            # Try to move scenario folder away
+            backup_debug(self.output_folder, self.debug_folder, scenario, self.logger)
+
+            return self.worst_fitness
+
+    def _release(self, execution) -> None:
+        """
+        Free the simulator's resources held by the execution (only for ExecutionResult: the Apollo subclass passes its
+        own outputs folder instead, and has nothing to release).
+        """
+        if isinstance(execution, ExecutionResult):
+            self.scenario_executor.release(execution)
+
+    def _evaluate_simulation(self, scenario, execution):
         """
         Compute the criticality metrics, then release the simulation's resources
         """
         self.logger.info(f"Evaluating scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
  
-        try:
-            with TASK_TIMER.measure("evaluation", key = scenario.generation_id):
-                criticality_dataframe = self.scenario_evaluator.evaluate(simulation, self.trajectory_difference_threshold, on_step = self.termination_criterion.update_main_progress_bar)
-        finally:
-            # Perform cleanup after evaluation
-            simulation.sim_logger.con.close()
-
-            if simulation.config.simulation.multiprocessing:
-                simulation.close_processes()
+        with TASK_TIMER.measure("evaluation", key = scenario.generation_id):
+            criticality_dataframe = self.scenario_evaluator.evaluate(execution, self.trajectory_difference_threshold, on_step = self.termination_criterion.update_main_progress_bar)
  
         self.logger.info(f"Evaluation completed - {self.termination_criterion.remaining_time()}")
 
         return criticality_dataframe
         
-    def _compute_fitness(self, simulation, criticality_dataframe, generation):
+    def _compute_fitness(self, execution, criticality_dataframe, generation):
         """
         Compute the three objectives (pymoo minimizes):
         - minus the number of interactions
@@ -310,7 +316,7 @@ class NSGAIIproblem(ElementwiseProblem):
         interaction_map = compute_interaction_map(criticality_dataframe, self.n_bins)
 
         fitness_num_interactions = criticality_dataframe["is_interacting"].sum()
-        fitness_num_cars = len(simulation.agents)
+        fitness_num_cars = len(execution.agents)
  
         # Variety of interactions: distance from the closest interaction map found in the PREVIOUS generations
         previous_maps = [past_map for past_generation, past_map in self.interaction_maps_by_generation if past_generation < generation]

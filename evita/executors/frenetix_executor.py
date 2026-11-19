@@ -11,7 +11,7 @@ import enlighten
 import traceback
 
 from queue import Empty
-from typing import List
+from typing import List, Optional
 
 from commonroad.common.file_reader import CommonRoadFileReader
 from commonroad.common.file_writer import CommonRoadFileWriter
@@ -24,6 +24,7 @@ from cr_scenario_handler.utils.agent_status import TIMEOUT, AgentStatus
 from cr_scenario_handler.utils.configuration_builder import ConfigurationBuilder
 
 from ..interfaces import AbstractScenarioExecutor
+from ..execution import ExecutionResult, AgentOutcome
 from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT
 
 class PatchedConfigurationBuilder(ConfigurationBuilder):
@@ -387,13 +388,16 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         plt.savefig(f"{output_folder}/scenario.png", format = 'png', dpi = 500, bbox_inches = 'tight')
         plt.close("all")
 
-    def execute(self, scenario, planning_problem_set, progress_bar_manager = None, on_step = None) -> Simulation:
+    def execute(self, scenario, planning_problem_set, progress_bar_manager = None, on_step = None) -> Optional[ExecutionResult]:
         """
         Simulate the scenario in a new folder <output_folder>/<generation id>/ (scenario file in scenario/, logs in
-        logs/). Returns the simulation, or None if it failed.
+        logs/). Returns the execution result (the Simulation is its `native` handle), or None if the simulation failed.
         """
         # Increment the execution counter
         self.execution_counter += 1
+
+        # The scenario is re-read from file below, which loses its generation_id: keep it
+        generation_id = scenario.generation_id
 
         # Create the folders for the execution using the generation_id
         execution_folder_name = str(scenario.generation_id).rjust(5, '0')
@@ -478,4 +482,35 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
                 except Exception:
                     pass
 
-        return simulation
+        return ExecutionResult(scenario_id = generation_id,
+                               output_folder = execution_folder,
+                               executed_scenario = simulation.scenario,
+                               agents = {int(agent.id): self._agent_outcome(agent) for agent in simulation.agents},
+                               native = simulation)
+
+    @staticmethod
+    def _agent_outcome(agent) -> AgentOutcome:
+        """
+        Wrap the Frenetix agent's outcome into an AgentOutcome dataclass for easier access and manipulation.
+        """
+        return AgentOutcome(id = int(agent.id),
+                            initial_time_step = int(agent.planning_problem.initial_state.time_step),
+                            status = agent.agent_state.status.name,
+                            last_timestep = int(agent.agent_state.last_timestep),
+                            driven_states = sorted(agent.record_state_list, key = lambda state: state.time_step),
+                            emergency_steps = set(agent.record_emergency),
+                            disengagement_steps = set(agent.record_disengagement))
+
+    def release(self, execution: ExecutionResult) -> None:
+        """
+        Close the simulation's database connection and FrenetiX's processes (after the evaluation).
+        """
+        simulation = execution.native
+        if simulation is None:
+            return
+        try:
+            simulation.sim_logger.con.close()
+            if simulation.config.simulation.multiprocessing:
+                simulation.close_processes()
+        except Exception:
+            self.logger.debug(f"Releasing the simulation of {execution.scenario_id} failed:\n{traceback.format_exc()}")
