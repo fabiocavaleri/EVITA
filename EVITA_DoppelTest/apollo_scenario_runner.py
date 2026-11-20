@@ -15,6 +15,7 @@ Exit codes:
     0   the scenario ran and its trace was written
     2   the scenario was rejected before running (the trace explains why; no record files)
     10  the record files are missing or cannot be read
+    3   unexpected error (e.g. Docker or Apollo failure): the message is on stderr
     1   wrong arguments
 """
 
@@ -22,6 +23,7 @@ import os
 import sys
 import json
 import argparse
+import traceback
 from typing import Any, Dict, List
 
 from hdmap.MapParser import MapParser
@@ -37,6 +39,7 @@ EXIT_OK = 0
 EXIT_WRONG_ARGUMENTS = 1
 EXIT_REJECTED = 2
 EXIT_RECORD_ERROR = 10
+EXIT_UNEXPECTED_ERROR = 3
 
 def scenario_section(args, status: str, json_scenario: Dict[str, Any], reason: str = "") -> Dict[str, Any]:
     """
@@ -150,11 +153,23 @@ def parse_arguments(argv: List[str]):
 
     return parser.parse_args(argv)
 
-if __name__ == "__main__":
+def run(argv: List[str]) -> int:
+    """
+    Parse the arguments, run the scenario and return the exit code
+    """
     try:
-        arguments = parse_arguments(sys.argv[1:])
+        arguments = parse_arguments(argv)
     except SystemExit as exc:
-        sys.exit(EXIT_OK if exc.code == 0 else EXIT_WRONG_ARGUMENTS)
+        return EXIT_OK if exc.code == 0 else EXIT_WRONG_ARGUMENTS
 
     RuntimeConfig.RECORDS_DIR = arguments.records_dir
-    sys.exit(main(arguments))
+    
+    try:
+        return main(arguments)
+    except Exception:
+        # Any other failure (Docker, Apollo, DoppelTest) must not look like wrong arguments (Python's default exit code 1)
+        traceback.print_exc()
+        return EXIT_UNEXPECTED_ERROR
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1:]))

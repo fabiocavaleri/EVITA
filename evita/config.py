@@ -3,7 +3,7 @@
 Configuration of scenario generation and validation
 """
 from commonroad.scenario.lanelet import LaneletType
-from cr_scenario_handler.utils.configuration import VehicleParameterMapping, VehicleType
+from cr_scenario_handler.utils.vehicle_models import vehicle_parameters
 
 class ValidationConfig:
     """
@@ -54,11 +54,11 @@ class ScenarioGeneratorConfig:
 
         # CommonRoad vehicle model: 1 = Ford Escort, 2 = BMW 320i, 3 = VW Vanagon
         self.cr_vehicle_id = 2
-        vehicle_parameters = VehicleParameterMapping.from_vehicle_type(VehicleType(self.cr_vehicle_id))
+        parameters = vehicle_parameters(self.cr_vehicle_id)
 
         # Vehicle dimensions (metres): used for goal areas and for the longitudinal range of the interaction map
-        self.length = vehicle_parameters.l
-        self.width = vehicle_parameters.w
+        self.length = parameters.l
+        self.width = parameters.w
 
         # Number of vehicles (planning problems) per scenario (min_AVs, max_AVs)
         self.min_amount_pp = 2

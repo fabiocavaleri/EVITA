@@ -182,8 +182,22 @@ def goal_position(planning_problem: PlanningProblem):
 
 # ---------- Routes ----------
 
-def lanelets_at(lanelet_network: LaneletNetwork, position) -> List[int]:
-    return list(lanelet_network.find_lanelet_by_position([list(position)])[0])
+def lanelets_at(lanelet_network: LaneletNetwork, position, tolerance: float = 0.01) -> List[int]:
+    """
+    Lanelets containing the position whose centerline is closest to it (within `tolerance` of the closest one).
+    Where lanelets overlap (e.g. just after a split), the position belongs to the lanelet it is centered on;
+    lanelets whose centerlines coincide there are all kept.
+    """
+    candidates = list(lanelet_network.find_lanelet_by_position([list(position)])[0])
+
+    if len(candidates) <= 1:
+        return candidates
+
+    distances = {lanelet_id: position_along(lanelet_network.find_lanelet_by_id(lanelet_id), position)[1]
+                 for lanelet_id in candidates}
+    closest = min(distances.values())
+    
+    return [lanelet_id for lanelet_id in candidates if distances[lanelet_id] <= closest + tolerance]
 
 def shortest_successor_route(lanelet_network: LaneletNetwork, starts: List[int], goals: List[int]) -> Optional[List[int]]:
     """

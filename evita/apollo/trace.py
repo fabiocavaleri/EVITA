@@ -33,7 +33,7 @@ from commonroad.scenario.obstacle import DynamicObstacle, ObstacleType
 from commonroad.scenario.traffic_light import TrafficLightCycle, TrafficLightCycleElement
 
 from .map_data import ApolloMapData
-from .scenario_spec import ApolloVehicle
+from .scenario_converter import ApolloVehicle
 from .traffic_control import COMMONROAD_STATE, LONG_DURATION
 
 module_logger = logging.getLogger(__name__)
