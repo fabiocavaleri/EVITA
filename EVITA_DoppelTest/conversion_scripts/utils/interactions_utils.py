@@ -21,7 +21,7 @@ from commonroad.scenario.obstacle import ObstacleRole
 from commonroad.scenario.state import CustomState, InitialState
 from commonroad.scenario.scenario import Scenario, DynamicObstacle
 from cr_scenario_handler.utils.utils_coordinate_system import CoordinateSystem
-from cr_scenario_handler.utils.configuration import VehicleParameterMapping, VehicleType
+# from cr_scenario_handler.utils.configuration import VehicleParameterMapping, VehicleType
 
 TRAFFIC_LIGHTS_SAFETY_DISTANCE = 100
 STOP_SIGN_SAFETY_DISTANCE = 75

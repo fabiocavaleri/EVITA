@@ -38,7 +38,7 @@ MAX_ADC_COUNT = 5
 """Number of ADS instances you wish to run simultaneously"""
 MAX_PD_COUNT = 0
 """Number of pedestrians you wish to include in simulations"""
-RUN_FOR_HOUR = 12
+RUN_FOR_HOUR = 24
 """Number of hours you wish to run"""
 MAPS_ROOT_FOLDER = f'{DT_ROOT}/data/maps/'
 """Root folder with all the DoppelTest maps"""
