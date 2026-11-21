@@ -237,13 +237,13 @@ DT_maps = sorted(os.listdir("../data/maps/"))
 # Iterate over available Baidu Apollo maps
 for i, map in enumerate(DT_maps):
     # Build output file paths for CommonRoad converted map
-    output_map_file_path = os.path.join(output_folder, f"{map}.xml")
-    output_map_image_file_path = os.path.join(output_folder, f"{map}.png")
-    output_map_image_with_labels_file_path = os.path.join(output_folder, f"{map}_with_labels.png")
-    output_lane_ids_map_file_path = os.path.join(output_folder, f"{map}_lane_ids_map.json")
-    output_signal_ids_map_file_path = os.path.join(output_folder, f"{map}_signals_ids_map.json")
-    output_signal_relations_map_file_path = os.path.join(output_folder, f"{map}_signals_relations_map.json")
-    output_lanes_not_in_junction_file_path = os.path.join(output_folder, f"{map}_lanes_not_in_junction.json")
+    output_map_file_path = os.path.join(output_folder, map, f"{map}.xml")
+    output_map_image_file_path = os.path.join(output_folder, map, f"{map}.png")
+    output_map_image_with_labels_file_path = os.path.join(output_folder, map, f"{map}_with_labels.png")
+    output_lane_ids_map_file_path = os.path.join(output_folder, map, f"{map}_lane_ids_map.json")
+    output_signal_ids_map_file_path = os.path.join(output_folder, map, f"{map}_signals_ids_map.json")
+    output_signal_relations_map_file_path = os.path.join(output_folder, map, f"{map}_signals_relations_map.json")
+    output_lanes_not_in_junction_file_path = os.path.join(output_folder, map, f"{map}_lanes_not_in_junction.json")
 
     # Build source file path for Baidu Apollo .bin map
     map_file = os.path.join("../data/maps/", map, "base_map.bin")
@@ -254,6 +254,8 @@ for i, map in enumerate(DT_maps):
         continue
 
     print(f"\n========== Start conversion of map {map} ==========")
+
+    os.makedirs(os.path.join(output_folder, map), exist_ok = True)
 
     # Open .bin map file
     mp = MapParser(map_file)
@@ -463,11 +465,11 @@ for i, map in enumerate(DT_maps):
         )
         
         # Convert traffic light identifier to int
-        # Add 10000 to avoid lanelet ids duplicates
+        # Add 8000 to avoid lanelet ids duplicates
         if '_' in signal_id:
-            tl_id = int(signal_id.split("_")[1]) + 10000
+            tl_id = int(signal_id.split("_")[1]) + 8000
         else:
-            tl_id = int(signal_id) + 10000
+            tl_id = int(signal_id) + 8000
 
         # Save traffic lights id mapping
         signals_id_map[signal_id] = tl_id
@@ -575,11 +577,11 @@ for i, map in enumerate(DT_maps):
 
 
     # Save to JSON
-    with open(os.path.join(output_folder, f"{map}_rechable_lanelets.json"), "w") as f:
+    with open(os.path.join(output_folder, map, f"{map}_rechable_lanelets.json"), "w") as f:
         json.dump(lanelets_reachable, f, indent = 2)
 
     # Save to JSON
-    with open(os.path.join(output_folder, f"{map}_feasible_paths.json"), "w") as f:
+    with open(os.path.join(output_folder, map, f"{map}_feasible_paths.json"), "w") as f:
         json.dump(feasible_paths, f, indent = 2)
 
     print("Reachable lanes and feasible paths saved")

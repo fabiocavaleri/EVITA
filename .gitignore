@@ -172,3 +172,5 @@ EVITA_DoppelTest/old-plots
 results/
 calibration/
 logs/
+equivalence/
+tmp/
