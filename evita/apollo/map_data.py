@@ -4,7 +4,7 @@ Correspondence between an Apollo HD map and its CommonRoad conversion.
 The map converter (scripts/apollo/map_converter.py) writes three files next to the converted map <name>.xml:
 
     <name>_lane_ids_map.json          Apollo lane id -> CommonRoad lanelet id         {"lane_0": 1, ...}
-    <name>_signals_ids_map.json       Apollo signal id -> CommonRoad traffic light id  {"signal_0": 10000, ...}
+    <name>_signals_ids_map.json       Apollo signal id -> CommonRoad traffic light id  {"signal_0": <id>, ...}
     <name>_signals_relations_map.json Apollo signal id -> [[other signal, "EQ" | "NE"], ...]
                                       EQ: the two signals always show the same color; NE: never green together
 
@@ -16,6 +16,7 @@ import os
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+import numpy as np
 from typing import Dict, List, Tuple
 
 from commonroad.scenario.lanelet import LaneletNetwork
@@ -105,31 +106,65 @@ class ApolloMapData:
 
     # ---------- Consistency ----------
 
-    def check(self, lanelet_network: LaneletNetwork) -> None:
+    def check(self, lanelet_network: LaneletNetwork) -> List[str]:
         """
-        Raise MapDataError if the id files do not match the lanelet network (e.g. id files of another map version)
-        """
-        # Extract scenario lanelet and traffic light ids from the map
-        lanelets = {lanelet.lanelet_id for lanelet in lanelet_network.lanelets}
-        traffic_lights = {light.traffic_light_id for light in lanelet_network.traffic_lights}
+        Check that a scenario's lanelet network is built on this converted map.
+        Raises MapDataError if:
+        - A lanelet of the scenario has a different centerline from the map's lanelet with the same id (scenario built on
+          another map, or on a map version with shifted lanelet ids);
+        - The traffic lights differ from the map's.
 
-        # Check that the id files contain all lanelets and traffic lights of the map, and that all traffic lights of the map have an Apollo signal
-        missing_lanelets = sorted(set(self.lane_by_lanelet) - lanelets)
+        Returns warnings: lanelets of the map missing from the scenario, or of the scenario missing from the map.
+        """
+        map_network = _map_network(self.map_file)
+        map_lanelets = {lanelet.lanelet_id: lanelet for lanelet in map_network.lanelets}
+        scenario_lanelets = {lanelet.lanelet_id: lanelet for lanelet in lanelet_network.lanelets}
+
+        problems, warnings = [], []
+
+        # Check that the scenario's lanelets have the same centerline as the map's lanelets with the same id
+        different = sorted(lanelet_id for lanelet_id, lanelet in scenario_lanelets.items()
+                           if lanelet_id in map_lanelets and not _same_centerline(lanelet, map_lanelets[lanelet_id]))
+        if different:
+            problems.append(f"lanelets {different[:10]}{' ...' if len(different) > 10 else ''} have a different centerline from the map's lanelets with the same id (scenario built on another map, or lanelet ids shifted)")
+
+        # Check that the scenario's traffic lights match the map's
+        traffic_lights = {light.traffic_light_id for light in lanelet_network.traffic_lights}
         missing_lights = sorted(set(self.signal_by_traffic_light) - traffic_lights)
         unmapped_lights = sorted(traffic_lights - set(self.signal_by_traffic_light))
 
-        problems = []
-        if missing_lanelets:
-            problems.append(f"lanelets {missing_lanelets} are in the id files but not in the map")
-
         if missing_lights:
-            problems.append(f"traffic lights {missing_lights} are in the id files but not in the map")
-        
+            problems.append(f"traffic lights {missing_lights} are in the id files but not in the scenario")
         if unmapped_lights:
-            problems.append(f"traffic lights {unmapped_lights} of the map have no Apollo signal")
-        
+            problems.append(f"traffic lights {unmapped_lights} of the scenario have no Apollo signal")
         if problems:
             raise MapDataError(f"{self.map_file}: " + "; ".join(problems))
+
+        missing = sorted(set(map_lanelets) - set(scenario_lanelets))
+        extra = sorted(set(scenario_lanelets) - set(map_lanelets))
+
+        if missing:
+            warnings.append(f"lanelets {missing} of the map are not in the scenario")
+        if extra:
+            warnings.append(f"lanelets {extra} of the scenario are not in the map (no Apollo lane)")
+            
+        return warnings
+
+def _same_centerline(first, second, tolerance: float = 1e-3) -> bool:
+    a, b = first.center_vertices, second.center_vertices
+
+    return a.shape == b.shape and bool(np.allclose(a, b, atol = tolerance))
+
+@lru_cache(maxsize = None)
+def _map_network(map_file: str) -> LaneletNetwork:
+    """
+    Lanelet network of the converted map (read once per process)
+    """
+    from commonroad.common.file_reader import CommonRoadFileReader
+
+    scenario, _ = CommonRoadFileReader(map_file).open()
+
+    return scenario.lanelet_network
 
 @lru_cache(maxsize = None)
 def _load(map_file: str) -> ApolloMapData:

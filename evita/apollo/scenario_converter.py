@@ -185,8 +185,8 @@ def goal_position(planning_problem: PlanningProblem):
 def lanelets_at(lanelet_network: LaneletNetwork, position, tolerance: float = 0.01) -> List[int]:
     """
     Lanelets containing the position whose centerline is closest to it (within `tolerance` of the closest one).
-    Where lanelets overlap (e.g. just after a split), the position belongs to the lanelet it is centered on;
-    lanelets whose centerlines coincide there are all kept.
+    Where lanelets overlap (e.g. just after a split), the position belongs to the lanelet it is centered on (EVITA puts
+    starts and goals on their lanelet's centerline); lanelets whose centerlines coincide there are all kept.
     """
     candidates = list(lanelet_network.find_lanelet_by_position([list(position)])[0])
 
@@ -196,7 +196,7 @@ def lanelets_at(lanelet_network: LaneletNetwork, position, tolerance: float = 0.
     distances = {lanelet_id: position_along(lanelet_network.find_lanelet_by_id(lanelet_id), position)[1]
                  for lanelet_id in candidates}
     closest = min(distances.values())
-    
+
     return [lanelet_id for lanelet_id in candidates if distances[lanelet_id] <= closest + tolerance]
 
 def shortest_successor_route(lanelet_network: LaneletNetwork, starts: List[int], goals: List[int]) -> Optional[List[int]]:
@@ -304,7 +304,8 @@ def build_scenario_json(scenario: Scenario, planning_problem_set: PlanningProble
     DoppelTest's JSON of a CommonRoad scenario: one Apollo instance per planning problem, no pedestrians, the traffic control written in the scenario's traffic lights
     """
     lanelet_network = scenario.lanelet_network
-    map_data.check(lanelet_network)
+    for warning in map_data.check(lanelet_network):
+        module_logger.warning(warning)
 
     planning_problems = list(planning_problem_set.planning_problem_dict.values())
     if not planning_problems:

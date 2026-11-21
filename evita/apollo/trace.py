@@ -47,8 +47,9 @@ REJECTED = "rejected"
 # A localization gap longer than this (s) is reported: states inside it are interpolated
 MAX_LOCALIZATION_GAP = 0.5
 
-# A vehicle whose localization starts more than this (s) from time step 0 suggests that the traffic light messages and
-# the localization do not share a clock
+# A vehicle whose localization starts more than this (s) after timestep 0 suggests that the traffic light messages and
+# the localization do not share a clock.
+# Starting before time step 0 is normal: vehicles are placed and localized while the runner prepares the scenario
 MAX_CLOCK_OFFSET = 5.0
 
 # Speed (m/s) above which a vehicle is moving
@@ -476,10 +477,15 @@ def convert_trace(trace: Trace, generated_scenario: Scenario, map_data: ApolloMa
         if obstacle is None:
             warnings.append(f"Vehicle {vehicle.vehicle_id} ({vehicle.container}) has no localization")
         else:
-            executed.add_objects(obstacle)
+            try:
+                executed.add_objects(obstacle)
+            except ValueError as exc:
+                raise TraceError(f"Vehicle id {vehicle.vehicle_id} is already used by another object of the scenario "
+                                 f"(lanelet, traffic light, traffic sign, ...): CommonRoad requires unique ids, so the "
+                                 f"vehicles' ids (config av_base_id) and the map's ids must not overlap") from exc
 
         # Check that the vehicle's localization starts close enough to time step 0
-        if len(vehicle.localization) and abs(vehicle.localization[0, 0] - t_0) / 1e9 > MAX_CLOCK_OFFSET:
+        if len(vehicle.localization) and (vehicle.localization[0, 0] - t_0) / 1e9 > MAX_CLOCK_OFFSET:
             warnings.append(f"Vehicle {vehicle.vehicle_id}: localization starts {(vehicle.localization[0, 0] - t_0) / 1e9:.1f} s from the first traffic light message: do the two use the same clock?")
 
         # Check for gaps in the vehicle's localization samples
