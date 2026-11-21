@@ -7,11 +7,13 @@ import sys
 import time
 import copy
 import logging
+import functools
 import enlighten
 import traceback
+import pandas as pd
 
 from queue import Empty
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from commonroad.common.file_reader import CommonRoadFileReader
 from commonroad.common.file_writer import CommonRoadFileWriter
@@ -23,9 +25,26 @@ from cr_scenario_handler.simulation.simulation import Simulation
 from cr_scenario_handler.utils.agent_status import TIMEOUT, AgentStatus
 from cr_scenario_handler.utils.configuration_builder import ConfigurationBuilder
 
+from ..data_analysis import _rebuild_trajectory
 from ..interfaces import AbstractScenarioExecutor
-from ..execution import ExecutionResult, AgentOutcome
 from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT
+from ..execution import ExecutionResult, AgentOutcome, Plan
+
+def read_frenetix_plans(log_path: str, agent_ids) -> Dict:
+    """
+    Plans of each agent ({agent id: plans}, in the order of agent_ids), read from the agents' logs.csv.
+    One plan per time step (trajectory_number), its trajectory rebuilt from the logged positions, orientations and velocities
+    """
+    plans = {}
+    for agent_id in agent_ids:
+        agent_log = pd.read_csv(os.path.join(log_path, str(agent_id), "logs.csv"), sep = ';')
+        records = sorted(agent_log.to_dict(orient = "records"), key = lambda r: int(r["trajectory_number"]))
+
+        plans[agent_id] = [Plan(time_step = int(record["trajectory_number"]),
+                                trajectory = _rebuild_trajectory(int(record["trajectory_number"]), record["x_positions_m"], record["y_positions_m"], record["theta_orientations_rad"], record["velocities_mps"]))
+                           for record in records]
+        
+    return plans
 
 class PatchedConfigurationBuilder(ConfigurationBuilder):
     """
@@ -483,10 +502,13 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
                     pass
 
         return ExecutionResult(scenario_id = generation_id,
-                               output_folder = execution_folder,
-                               executed_scenario = simulation.scenario,
-                               agents = {int(agent.id): self._agent_outcome(agent) for agent in simulation.agents},
-                               native = simulation)
+                        output_folder = execution_folder,
+                        executed_scenario = simulation.scenario,
+                        agents = {int(agent.id): self._agent_outcome(agent) for agent in simulation.agents},
+                        native = simulation,
+                        simulator = "frenetix",
+                        plan_loader = functools.partial(read_frenetix_plans, simulation.config.simulation.log_path,
+                                                        list(simulation.agent_id_list)))
 
     @staticmethod
     def _agent_outcome(agent) -> AgentOutcome:

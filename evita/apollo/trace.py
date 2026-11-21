@@ -198,7 +198,7 @@ def nearest_step(t_ns: int, t0: int, dt: float) -> int:
 # ---------- Conversion results ----------
 
 @dataclass
-class Plan:
+class ApolloPlan:
     """
     One plan of a vehicle.
     Trajectory rows: time from time step 0 (s), center x, center y, heading, speed, acceleration, curvature, distance along the path.
@@ -224,7 +224,7 @@ class ExecutedVehicle:
     apollo_id: int
     container: str
     obstacle: Optional[DynamicObstacle]         # None without localization
-    plans: List[Plan]
+    plans: List[ApolloPlan]
     first_motion_step: Optional[int]            # first time step with speed > MOVING_SPEED
     mission_complete_step: Optional[int]        # first plan whose main decision is mission_complete
     # DoppelTest's collision oracle (recorder's clock): one entry per message in which the two outlines touch
@@ -340,7 +340,7 @@ def build_obstacle(vehicle_id: int, samples: List[Dict], dimensions: ApolloVehic
 
 # ---------- Plans ----------
 
-def convert_plan(message: Dict, t0: int, dt: float, offset: float) -> Plan:
+def convert_plan(message: Dict, t0: int, dt: float, offset: float) -> ApolloPlan:
     """
     One plan of a vehicle, with its trajectory and decisions
     """
@@ -358,7 +358,7 @@ def convert_plan(message: Dict, t0: int, dt: float, offset: float) -> Plan:
                                  column("x") + offset * np.cos(theta), column("y") + offset * np.sin(theta),
                                  theta, column("v"), column("a"), column("kappa"), column("s")]) if len(rows) else np.empty((0, 8))
 
-    return Plan(
+    return ApolloPlan(
         t = message["t"],
         time_step = plan_time / dt,
         trajectory = converted,
@@ -370,7 +370,7 @@ def convert_plan(message: Dict, t0: int, dt: float, offset: float) -> Plan:
         trajectory_type = message["trajectory_type"]
     )
 
-def plan_facts(plans: List[Plan]):
+def plan_facts(plans: List[ApolloPlan]):
     """
     Mission complete, emergency and disengagement time steps from a vehicle's plans
     """

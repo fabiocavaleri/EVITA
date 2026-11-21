@@ -12,7 +12,7 @@ from cr_scenario_handler.simulation.simulation import Simulation
 
 from ..timing import TASK_TIMER
 from ..execution import ExecutionResult
-from ..data_analysis import _rebuild_trajectory
+from ..data_analysis import read_frenetix_plans
 from ..interfaces import AbstractScenarioEvaluator
 from ..utils import EVITA_MAIN_LOGGER_NAME, sanitize_dataframe
 from ..generators.utils import (augment_with_collisions, augment_with_danger, augment_with_emergencies_and_disengagements,
@@ -30,22 +30,22 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
             os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     
         self.output_folder = output_folder
-    
+
+    @staticmethod
+    def _plans_table(plans_by_agent) -> pd.DataFrame:
+        """
+        Planned trajectory of each agent at each time step ({agent id: plans} -> one row per plan)
+        """
+        rows = [[agent_id, plan.time_step, plan.trajectory] for agent_id, plans in plans_by_agent.items() for plan in plans]
+        return pd.DataFrame(rows, columns = ["vehicle_id", "timestep", "trajectory"])
+
     @staticmethod
     def _planned_trajectories(simulation: Simulation) -> pd.DataFrame:
         """
-        Planned trajectory of each agent at each time step, read from the agents' logs.csv
+        Planned trajectory of each agent at each time step, read from the agents' logs.csv (kept for scripts that pass
+        a Simulation, e.g. scripts/false_positive_analysis.py; the evaluation reads the plans of the ExecutionResult)
         """
-        rows = []
-
-        for agent_id in simulation.agent_id_list:
-            agent_log = pd.read_csv(os.path.join(simulation.config.simulation.log_path, str(agent_id), "logs.csv"), sep = ';')
-            
-            for record in sorted(agent_log.to_dict(orient = "records"), key = lambda r: int(r["trajectory_number"])):
-                timestep = int(record["trajectory_number"])
-                rows.append([agent_id, timestep, _rebuild_trajectory(timestep, record["x_positions_m"], record["y_positions_m"], record["theta_orientations_rad"], record["velocities_mps"])])
-
-        return pd.DataFrame(rows, columns = ["vehicle_id", "timestep", "trajectory"])
+        return FrenetixScenarioEvaluator._plans_table(read_frenetix_plans(simulation.config.simulation.log_path, simulation.agent_id_list))
     
     def evaluate(self, execution: ExecutionResult, trajectory_difference_threshold, on_step = None) -> pd.DataFrame:
         """
@@ -60,7 +60,7 @@ class FrenetixScenarioEvaluator(AbstractScenarioEvaluator):
         simulation: Simulation = execution.native
         
         with TASK_TIMER.measure("evaluation.planned_trajectories"):
-            trajectories_df = self._planned_trajectories(simulation)
+            trajectories_df = self._plans_table(execution.load_plans())
         sync_progress_bar()
 
         for obstacle in simulation.scenario.obstacles:
