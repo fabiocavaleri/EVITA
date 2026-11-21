@@ -23,10 +23,6 @@ from commonroad.common.file_writer import CommonRoadFileWriter
 from commonroad.planning.goal import Interval
 from commonroad.visualization.mp_renderer import MPRenderer
 
-from EVITA_DoppelTest.conversion_scripts.utils.RecordFileError import RecordFileError
-from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import build_json_scenario
-from EVITA_DoppelTest.conversion_scripts.utils.interactions_utils import augment_with_collisions, augment_with_interactions, planned_trajectories_to_df
-
 from ..timing import TASK_TIMER
 from ..execution import ExecutionResult
 from ..validator import ScenarioValidator

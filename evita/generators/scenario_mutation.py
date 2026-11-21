@@ -23,14 +23,15 @@ from commonroad.planning.planning_problem import PlanningProblem, PlanningProble
 from commonroad.scenario.lanelet import Lanelet
 from commonroad.scenario.scenario import Scenario
 from commonroad.scenario.state import InitialState
-from commonroad.scenario.traffic_light import TrafficLightState
 
 from EVITA_DoppelTest.config import INSTANCE_MAX_WAIT_TIME
-from EVITA_DoppelTest.conversion_scripts.utils.conversion_utils import compute_map_elements_mapping, get_traffic_light_configuration, get_traffic_light_cycle
 
 from . import utils as generation_utils
 from ..config import ScenarioGeneratorConfig
 from ..utils import EVITA_MAIN_LOGGER_NAME
+
+from ..apollo.map_data import ApolloMapData
+from ..apollo.traffic_control import TrafficControl, max_duration_green, mutate_configurations, mutate_green_duration
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
 
@@ -339,70 +340,23 @@ def mutate_evita_goal_area_position(config: ScenarioGeneratorConfig, planning_pr
 
 def mutate_tl_initial_configuration(_: ScenarioGeneratorConfig, scenario: Scenario, map_file_path: str) -> Scenario:
     """
-    Mutate the initial configuration of the scenario's traffic lights. Return the updated scenario.
+    New initial and final configurations of the scenario's traffic lights (DoppelTest's rules, respecting the map's signal relations), same durations.
+    Return the updated scenario.
     """
-    # Easy mapping between CommonRoad traffic light colors and string representation
-    color_map = {
-        TrafficLightState.RED : "RED",
-        TrafficLightState.YELLOW : "YELLOW",
-        TrafficLightState.GREEN : "GREEN"
-    }
+    traffic_control = TrafficControl.from_commonroad(scenario.lanelet_network, scenario.dt)
+    mutate_configurations(traffic_control, ApolloMapData.load(map_file_path)).to_commonroad(scenario.lanelet_network, scenario.dt)
 
-    # Extract CommonRoad scenario's traffic lights
-    scenario_traffic_lights = scenario.lanelet_network.traffic_lights
-
-    # Get the traffic light cycle elements of one signal in the scenario
-    traffic_light_cycle_elements = scenario_traffic_lights[0].traffic_light_cycle.cycle_elements
-    
-    # Extract traffic lights color durations
-    traffic_light_durations = {
-        color_map[element.state]: element.duration
-        for element in traffic_light_cycle_elements
-    }
-
-    durations = {
-        "red_wait_duration": traffic_light_durations['RED'],
-        "yellow_duration": traffic_light_durations['YELLOW'],
-        "green_duration": traffic_light_durations['GREEN']
-    }
-
-    # Generate a new random traffic light configuration
-    _, signals_id_map, reverse_signals_id_map, signals_relations_map = compute_map_elements_mapping(map_file_path)
-    traffic_light_configurations = get_traffic_light_configuration(scenario, signals_id_map, reverse_signals_id_map, signals_relations_map)
-
-    # Assign traffic light configuration to each signal in the map
-    for signal_id, color in traffic_light_configurations.items():
-        signal = scenario.lanelet_network.find_traffic_light_by_id(signal_id)
-
-        signal.traffic_light_cycle = get_traffic_light_cycle(color, durations)
-        signal.initial_state = (TrafficLightState.RED if color == "RED" else TrafficLightState.GREEN)
-        signal.time_offset = 0
-    
     return scenario
+
 
 def mutate_green_light_duration(config: ScenarioGeneratorConfig, scenario: Scenario, _: str) -> Scenario:
     """
-    Mutate the initial configuration of the scenario's traffic lights. Return the updated scenario.
+    New green duration of the scenario's traffic lights (whole seconds, between DoppelTest's minimum and half the scenario),
+    same configurations, yellow and all-red durations.
+    Return the updated scenario.
     """
-    # Generate the traffic lights durations
-    traffic_light_durations = {
-        "red_wait_duration": 2 * 10,
-        "yellow_duration": 3 * 10,
-        "green_duration": random.randint(5, int(config.max_time_step / 2))
-    }
-
-    durations = {
-        TrafficLightState.RED : (traffic_light_durations["red_wait_duration"] + traffic_light_durations["yellow_duration"] + traffic_light_durations["green_duration"]),
-        TrafficLightState.YELLOW : traffic_light_durations["yellow_duration"],
-        TrafficLightState.GREEN : traffic_light_durations["green_duration"]
-    }
-
-    # Extract CommonRoad scenario's traffic lights
-    scenario_traffic_lights = scenario.lanelet_network.traffic_lights
-
-    # Assign traffic light configuration to each signal in the map
-    for signal in scenario_traffic_lights:
-        for cycle_element in signal.traffic_light_cycle.cycle_elements:
-            cycle_element.duration = durations[cycle_element.state]
-            
+    traffic_control = TrafficControl.from_commonroad(scenario.lanelet_network, scenario.dt)
+    max_green = max_duration_green(config.max_time_step, scenario.dt)
+    mutate_green_duration(traffic_control, max_green).to_commonroad(scenario.lanelet_network, scenario.dt)
+    
     return scenario

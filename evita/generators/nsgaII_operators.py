@@ -23,13 +23,13 @@ from pymoo.core.duplicate import ElementwiseDuplicateElimination
 
 from commonroad.planning.planning_problem import PlanningProblemSet
 
-# from conversion_scripts.utils.conversion_utils import generate_traffic_lights
-
 from evita.timing import TASK_TIMER
 from evita.config import ValidationConfig
 from evita.validator import ScenarioValidator
 from evita.generators import scenario_mutation
 from evita.utils import EVITA_MAIN_LOGGER_NAME, Budget
+from evita.apollo.map_data import ApolloMapData
+from evita.apollo.traffic_control import max_duration_green, random_traffic_control
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
 
@@ -159,9 +159,12 @@ class EVITAScenarioSampling(ScenarioSampling):
         """
         Generate `n_samples` random scenarios and planning problem sets for EVITA
         """
-        # Generate the traffic lights configuration for the scenario
+        # One random traffic control (DoppelTest's rules) for the base scenario
         with self.termination_criterion.generating():
-            self.base_scenario = generate_traffic_lights(self.base_scenario, self.scenario_generator_configuration.max_time_step, self.map_file_path)
+            network, dt = self.base_scenario.lanelet_network, self.base_scenario.dt
+            lights = [light.traffic_light_id for light in network.traffic_lights]
+            max_green = max_duration_green(self.scenario_generator_configuration.max_time_step, dt)
+            random_traffic_control(ApolloMapData.load(self.map_file_path), lights, max_green).to_commonroad(network, dt)
 
         return super()._do(problem, n_samples, **kwargs)
 
