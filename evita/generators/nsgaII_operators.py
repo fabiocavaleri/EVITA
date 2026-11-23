@@ -563,7 +563,7 @@ class CustomTimeTermination(Termination):
         with self.paused():
             try:
                 with TASK_TIMER.measure("checkpoints"):
-                    checkpoint(checkpoint_id, algorithm.problem.output_folder, self.all_scenarios, self.valid_scenarios, self.invalid_scenarios, self.total_generation_time, self.skipped_scenarios, n_bins = args.n_bins)
+                    checkpoint(checkpoint_id, algorithm.problem.output_folder, self.all_scenarios, self.valid_scenarios, self.invalid_scenarios, self.total_generation_time, self.skipped_scenarios, n_bins = algorithm.problem.n_bins)
             except Exception:
                 module_logger.critical(f"Failed to checkpoint execution at checkpoint {checkpoint_id}")
                 module_logger.critical(traceback.format_exc())

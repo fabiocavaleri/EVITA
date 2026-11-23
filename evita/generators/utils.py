@@ -424,7 +424,7 @@ def augment_with_interactions(execution: ExecutionResult, trajectories: pd.DataF
         # Iterate over the time steps of the agent's trajectory to check for interactions
         for t in time_steps:
             # After a collision (at t or t + 1), the planned trajectories no longer reflect interactions
-            if collided and t + 1 >= agent.agent_state.last_timestep:
+            if collided and t + 1 >= agent.last_timestep:
                 continue
 
             # Extract the planned trajectories at time t and t + 1 for the agent
@@ -997,7 +997,7 @@ def augment_with_collisions(execution: ExecutionResult, criticality_dataframe: p
                 collided_agents = [other for other in other_agents if other.id in involved]
 
                 try:
-                    ria, riv, impact_location, most_critical_agent = compute_collision_features(t, agent, collided_agents, simulation.scenario)
+                    ria, riv, impact_location, most_critical_agent = compute_collision_features(t, agent, collided_agents, scenario)
                 except Exception as e:
                     module_logger.error(f"Error computing collision features for agent {agent.id} at time {t}: {e}")
                     continue
@@ -1052,7 +1052,7 @@ def augment_with_emergencies_and_disengagements(execution: ExecutionResult, crit
 
     tables = []
     for agent in sorted(execution.agents.values(), key = lambda a: a.id):
-        emergency, disengagement = set(agent.record_emergency), set(agent.record_disengagement)
+        emergency, disengagement = set(agent.emergency_steps), set(agent.disengagement_steps)
         tables.append(_agent_table(agent.id, time_steps, {
             "has_emergency": [1.0 if t in emergency else 0.0 for t in time_steps],
             "has_disengagement": [1.0 if t in disengagement else 0.0 for t in time_steps],
