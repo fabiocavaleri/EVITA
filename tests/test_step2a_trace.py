@@ -22,7 +22,7 @@ from evita.apollo import traffic_control as tcm, trace as tr
 from evita.apollo.scenario_converter import APOLLO_VEHICLE
 
 MapParser("EVITA_DoppelTest/data/maps/borregas_ave/base_map.bin"); mp = MapParser.get_instance()
-CONVERTED = "EVITA_DoppelTest/conversion_scripts/converted_maps/borregas_ave_fix.xml"
+CONVERTED = "EVITA_DoppelTest/data/converted_maps/borregas_ave/borregas_ave.xml"
 md = ApolloMapData.load(CONVERTED); generated, _ = CommonRoadFileReader(CONVERTED).open(); dt = generated.dt
 off = APOLLO_VEHICLE.center_offset
 results = []
@@ -48,9 +48,9 @@ def localization(t, pose):
     m.pose.position.x, m.pose.position.y, m.pose.heading = x, y, h
     m.pose.linear_velocity.x, m.pose.linear_velocity.y = v * math.cos(h), v * math.sin(h); return m
 
-def plan(t, pose, decision, estop = False, advice = 3):
+def plan(t, pose, decision, estop = False, advice = 3, empty = False):
     m = ADCTrajectory(); m.header.timestamp_sec = T0 + t
-    for k in range(5):
+    for k in range(0 if empty else 5):
         x, y, h, v = pose(t + 0.2 * k); p = m.trajectory_point.add()
         p.relative_time, p.path_point.x, p.path_point.y, p.path_point.theta, p.v = 0.2 * k, x, y, h, v
     getattr(m.decision.main_decision, decision).SetInParent()
@@ -64,8 +64,9 @@ def vehicle(container, apollo_id, evita_id, json_index, pose, duration, plan_tim
     plans = []
     for i, t in enumerate(plan_times):
         decision = "mission_complete" if t > duration - 1 else "cruise"
-        advice = 2 if i < 3 else (4 if 30 <= i < 32 else 3)          # READY, KEEP, ..., PREPARE_DISENGAGE at plans 30-31
-        plans.append(rx.export_planning(plan(t, pose, decision, estop = (i == 20), advice = advice), int((T0 + t) * 1e9) + 3_000_000))
+        advice = 2 if i < 3 else (4 if 30 <= i < 32 else (1 if i == 45 else 3))   # READY, KEEP, ...; PREPARE_DISENGAGE at 30-31; DISALLOW_ENGAGE at 45
+        empty = i in (1, 40, len(plan_times) - 1)                                     # no trajectory: before moving, while driving, after mission complete
+        plans.append(rx.export_planning(plan(t, pose, decision, estop = (i == 20), advice = advice, empty = empty), int((T0 + t) * 1e9) + 3_000_000))
     tls = []
     for k in range(int(duration / (0.1 * DRIFT)) + 1):
         msg, published = lights(k); msg.header.timestamp_sec = published; tls.append(rx.export_traffic_lights(msg))
@@ -106,7 +107,8 @@ p = a.plans[10]; x, y, h, _ = pose_a((p.t / 1e9) - T0)
 check("plan time and center", abs(p.trajectory[0, 0] - ((p.t / 1e9) - T0)) < 1e-6 and math.hypot(p.trajectory[0, 1] - (x + off * math.cos(h)), p.trajectory[0, 2] - (y + off * math.sin(h))) < 1e-6)
 check("mission complete at the first mission_complete plan", a.mission_complete_step == int(round(a.plans[[pl.main_decision["decision"] for pl in a.plans].index("mission_complete")].time_step)))
 check("emergency stop step", a.emergency_steps == {int(round(a.plans[20].time_step))})
-check("disengagement steps (after engaged)", a.disengagement_steps == {int(round(a.plans[i].time_step)) for i in (30, 31)})
+check("disengagements while driving: no trajectory (plan 40) or take-over advice (30, 31); not before moving (1), after the "
+      "mission (last plan) or for DISALLOW_ENGAGE (45)", a.disengagement_steps == {int(round(a.plans[i].time_step)) for i in (30, 31, 40)})
 check("collisions: steps and partners (902 -> 20002, unknown -> None)", a.collision_steps == [70, 80] and a.collision_partners == [20002, None])
 
 # Traffic lights: as received (runner clock 3% slow), not as specified

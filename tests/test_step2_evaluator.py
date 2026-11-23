@@ -120,6 +120,34 @@ check("diff_long / diff_lat: none for the first plan, computed for later events"
       pd.isna(t.loc[3, "diff_long"]) and not pd.isna(t.loc[6, "diff_long"]))
 
 
+# ---------- Collisions: Apollo's verdict, double checked, in time order ----------
+
+from types import SimpleNamespace
+def moving(obstacle_id, position_at, last = 40):
+    """A 4 m x 2 m vehicle whose center at time step k is position_at(k) (x, 0)"""
+    shape = Rectangle(4.0, 2.0)
+    states = [CustomState(time_step = k, position = np.array([position_at(k), 0.0]), orientation = 0.0, velocity = 0.0) for k in range(1, last + 1)]
+    init = InitialState(time_step = 0, position = np.array([position_at(0), 0.0]), orientation = 0.0, velocity = 0.0, yaw_rate = 0.0, slip_angle = 0.0, acceleration = 0.0)
+    return DynamicObstacle(obstacle_id, ObstacleType.CAR, shape, init, TrajectoryPrediction(Trajectory(1, states), shape))
+def vehicle(obstacle, entries):
+    return SimpleNamespace(obstacle = obstacle, collision_steps = [k for k, _ in entries], collision_partners = [p for _, p in entries])
+# A stands at x 0. B touches A from step 12 on (front at 2 m when its center is at 4 m), C from step 22 on.
+# D, E, F touch each other from step 15; G and H stay 50 m apart.
+conversion = SimpleNamespace(vehicles = {
+    1: vehicle(moving(1, lambda k: 0.0), [(13, 2), (14, 2), (21, 3)]),          # A reports B at 13 (the oracle is 1 step late) and C at 21
+    2: vehicle(moving(2, lambda k: max(4.0, 16.0 - k)), [(30, 1)]),               # B: at x 4 (touching A) from step 12; reports A again at 30
+    3: vehicle(moving(3, lambda k: min(-4.0, -26.0 + k)), []),                    # C: at x -4 (touching A) from step 22
+    4: vehicle(moving(4, lambda k: 104.0), [(15, 5), (15, 6)]),                  # D reports E and F at the same step
+    5: vehicle(moving(5, lambda k: 100.0 if k >= 15 else 90.0), []), 6: vehicle(moving(6, lambda k: 108.0 if k >= 15 else 118.0), []),
+    7: vehicle(moving(7, lambda k: 200.0), [(25, 8)]), 8: vehicle(moving(8, lambda k: 250.0), [])})
+first = tr.collision_steps(conversion)
+check(f"double check: A and B collide at their first contact (step 12, the oracle said 13): {first.get(1)}, {first.get(2)}", (first.get(1), first.get(2)) == (12, 12))
+check(f"a vehicle hitting an already collided vehicle collides: C at its first contact with A (step 22): {first.get(3)}; "
+      f"A keeps its first collision and B's later report changes nothing", first.get(3) == 22 and first.get(1) == 12)
+check(f"pile-up: every vehicle colliding at the same step collides ({first.get(4)}, {first.get(5)}, {first.get(6)})", first.get(4) == first.get(5) == first.get(6) == 15)
+check(f"unconfirmed (no contact within the window): Apollo's verdict at the oracle's step ({first.get(7)}, {first.get(8)})", (first.get(7), first.get(8)) == (25, 25))
+
+
 # ---------- Database ----------
 
 scenario, _ = CommonRoadFileReader(MAP).open()
@@ -204,6 +232,9 @@ def independent_interacting_steps(raw_trace, execution, conversion):
 
 if len(sys.argv) > 1:
     traces = sorted(glob.glob(os.path.join(sys.argv[1], "**", "trace.json.gz"), recursive = True))[:int(sys.argv[2]) if len(sys.argv) > 2 else None]
+    if not traces:
+        print(f"FAIL no trace.json.gz under {os.path.abspath(sys.argv[1])}: give the folder that holds the traces (e.g. tmp, with apollo_check/ and apollo_live/)")
+        sys.exit(1)
     map_data = ApolloMapData.load(MAP)
     evaluated = matched = collisions_ok = collision_vehicles = databases_ok = 0
     mismatches = []

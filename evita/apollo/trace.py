@@ -57,9 +57,10 @@ MAX_CLOCK_OFFSET = 5.0
 # Speed (m/s) above which a vehicle is moving
 MOVING_SPEED = 0.1
 
-# Engage advices: the vehicle is engaged, or the planner asks to stop autonomous driving
-ENGAGED_ADVICES = {"READY_TO_ENGAGE", "KEEP_ENGAGED"}
-DISENGAGE_ADVICES = {"PREPARE_DISENGAGE", "DISALLOW_ENGAGE"}
+# Disengagement (the planner found no valid trajectory while driving): a plan without trajectory, or
+# Apollo asking the driver to take over (this engage advice).
+# Emergency: Apollo's emergency stop (estop).
+TAKEOVER_ADVICE = "PREPARE_DISENGAGE"
 
 class TraceError(Exception):
     """
@@ -233,7 +234,7 @@ class ExecutedVehicle:
     collision_steps: List[int]
     collision_partners: List[Optional[int]]     # EVITA id of the other vehicle of each entry (None: not a vehicle)
     emergency_steps: Set[int]                   # plans with an emergency stop
-    disengagement_steps: Set[int]               # plans advising to stop autonomous driving after being engaged
+    disengagement_steps: Set[int]               # while driving: plans without trajectory or asking the driver to take over
     localization_gaps: List[float] = field(default_factory = list)   # gaps longer than MAX_LOCALIZATION_GAP (s)
 
     @property
@@ -403,10 +404,7 @@ def plan_facts(plans: List[ApolloPlan]):
         if plan.estop.get("is_estop"):
             emergencies.add(step)
         
-        advice = plan.engage_advice.get("advice")
-        if advice in ENGAGED_ADVICES:
-            engaged = True
-        elif engaged and advice in DISENGAGE_ADVICES:
+        if len(plan.trajectory) == 0 or plan.engage_advice.get("advice") == TAKEOVER_ADVICE:
             disengagements.add(step)
 
     return mission_complete, emergencies, disengagements
@@ -512,6 +510,14 @@ def convert_trace(trace: Trace, generated_scenario: Scenario, map_data: ApolloMa
         plans = [convert_plan(message, t_0, dt, offset) for message in vehicle.planning]
         mission_complete, emergencies, disengagements = plan_facts(plans)
         moving = [sample["time_step"] for sample in samples if abs(sample["velocity"]) > MOVING_SPEED]
+
+        # Disengagements only while driving: from the first motion, before the mission is complete
+        if moving:
+            first_motion = moving[0]
+        else:
+            first_motion = None
+
+        disengagements = {step for step in disengagements if first_motion is not None and step >= first_motion and (mission_complete is None or step < mission_complete)}
 
         collisions = vehicle.oracles.get("collisions", [])
 
