@@ -23,14 +23,15 @@ from commonroad.common.file_writer import CommonRoadFileWriter
 from commonroad.planning.goal import Interval
 from commonroad.visualization.mp_renderer import MPRenderer
 
+from evita import simulators
+
 from ..timing import TASK_TIMER
 from ..execution import ExecutionResult
 from ..validator import ScenarioValidator
 from ..generators.utils import compute_interaction_map
-from ..config import ScenarioGeneratorConfig, ValidationConfig
-from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, extend_scenario_after_goal_areas
-from ..orchestrator import (EXECUTION_ERROR_MESSAGE, SCENARIO_EVALUATOR_CLASS, SCENARIO_EVALUATOR_MODULE, SCENARIO_EXECUTOR_CLASS,
-                            SCENARIO_EXECUTOR_MODULE, TIMEOUT_MESSAGE, _load_class, backup_debug, debug_plot_to_file, ensure_generation_id)
+from ..config import ValidationConfig
+from ..utils import EVITA_MAIN_LOGGER_NAME, RESULTS_FOLDER
+from ..orchestrator import (EXECUTION_ERROR_MESSAGE, TIMEOUT_MESSAGE, _load_class, backup_debug, debug_plot_to_file, ensure_generation_id)
 
 class NSGAIIproblem(ElementwiseProblem):
     """
@@ -51,6 +52,10 @@ class NSGAIIproblem(ElementwiseProblem):
 
         self.debug = kwargs.pop("debug", False)
         self.force_max_duration = kwargs.pop("force_max_duration", None)
+
+        # Simulator executing the scenarios (evita/simulators.py), and Apollo's switch for its .record files
+        self.simulator = simulators.get_simulator(kwargs.pop("simulator", simulators.FRENETIX))
+        self.delete_records = kwargs.pop("delete_records", False)
 
         kwargs.setdefault("requires_kwargs", True)
         super().__init__(n_var = 2, n_obj = 3, n_ieq_constr = 0, **kwargs)
@@ -89,9 +94,9 @@ class NSGAIIproblem(ElementwiseProblem):
         if self.debug:
             self.logger.info(f"Outputting debug data to {self.debug_folder}")
 
-        self.scenario_generator_configuration = ScenarioGeneratorConfig()
+        self.scenario_generator_configuration = simulators.generation_configuration(self.simulator)
         self.scenario_validator_configuration = ValidationConfig()
-        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, self.scenario_generator_configuration)
+        self.scenario_validator = simulators.scenario_validator(self.simulator, self.scenario_validator_configuration, self.scenario_generator_configuration)
 
         self.valid_scenarios = 0
         self.invalid_scenarios = 0
@@ -115,12 +120,12 @@ class NSGAIIproblem(ElementwiseProblem):
 
     def _load_executor_and_evaluator(self) -> None:
         """
-        Create the FrenetiX scenario executor and evaluator.
+        Create the simulator's scenario executor and evaluator (evita/simulators.py).
         """
-        se_class = _load_class(FRENETIX_ROOT, SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS, self.logger)
-        self.scenario_executor = se_class(self.output_folder, driving_agent_name = self.driving_agent_name, debug = self.debug)
+        se_class = _load_class(self.simulator.executor_path, self.simulator.executor_module, self.simulator.executor_class, self.logger)
+        self.scenario_executor = se_class(self.output_folder, driving_agent_name = self.driving_agent_name, debug = self.debug, map_file = self.map_file, delete_records = self.delete_records)
 
-        sev_class = _load_class(".", SCENARIO_EVALUATOR_MODULE, SCENARIO_EVALUATOR_CLASS, self.logger)
+        sev_class = _load_class(".", self.simulator.evaluator_module, self.simulator.evaluator_class, self.logger)
         self.scenario_evaluator = sev_class(self.output_folder)
 
     def _evaluate(self, x, out, *args, **kwargs):
@@ -217,7 +222,7 @@ class NSGAIIproblem(ElementwiseProblem):
  
             # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
             with TASK_TIMER.measure("execution_preparation", key = scenario.generation_id):
-                extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
+                extended_scenario = self.scenario_executor.prepare(scenario)
  
             # Time Shift so at least one agent starts at time_step = 0
             # time_shifted_planning_problem_set = time_shift(scenario, planning_problem_set)

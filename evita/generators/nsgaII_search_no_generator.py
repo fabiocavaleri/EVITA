@@ -19,12 +19,12 @@ import numpy as np
 
 from pymoo.algorithms.moo.nsga2 import NSGA2
 
-from evita.config import ScenarioGeneratorConfig
+from evita import simulators
 from evita.data_analysis import generate_report
 from evita.generators import utils as scenario_generation_utils
 from evita.generators.NSGAIIproblem import NSGAIIproblem
 from evita.generators.nsgaII_operators import (CustomTimeTermination, ScenarioCrossover, ScenarioDuplicateElimination,
-                                               ScenarioMutation, ScenarioSampling)
+                                               ScenarioMutation, ScenarioSampling, EVITAScenarioMutation, EVITAScenarioSampling)
 from evita.orchestrator import write_performance_file
 from evita.timing import TASK_TIMER
 from evita.utils import EVITA_MAIN_LOGGER_NAME, get_progress_bar_manager, initialize_main_logger
@@ -48,6 +48,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--n-bins", type = int, default = None, help = "Number of bin edges per axis of the interaction map (default: configuration).")
     parser.add_argument("--checkpoint-every", type = int, default = 60, help = "Checkpoint every N minutes of budget time (default: 60; 0 disables).")
     parser.add_argument("--force-max-duration", type = int, default = None, help = "Force the goal time interval of every planning problem to [0, N] (as `evita run --force-max-duration`).")
+    parser.add_argument("--simulator", choices = sorted(simulators.SIMULATORS), default = simulators.FRENETIX, help = "Simulator executing the scenarios (default: frenetix).")
+    parser.add_argument("--delete-records", action = "store_true", help = "Apollo: delete each scenario's .record files once its trace is written (default: keep them).")
     parser.add_argument("--debug", action = "store_true", help = "Enable debug logging and plots.")
 
     return parser.parse_args()
@@ -69,14 +71,21 @@ def main() -> None:
     base_scenario, base_planning_problem_set = scenario_generation_utils.get_base_scenario_from_file(args.scenario_seed_file, remove_obstacles = True, remove_planning_problems = True)
 
     # Initialize the scenario generator configuration
-    scenario_generator_configuration = ScenarioGeneratorConfig()
+    simulator = simulators.get_simulator(args.simulator)
+    scenario_generator_configuration = simulators.generation_configuration(simulator)
 
     progress_bar_manager = get_progress_bar_manager()
     termination_criterion = CustomTimeTermination(args.time_budget, checkpoint_every = args.checkpoint_every, progress_bar_manager = progress_bar_manager)
 
-    # Initialize the NSGAII algorithm ti generate scenario and the mutation and crossover operators
-    sampling = ScenarioSampling(base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion)
-    mutation = ScenarioMutation(args.scenario_seed_file, scenario_generator_configuration, termination_criterion)
+    # Initialize the NSGAII algorithm to generate scenario and the mutation and crossover operators
+    if simulator.name == simulators.APOLLO:
+        # Apollo: routes from the map's feasible paths, DoppelTest's traffic lights (evolved by the mutations)
+        sampling = EVITAScenarioSampling(base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion, args.scenario_seed_file)
+        mutation = EVITAScenarioMutation(args.scenario_seed_file, scenario_generator_configuration, termination_criterion)
+    else:
+        sampling = ScenarioSampling(base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion)
+        mutation = ScenarioMutation(args.scenario_seed_file, scenario_generator_configuration, termination_criterion)
+
     crossover = ScenarioCrossover(scenario_generator_configuration, termination_criterion)
     algorithm = NSGA2(pop_size = args.population_size,
                       sampling = sampling,
@@ -92,7 +101,9 @@ def main() -> None:
                             args.n_bins,
                             output_folder_name = args.output_folder_name,
                             debug = args.debug,
-                            force_max_duration = args.force_max_duration
+                            force_max_duration = args.force_max_duration,
+                            simulator = simulator.name,
+                            delete_records = args.delete_records
                         )
 
     # Copy the base scenario file in the output folder
@@ -102,8 +113,8 @@ def main() -> None:
     metadata_file = os.path.join(problem.output_folder, "metadata.csv")
     with open(metadata_file, "w", newline = "") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["generator", "scenario_name", "time_budget", "timestamp_id"])
-        csv_writer.writerow([f"{problem.scenario_generator_module}.{problem.scenario_generator_class}", str(base_scenario.scenario_id), str(args.time_budget * 60), str(problem.timestamp_id)])
+        csv_writer.writerow(["generator", "scenario_name", "time_budget", "timestamp_id", "simulator"])
+        csv_writer.writerow([f"{problem.scenario_generator_module}.{problem.scenario_generator_class}", str(base_scenario.scenario_id), str(args.time_budget * 60), str(problem.timestamp_id), simulator.name])
 
     algorithm.setup(problem, termination = termination_criterion, save_history = False, verbose = True, seed = args.seed)
 

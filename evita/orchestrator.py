@@ -25,11 +25,11 @@ from commonroad.scenario.scenario import Scenario
 
 from cr_scenario_handler.simulation.agent import AgentStatus
 
+from . import simulators
 from .config import ValidationConfig
 from .data_analysis import generate_report
 from .interfaces import AbstractScenarioEvaluator, AbstractScenarioExecutor, AbstractScenarioGenerator
-from .utils import (EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, RESULTS_FOLDER, Budget,
-                    extend_scenario_after_goal_areas, get_progress_bar_manager, simulation_folders, time_shift)
+from .utils import (EVITA_MAIN_LOGGER_NAME, RESULTS_FOLDER, Budget, get_progress_bar_manager, simulation_folders, time_shift)
 from .timing import TASK_TIMER
 from .validator import ScenarioValidator
  
@@ -37,8 +37,8 @@ from .validator import ScenarioValidator
 TRAJECTORY_DIFFERENCE_THRESHOLD = 2.5
 
 # Executor and evaluator used by every generator
-SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS = "evita.executors.frenetix_executor", "FrenetixScenarioExecution"
-SCENARIO_EVALUATOR_MODULE, SCENARIO_EVALUATOR_CLASS = "evita.evaluators.frenetix_evaluator", "FrenetixScenarioEvaluator"
+# SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS = "evita.executors.frenetix_executor", "FrenetixScenarioExecution"
+# SCENARIO_EVALUATOR_MODULE, SCENARIO_EVALUATOR_CLASS = "evita.evaluators.frenetix_evaluator", "FrenetixScenarioEvaluator"
 
 # Validation messages that mark scenarios not executed for reasons other than validity
 TIMEOUT_MESSAGE = "Timeout is over"
@@ -353,9 +353,11 @@ def replay(ctx, scenario_file, driving_agent_name):
 @click.option("--driving-agent-name", type = str, required = True, multiple = False)
 @click.option("--time-budget", type = float, required = True, multiple = False) 
 @click.option("--force-max-duration", type = int, required = False, multiple = False) 
-@click.option("--checkpoint-every", type = int, required = False, multiple = False, default = 3600) 
+@click.option("--checkpoint-every", type = int, required = False, multiple = False, default = 3600)
+@click.option("--simulator", type = click.Choice(["frenetix", "apollo"]), required = False, default = "frenetix", help = "Simulator executing the scenarios (default: frenetix).")
+@click.option("--delete-records", is_flag = True, default = False, help = "Apollo: delete each scenario's .record files once its trace is written (default: keep them).")
 @click.pass_context 
-def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scenario_generator_class: str, map_file: str, driving_agent_name: str, time_budget: float, force_max_duration: int, checkpoint_every: int):
+def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scenario_generator_class: str, map_file: str, driving_agent_name: str, time_budget: float, force_max_duration: int, checkpoint_every: int, simulator: str = "frenetix", delete_records: bool = False):
     """
     Run a scenario generator on a map for the given time budget (seconds), executing and evaluating its scenarios.
     """
@@ -385,19 +387,23 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     # Initialize the set of checkpoints
     checkpoints: Set[int] = set()
 
-    # Components: the generator (loaded by name), the FrenetiX executor, the evaluator and the validator
+    # Components: the generator (loaded by name), the simulator's executor and evaluator (evita/simulators.py), the validator
+    simulator_settings = simulators.get_simulator(simulator)
+    if simulator_settings.name == simulators.APOLLO and scenario_generator_class == "DoppelTestScenarioGenerator":
+        raise click.UsageError("DoppelTestScenarioGenerator is not supported with --simulator apollo: the DoppelTest baseline on Apollo is DoppelTest's own EVITA_DoppelTest/main_ga.py")
+    
     sg_class = _load_class(scenario_generator_path, scenario_generator_module, scenario_generator_class, logger)
     scenario_generator: AbstractScenarioGenerator = sg_class(map_file, debug = debug, debug_folder = debug_folder)
 
-    se_class = _load_class(FRENETIX_ROOT, SCENARIO_EXECUTOR_MODULE, SCENARIO_EXECUTOR_CLASS, logger)
-    sev_class = _load_class(".", SCENARIO_EVALUATOR_MODULE, SCENARIO_EVALUATOR_CLASS, logger)
+    se_class = _load_class(simulator_settings.executor_path, simulator_settings.executor_module, simulator_settings.executor_class, logger)
+    sev_class = _load_class(".", simulator_settings.evaluator_module, simulator_settings.evaluator_class, logger)
 
     os.makedirs(output_folder, exist_ok = True)
     os.makedirs(debug_folder, exist_ok = True)
 
-    scenario_executor: AbstractScenarioExecutor = se_class(output_folder, driving_agent_name = driving_agent_name, debug = debug)
+    scenario_executor: AbstractScenarioExecutor = se_class(output_folder, driving_agent_name = driving_agent_name, debug = debug, map_file = map_file, delete_records = delete_records)
     scenario_evaluator: AbstractScenarioEvaluator = sev_class(output_folder)
-    scenario_validator = ScenarioValidator(ValidationConfig())
+    scenario_validator = simulators.scenario_validator(simulator_settings, ValidationConfig())
 
     logger.info(f"Outputting results to [{output_folder}]")
     if debug:
@@ -412,12 +418,12 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     shutil.copyfile(map_file, map_file_output_folder)
     scenario, _ = CommonRoadFileReader(map_file).open()
 
-    # Log the metadata of this execution in a .csv file for future reference
+        # Log the metadata of this execution in a .csv file for future reference
     metadata_file = os.path.join(output_folder, "metadata.csv")
     with open(metadata_file, "w", newline="") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-        csv_writer.writerow(["generator", "scenario_name", "time_budget", "timestamp_id"])
-        csv_writer.writerow([f"{scenario_generator_module}.{scenario_generator_class}", str(scenario.scenario_id), str(time_budget), str(timestamp_id)])
+        csv_writer.writerow(["generator", "scenario_name", "time_budget", "timestamp_id", "simulator"])
+        csv_writer.writerow([f"{scenario_generator_module}.{scenario_generator_class}", str(scenario.scenario_id), str(time_budget), str(timestamp_id), simulator_settings.name])
             
     # Start generation and execution loop
     budget = Budget(time_budget)
@@ -528,7 +534,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                     # Extend the scenario by adding some road AFTER the goal areas
                     # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
                     with TASK_TIMER.measure("execution_preparation", key = scenario.generation_id):
-                        extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
+                        extended_scenario = scenario_executor.prepare(scenario)
 
                     # Time Shift so at least one agent starts at time_step = 0
                     # time_shifted_planning_problem_set = time_shift(scenario, planning_problem_set) # ===== For now all planning problems are already starting at time_step = 0, so no need to shift them =====

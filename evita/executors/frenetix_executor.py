@@ -17,8 +17,8 @@ from typing import List, Optional, Dict
 
 from commonroad.common.file_reader import CommonRoadFileReader
 from commonroad.common.file_writer import CommonRoadFileWriter
-from commonroad.prediction.prediction import TrajectoryPrediction
 from commonroad.scenario.trajectory import Trajectory
+from commonroad.prediction.prediction import TrajectoryPrediction
 
 import cr_scenario_handler.utils.prediction_helpers as ph
 from cr_scenario_handler.simulation.simulation import Simulation
@@ -27,7 +27,7 @@ from cr_scenario_handler.utils.configuration_builder import ConfigurationBuilder
 
 from ..data_analysis import _rebuild_trajectory
 from ..interfaces import AbstractScenarioExecutor
-from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT
+from ..utils import EVITA_MAIN_LOGGER_NAME, FRENETIX_ROOT, LANELET_EXTENSION, extend_scenario_after_goal_areas
 from ..execution import ExecutionResult, AgentOutcome, Plan
 
 def read_frenetix_plans(log_path: str, agent_ids) -> Dict:
@@ -360,7 +360,15 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
         self.driving_agent_name = kwargs["driving_agent_name"]
 
         self.logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
+
+    def prepare(self, scenario):
+        """
+        Copy of the scenario with road added after the goal areas (LANELET_EXTENSION metres), so that FrenetiX's
+        planner does not stop before reaching them
+        """
         
+        return extend_scenario_after_goal_areas(scenario, extend_by_meters = LANELET_EXTENSION)
+    
     def visualize_the_scenario(self, scenario, planning_problem_set, output_folder: str) -> None:
         """
         Plot the scenario with its planning problems (one color per vehicle, labelled with id and initial

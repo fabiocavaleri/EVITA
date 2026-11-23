@@ -66,7 +66,13 @@ class AbstractScenarioExecutor(ABC):
         Return a Simulation Object
         """
         pass
-
+    
+    def prepare(self, scenario):
+        """
+        The scenario as this simulator executes it (the search keeps the original). Default: unchanged.
+        """
+        return scenario
+    
     def release(self, execution: ExecutionResult) -> None:
         pass
 
