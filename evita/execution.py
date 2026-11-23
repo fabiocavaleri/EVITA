@@ -71,6 +71,10 @@ class ExecutionResult:
     agents: Dict[int, AgentOutcome]
     native: Optional[object] = None  # FrenetiX: the Simulation (for the evaluator and release only)
     simulator: str = "frenetix"      # "frenetix" or "apollo": selects the interaction rule
+    # The executor's output on the execution: why it cannot be used (the scenario is then invalid, with this message);
+    # Noneif the scenario is usable
+    # FrenetiX: always None (its failures are None results or not-started agents)
+    failure: Optional[str] = None
     # Loads the plans of every agent ({agent id: plans}); called by load_plans, so that reading them counts as evaluation time.
     # None: the plans are already set.
     plan_loader: Optional[Callable[[], Dict[int, List[Plan]]]] = field(default = None, repr = False)

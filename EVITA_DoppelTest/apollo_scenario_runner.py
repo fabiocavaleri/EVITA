@@ -2,7 +2,7 @@
 Run one scenario with Apollo and write its trace (Python 3.8 side).
 
     python apollo_scenario_runner.py --scenario-json <scenario.json> --records-dir <dir> \
-                                     --generation <g> --scenario <i> --trace <trace.json.gz>
+                                     --scenario <i> --trace <trace.json.gz>
 
 The Apollo containers must already be running (apollo_runner_startup.py).
 The scenario JSON is DoppelTest's format; if it has an "evita_vehicle_ids" list (one id per vehicle, in order), the trace keeps EVITA's id of each vehicle.
@@ -47,7 +47,7 @@ def scenario_section(args, status: str, json_scenario: Dict[str, Any], reason: s
     the vehicle's dimensions (Apollo's position is a point at back_edge_to_center from the rear edge, not the center)
     """
     return {
-        "generation": f"Generation_{args.generation}",
+        # "generation": f"Generation_{args.generation}",
         "scenario": f"Scenario_{args.scenario}",
         "status": status,
         "reason": reason,
@@ -121,8 +121,11 @@ def main(args) -> int:
         return EXIT_REJECTED
 
     # Set the names of the records folder
-    # DoppelTest saves the record files to <records dir>/<generation>/<scenario>
-    generation_name = f"Generation_{args.generation}"
+    # Names of the records folder: DoppelTest saves the record files to <records dir>/<generation>/<scenario>;
+    # EVITA gives every scenario its own records folder, so the generation name is empty (os.path.join skips it) and the
+    # records go to <records dir>/<scenario>. The scenario name also names the record files (<container>.<scenario>)
+    # generation_name = f"Generation_{args.generation}"
+    generation_name = ""
     scenario_name = f"Scenario_{args.scenario}"
 
     # Run the scenario; DoppelTest saves the record files to <records dir>/<generation>/<scenario>
@@ -147,7 +150,7 @@ def parse_arguments(argv: List[str]):
     parser = argparse.ArgumentParser(description = "Run one scenario with Apollo and write its trace")
     parser.add_argument("--scenario-json", required = True, help = "Scenario in DoppelTest's JSON format")
     parser.add_argument("--records-dir", required = True, help = "Folder where DoppelTest saves the record files")
-    parser.add_argument("--generation", required = True, help = "Generation number (names the records folder)")
+    # parser.add_argument("--generation", required = True, help = "Generation number (names the records folder)")
     parser.add_argument("--scenario", required = True, help = "Scenario number (names the records folder)")
     parser.add_argument("--trace", required = True, help = "Trace file to write (.json.gz)")
 

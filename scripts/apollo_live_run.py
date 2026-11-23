@@ -109,7 +109,7 @@ def generate(base_scenario, base_planning_problems, config, map_file, map_data, 
 
 def execute(python38, scenario_json_path, records_dir, index, trace_path, log_path, timeout):
     command = [python38, RUNNER, "--scenario-json", scenario_json_path, "--records-dir", records_dir,
-               "--generation", "1", "--scenario", str(index), "--trace", trace_path]
+               "--scenario", str(index), "--trace", trace_path]
     environment = dict(os.environ, PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION = "python")
     with open(log_path, "w") as log:
         try:

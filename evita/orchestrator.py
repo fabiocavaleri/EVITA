@@ -401,7 +401,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
     os.makedirs(output_folder, exist_ok = True)
     os.makedirs(debug_folder, exist_ok = True)
 
-    scenario_executor: AbstractScenarioExecutor = se_class(output_folder, driving_agent_name = driving_agent_name, debug = debug, map_file = map_file, delete_records = delete_records)
+    scenario_executor: AbstractScenarioExecutor = se_class(output_folder, driving_agent_name = driving_agent_name, debug = debug, map_file = map_file, delete_records = delete_records, random_lights = True)
     scenario_evaluator: AbstractScenarioEvaluator = sev_class(output_folder)
     scenario_validator = simulators.scenario_validator(simulator_settings, ValidationConfig())
 
@@ -550,6 +550,12 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
                         scenario.validation_message = EXECUTION_ERROR_MESSAGE
 
                         logger.critical(f"Scenario {scenario.generation_id} failed during simulation execution. Continuing with next scenario.")
+                    elif execution.failure:
+                        # The executor's health check (Apollo): the execution cannot be used, for the reason it gives
+                        logger.critical(f"Scenario {scenario.generation_id} cannot be used: {execution.failure}")
+                        scenario.is_valid = False
+                        scenario.validation_message = execution.failure
+                        backup_debug(output_folder, debug_folder, scenario, logger)
                     elif execution.not_started:
                         # An agent failed at its first time step, or never moved past its initial time step
                         agent_id = execution.not_started[0]
