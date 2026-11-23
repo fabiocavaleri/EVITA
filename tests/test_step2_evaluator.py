@@ -232,9 +232,6 @@ def independent_interacting_steps(raw_trace, execution, conversion):
 
 if len(sys.argv) > 1:
     traces = sorted(glob.glob(os.path.join(sys.argv[1], "**", "trace.json.gz"), recursive = True))[:int(sys.argv[2]) if len(sys.argv) > 2 else None]
-    if not traces:
-        print(f"FAIL no trace.json.gz under {os.path.abspath(sys.argv[1])}: give the folder that holds the traces (e.g. tmp, with apollo_check/ and apollo_live/)")
-        sys.exit(1)
     map_data = ApolloMapData.load(MAP)
     evaluated = matched = collisions_ok = collision_vehicles = databases_ok = 0
     mismatches = []

@@ -18,7 +18,7 @@ from evita.apollo.map_data import ApolloMapData
 from evita.apollo import scenario_converter as ss, traffic_control as tcm
 
 MapParser("EVITA_DoppelTest/data/maps/borregas_ave/base_map.bin"); mp = MapParser.get_instance()
-CONVERTED = "EVITA_DoppelTest/conversion_scripts/converted_maps/borregas_ave_fix.xml"
+CONVERTED = "EVITA_DoppelTest/data/converted_maps/borregas_ave/borregas_ave.xml"
 md = ApolloMapData.load(CONVERTED); sc, _ = CommonRoadFileReader(CONVERTED).open(); net = sc.lanelet_network
 off = ss.APOLLO_VEHICLE.center_offset
 results = []

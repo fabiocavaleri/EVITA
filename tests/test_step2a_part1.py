@@ -27,7 +27,7 @@ stub_module("framework.scenario.ScenarioRunner", ScenarioRunner=FakeScenarioRunn
 
 import config
 HD_MAP = os.path.abspath("EVITA_DoppelTest/data/maps/borregas_ave/base_map.bin")
-CONVERTED = "EVITA_DoppelTest/conversion_scripts/converted_maps/borregas_ave_fix.xml"
+CONVERTED = "EVITA_DoppelTest/data/converted_maps/borregas_ave/borregas_ave.xml"
 config.HD_MAP_PATH = HD_MAP
 import apollo_scenario_runner as runner_module, record_export as rx
 runner_module.HD_MAP_PATH = HD_MAP
@@ -139,7 +139,7 @@ check("runner: Apollo failure -> exit 3, missing argument -> 1, --help -> 0", (c
 # ---------- map_data ----------
 md = ApolloMapData.load(CONVERTED); sc, pps = CommonRoadFileReader(CONVERTED).open()
 md.check(sc.lanelet_network)
-check("map_data: lookups", (md.lanelet_id("lane_0"), md.lane_id(1), md.signal_id(10000)) == (1, "lane_0", "signal_0"))
+check("map_data: lookups", (md.lanelet_id("lane_0"), md.lane_id(1), md.signal_id(md.traffic_light_id("signal_0"))) == (1, "lane_0", "signal_0"))
 check("map_data: relations symmetric", all((x, r) in md.related_traffic_lights(y) for x in md.relations_by_traffic_light for y, r in md.related_traffic_lights(x)))
 from commonroad.scenario.lanelet import Lanelet
 net = CommonRoadFileReader(CONVERTED).open()[0].lanelet_network; net.remove_lanelet(7)
@@ -154,9 +154,10 @@ net.remove_lanelet(20)
 net.add_lanelet(Lanelet(b_lane.left_vertices, b_lane.center_vertices, b_lane.right_vertices, 20))
 try: md.check(net); check("map_data: lanelet with another map's geometry -> error", False)
 except MapDataError as e: check("map_data: lanelet with another map's geometry -> error", differ and "[20]" in str(e))
-net = CommonRoadFileReader(CONVERTED).open()[0].lanelet_network; net.remove_traffic_light(10003)
+light = md.traffic_light_id("signal_3")
+net = CommonRoadFileReader(CONVERTED).open()[0].lanelet_network; net.remove_traffic_light(light)
 try: md.check(net); check("map_data: traffic light missing -> error", False)
-except MapDataError as e: check("map_data: traffic light missing -> error", "10003" in str(e))
+except MapDataError as e: check("map_data: traffic light missing -> error", str(light) in str(e))
 
 # ---------- traffic_control ----------
 dt = sc.dt; ids = [l.traffic_light_id for l in sc.lanelet_network.traffic_lights]; rng = random.Random(1)
