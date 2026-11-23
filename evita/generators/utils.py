@@ -27,11 +27,9 @@ from commonroad.scenario.state import CustomState, InitialState
 from commonroad.scenario.lanelet import Lanelet, LaneletNetwork
 from commonroad_dc.geometry.util import resample_polyline
 
-from cr_scenario_handler.simulation.simulation import Simulation
-from cr_scenario_handler.utils.agent_status import AgentStatus
-
-from ..config import ScenarioGeneratorConfig, ValidationConfig
 from ..utils import EVITA_MAIN_LOGGER_NAME
+from ..config import ScenarioGeneratorConfig, ValidationConfig
+from ..execution import ExecutionResult, STATUS_COLLISION, STATUS_MISSED_GOAL, STATUS_TIMELIMIT
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
 
@@ -270,21 +268,41 @@ def _merge_into(criticality_dataframe: pd.DataFrame, tables: List[pd.DataFrame])
  
     return pd.merge(criticality_dataframe, agents_table, on = [AGENT_COLUMN, TIME_COLUMN], how = "left")
 
-def _scenario_final_time_step(simulation: Simulation) -> int:
+def _agent_obstacle(execution: ExecutionResult, agent_id: int):
     """
-    Last time step of any agent in the simulation.
+    The agent's obstacle in the executed scenario, or None (an agent that never ran has none)
     """
-    return max(simulation.scenario.obstacle_by_id(agent.id).prediction.final_time_step for agent in simulation.agents)
+    if agent_id not in {obstacle.obstacle_id for obstacle in execution.executed_scenario.dynamic_obstacles}:
+        return None
+    
+    return execution.executed_scenario.obstacle_by_id(agent_id)
 
-def _agent_time_range(simulation: Simulation, agent_id: int) -> List[int]:
-    """
-    Time steps of the agent in the simulated scenario, from its initial to its final state.
-    """
-    obstacle = simulation.scenario.obstacle_by_id(agent_id)
+def _final_time_step(obstacle) -> int:
+    if obstacle.prediction is not None:
+        return obstacle.prediction.final_time_step
+    else:
+        return obstacle.initial_state.time_step
 
-    return list(range(obstacle.initial_state.time_step, obstacle.prediction.final_time_step + 1))
+def _scenario_final_time_step(execution: ExecutionResult) -> int:
+    """
+    Last time step of any agent in the executed scenario.
+    """
+    obstacles = [_agent_obstacle(execution, agent_id) for agent_id in execution.agents]
 
-# ========== Evaluation: interactions ==========
+    return max(_final_time_step(obstacle) for obstacle in obstacles if obstacle is not None)
+
+def _agent_time_range(execution: ExecutionResult, agent_id: int) -> List[int]:
+    """
+    Time steps of the agent in the executed scenario, from its initial to its final state (none if it never ran).
+    """
+    obstacle = _agent_obstacle(execution, agent_id)
+
+    if obstacle is None:
+        return []
+
+    return list(range(obstacle.initial_state.time_step, _final_time_step(obstacle) + 1))
+
+# ========== Evaluation: Interactions (Frenetix) ==========
 
 def crop_trajectories(trajectory_before: Trajectory, trajectory_after: Trajectory) -> Tuple[Optional[Trajectory], Optional[Trajectory]]:
     """
@@ -299,7 +317,7 @@ def crop_trajectories(trajectory_before: Trajectory, trajectory_after: Trajector
         return None, None
     return (Trajectory(common[0], [deepcopy(after[t]) for t in common]), Trajectory(common[0], [deepcopy(before[t]) for t in common]))
 
-# ========== Evaluation methods ==========
+# ========== Evaluation: Interactions ==========
 
 def is_trajectory_similar(trajectory_a: Optional[Trajectory], trajectory_b: Optional[Trajectory], trajectory_difference_threshold: float) -> bool:
     """
@@ -378,7 +396,7 @@ def compute_difference_in_cc_space(trajectory_at_time_t: Trajectory, trajectory_
 
     return float(displacement @ tangent), float(displacement @ normal)
 
-def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, trajectory_difference_threshold: float) -> pd.DataFrame:
+def augment_with_interactions(execution: ExecutionResult, trajectories: pd.DataFrame, criticality_dataframe: pd.DataFrame, trajectory_difference_threshold: float) -> pd.DataFrame:
     """
     For each agent and time check whether the agent interacted with someone else (i.e., changed its trajectory because of someone else)
     """
@@ -387,20 +405,21 @@ def augment_with_interactions(simulation: Simulation, trajectories: pd.DataFrame
     tables = []
 
     # Iterate over all scenario agents
-    for agent in sorted(simulation.agents, key = lambda a: a.id):
+    for agent in sorted(execution.agents.values(), key = lambda a: a.id):
         agent_id = agent.id
         module_logger.debug(f"Evaluate Agent {agent_id} - Interactions")
 
         # Extract agent's timesteps
-        time_steps = _agent_time_range(simulation, agent_id)
+        time_steps = _agent_time_range(execution, agent_id)
 
         # Initialize the is_interacting and is_interacting_with series with default values (None)
         is_interacting = {t: 0.0 for t in time_steps}
         is_interacting_with, diff_long, diff_lat = {}, {}, {}
 
-        obstacle = simulation.scenario.obstacle_by_id(agent_id)
-        other_obstacles = [simulation.scenario.obstacle_by_id(other.id) for other in simulation.agents if other.id != agent_id]
-        collided = agent.agent_state.status == AgentStatus.COLLISION
+        obstacle = _agent_obstacle(execution, agent_id)
+        other_obstacles = [_agent_obstacle(execution, other.id) for other in execution.agents.values() if other.id != agent_id]
+        other_obstacles = [other for other in other_obstacles if other is not None]
+        collided = agent.status == STATUS_COLLISION
 
         # Iterate over the time steps of the agent's trajectory to check for interactions
         for t in time_steps:
@@ -488,6 +507,169 @@ def compute_interaction_map(criticality_dataframe: pd.DataFrame, n_bins = None) 
 
     return interaction_map
 
+# ========== Evaluation: Interactions (Apollo) ==========
+# The rule agreed for Apollo (EVITA_Apollo_integration_plan.md, "Apollo interaction rule"). Apollo reports, with every
+# plan, its decision for each object: the event (C1) is a decision that appears or changes for an object, and the object
+# is its cause (C2). Th_ED plays no role.
+
+# Decisions about a vehicle that count (ignore never counts); a stop counts only with these reasons
+VEHICLE_DECISIONS = {"stop", "nudge", "yield", "follow", "overtake", "avoid", "side_pass"}
+VEHICLE_STOP_REASONS = {"STOP_REASON_OBSTACLE", "STOP_REASON_HEAD_VEHICLE", "STOP_REASON_SIDEPASS_SAFETY", "STOP_REASON_EMERGENCY"}
+
+# Stops at traffic controls and for pedestrians
+TRAFFIC_LIGHT_STOP_REASONS = {"STOP_REASON_SIGNAL", "STOP_REASON_YELLOW_SIGNAL", "STOP_REASON_CREEPER"}
+STOP_SIGN_STOP_REASONS = {"STOP_REASON_STOP_SIGN", "STOP_REASON_YIELD_SIGN", "STOP_REASON_CREEPER"}
+PEDESTRIAN_STOP_REASONS = {"STOP_REASON_PEDESTRIAN", "STOP_REASON_CROSSWALK"}
+
+# Main decision for stops
+MAIN_STOP_KINDS = {"STOP_REASON_OBSTACLE": "vehicle", "STOP_REASON_HEAD_VEHICLE": "vehicle", "STOP_REASON_SIDEPASS_SAFETY": "vehicle",
+                   "STOP_REASON_EMERGENCY": "vehicle", "STOP_REASON_SIGNAL": "traffic_light", "STOP_REASON_YELLOW_SIGNAL": "traffic_light",
+                   "STOP_REASON_STOP_SIGN": "stop_sign", "STOP_REASON_YIELD_SIGN": "stop_sign", "STOP_REASON_CREEPER": "stop_sign",
+                   "STOP_REASON_PEDESTRIAN": "pedestrian", "STOP_REASON_CROSSWALK": "pedestrian"}
+KNOWN_DECISIONS = VEHICLE_DECISIONS | {"ignore"}
+INTERACTION_KINDS = ("vehicle", "traffic_light", "stop_sign", "pedestrian")
+
+def interaction_kind(decision) -> Optional[str]:
+    """
+    Kind of interaction a planner's decision counts as: "vehicle", "traffic_light", "stop_sign" or "pedestrian".
+    None if it does not count (ignore; destination, reference end, path end, keep-clear zone or unknown objects; stops with other reasons)
+    """
+    if decision.decision not in KNOWN_DECISIONS:
+        module_logger.warning(f"Unknown planner decision {decision.decision} for {decision.raw_object_id}: not counted")
+        return None
+    
+    if decision.decision == "ignore":
+        return None
+
+    kind = decision.object_kind
+    if kind == "vehicle":
+        if decision.decision == "stop":
+            if decision.reason is None or decision.reason in VEHICLE_STOP_REASONS:
+                return "vehicle"
+            else:
+                return None
+            
+        return "vehicle"
+    
+    if kind == "traffic_light":
+        if decision.decision == "stop" and decision.reason in TRAFFIC_LIGHT_STOP_REASONS:
+            return "traffic_light"
+        else:
+            return None
+
+    if kind == "stop_sign":
+        if decision.decision == "stop" and decision.reason in STOP_SIGN_STOP_REASONS:
+            return "stop_sign"
+        else:
+            return None
+
+    if kind in ("pedestrian", "crosswalk"):
+        if decision.decision == "stop":
+            if decision.reason is None or decision.reason in PEDESTRIAN_STOP_REASONS | VEHICLE_STOP_REASONS:
+                return "pedestrian"
+            else:
+                return None
+            
+        return "pedestrian"
+    
+    return None
+
+def augment_with_decision_interactions(execution: ExecutionResult, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detect interactions from the planner's decisions (Apollo).
+    For each agent, in plan order: a repanning event is a decision that counts (interaction_kind) and appears or changes for an object, recorded at the time step
+    of that plan.
+    A main decision stop with a reason that counts adds an event only when no decision for an object of that kind is in the plan (no duplicated interactions).
+    Several events at the same time step give one interacting time step.
+    Like FrenetiX's interactions, nothing is recorded from a collision on.
+    
+    Columns: is_interacting, is_interacting_with (vehicle ids), traffic_light_interaction (traffic light ids),
+    stop_sign_interaction (Apollo ids of the signs), pedestrian_interaction, diff_long and diff_lat.
+    """
+    tables = []
+    for agent in sorted(execution.agents.values(), key = lambda a: a.id):
+        time_steps = _agent_time_range(execution, agent.id)
+        in_range = set(time_steps)
+        collided = agent.status == STATUS_COLLISION
+
+        events = {} # time step -> {kind: set of object ids}
+        diff_long, diff_lat = {}, {}
+        previous_objects, previous_main, previous_plan = {}, None, None
+
+        # Iterate over agent's trajectory replanning
+        for plan in agent.plans or []:
+            # Stop interaction detection after a collision (at t or t + 1)
+            if collided and plan.time_step + 1 >= agent.last_timestep:
+                break
+
+            # Build a map of the decisions in this plan: raw object id -> (kind, object id, set of decisions)
+            current = {}
+            for decision in plan.object_decisions or []:
+                kind = interaction_kind(decision)
+
+                if kind is None:
+                    continue
+                
+                entry = current.setdefault(decision.raw_object_id, [kind, decision.object_id, set()])
+                entry[2].add(decision.decision)
+
+            # Detect new or changed decisions (C1) for objects (C2) by comparing the current plan's decisions with the previous plan's decisions
+            new_events = [(kind, object_id, raw) for raw, (kind, object_id, decisions) in current.items() if previous_objects.get(raw) != frozenset(decisions)]
+
+            # Extract the main decision of the plan, if it is a stop with a reason that counts
+            if plan.main_decision == "stop":
+                main_kind = MAIN_STOP_KINDS.get(plan.main_reason)
+            else:
+                main_kind = None
+
+            # Extract the main decision's key (decision, reason) if it counts, otherwise None
+            if main_kind:
+                main_key = (plan.main_decision, plan.main_reason)
+            else:
+                main_key = None
+
+            # Add a main decision event only if it is a stop with a reason that counts, and no decision for an object of that kind is in the plan (no duplicated interactions)
+            if main_kind and main_key != previous_main and not any(kind == main_kind for kind, _, _ in current.values()):
+                new_events.append((main_kind, None, None))
+
+            # Record the new events at the plan's time step, if it is in the agent's time range
+            if new_events and plan.time_step in in_range:
+                # Extract the object ids of the new events, if they have one (main decisions do not)
+                step = events.setdefault(plan.time_step, {kind: set() for kind in INTERACTION_KINDS})
+
+                # Interate over the new events and add the object ids to the corresponding kind in the step dictionary
+                for kind, object_id, raw in new_events:
+                    if kind == "stop_sign":
+                        identifier = raw
+                    else:
+                        identifier = object_id
+
+                    if identifier is not None:
+                        step[kind].add(identifier)
+
+                # Compute the longitudinal and lateral differences between the previous plan's trajectory and the current plan's trajectory, if both trajectories are available
+                if plan.time_step not in diff_long and previous_plan is not None and previous_plan.trajectory is not None and plan.trajectory is not None:
+                    diff_0, diff_1 = compute_difference_in_cc_space(previous_plan.trajectory, plan.trajectory)
+                    diff_long[plan.time_step], diff_lat[plan.time_step] = diff_0, diff_1
+
+            previous_objects = {raw: frozenset(decisions) for raw, (_, _, decisions) in current.items()}
+            previous_main, previous_plan = main_key, plan
+
+        def ids(t, kind):
+            return sorted(events[t][kind]) if t in events and events[t][kind] else None
+
+        tables.append(_agent_table(agent.id, time_steps, {
+            "is_interacting": [1.0 if t in events else 0.0 for t in time_steps],
+            "is_interacting_with": [ids(t, "vehicle") for t in time_steps],
+            "traffic_light_interaction": [ids(t, "traffic_light") for t in time_steps],
+            "stop_sign_interaction": [ids(t, "stop_sign") for t in time_steps],
+            "pedestrian_interaction": [ids(t, "pedestrian") for t in time_steps],
+            "diff_long": [diff_long.get(t) for t in time_steps],
+            "diff_lat": [diff_lat.get(t) for t in time_steps],
+        }))
+
+    return _merge_into(criticality_dataframe, tables)
+
 # ========== Evaluation: danger (TIAV's criticality metric) ==========
 
 def compute_danger_for_states(state_a: CustomState, state_b: CustomState) -> float:
@@ -502,23 +684,23 @@ def compute_danger_for_states(state_a: CustomState, state_b: CustomState) -> flo
 
     return relative_velocity / max(distance, MIN_DANGER_DISTANCE)
 
-def augment_with_danger(simulation: Simulation, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def augment_with_danger(execution: ExecutionResult, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
     """
     Extract the danger metric for each agent in the simulation and augment the criticality df with it
     """
     # Recorded state of each agent at each time step
-    states = {agent.id: {state.time_step: state for state in agent.record_state_list} for agent in simulation.agents}
+    states = {agent.id: {state.time_step: state for state in agent.driven_states} for agent in execution.agents.values()}
 
     tables = []
     # Iterate over scenario agents
-    for agent in sorted(simulation.agents, key = lambda a: a.id):
+    for agent in sorted(execution.agents.values(), key = lambda a: a.id):
         # For each agent, create a df and concatenate with the previous one
         agent_id = agent.id
 
         module_logger.debug(f"Evaluate agent {agent_id} - DANGER")
 
         # Extract agent's timesteps
-        time_steps = _agent_time_range(simulation, agent_id)
+        time_steps = _agent_time_range(execution, agent_id)
 
         # Initialize the max danger and the agent causing it
         max_danger, caused_by = [], []
@@ -556,7 +738,7 @@ def list_vehicles_involved_in_collision(time_step: int, agent, other_agents: lis
     This function groups vehicles involved in the same collision at the given time_step
     """
     # List all the agents collided at or after time_step
-    collided_agents = [a for a in [agent] + other_agents if a.agent_state.status == AgentStatus.COLLISION and time_step >= a.agent_state.last_timestep]
+    collided_agents = [a for a in [agent] + other_agents if a.status == STATUS_COLLISION and time_step >= a.last_timestep]
     
     # Group the collided agents by distance. Initially everybody is its own group
     collisions = DisjointSet([agent.id for agent in collided_agents])
@@ -758,7 +940,7 @@ def compute_collision_features(time_step: int, agent, other_agents, scenario: Sc
     # Find the agent colliding with it. The agent must be COLLISION and must be overlapping to agent
     for other_agent in other_agents:
         # Skip the agent itself and any other agent that is not in COLLISION state
-        if other_agent.id == agent.id or other_agent.agent_state.status != AgentStatus.COLLISION:
+        if other_agent.id == agent.id or other_agent.status != STATUS_COLLISION:
             continue
 
         # Extract the occupancy and state of the other agent at time step t and t - 1
@@ -788,29 +970,30 @@ def compute_collision_features(time_step: int, agent, other_agents, scenario: Sc
 
     return ria, riv, impact_position, most_critical_agent
 
-def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def augment_with_collisions(execution: ExecutionResult, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
     """
     For each agent and time check whether the agent collided with someone or the road
     Then extract RIA, RIV, and Impact Location.
     Use a simplified model if the collision is with the road
     """
-    final_timestep = _scenario_final_time_step(simulation)
+    final_timestep = _scenario_final_time_step(execution)
     timesteps = list(range(0, final_timestep + 1))
+    scenario = execution.executed_scenario
 
     tables = []
-    for agent in sorted(simulation.agents, key = lambda a: a.id):
+    for agent in sorted(execution.agents.values(), key = lambda a: a.id):
         rows = {name: [None] * len(timesteps) for name in ["has_collided_with", "ria", "riv", "impact_location", "most_critical_agent"]}
         has_collided = [0.0] * len(timesteps)
 
-        if agent.agent_state.status == AgentStatus.COLLISION:
-            other_agents = [other for other in simulation.agents if other.id != agent.id]
+        if agent.status == STATUS_COLLISION:
+            other_agents = [other for other in execution.agents.values() if other.id != agent.id]
 
             for i, t in enumerate(timesteps):
                 # Skip time steps before the collision or after the agent's last recorded state
-                if t < agent.agent_state.last_timestep or t >= len(agent.vehicle_history):
+                if t < agent.last_timestep or t >= agent.history_length:
                     continue
 
-                involved = list_vehicles_involved_in_collision(t, agent, other_agents, simulation.scenario)
+                involved = list_vehicles_involved_in_collision(t, agent, other_agents, scenario)
                 collided_agents = [other for other in other_agents if other.id in involved]
 
                 try:
@@ -836,22 +1019,22 @@ def augment_with_collisions(simulation: Simulation, criticality_dataframe: pd.Da
 
 # ========== Evaluation: missed goals, emergencies ==========
 
-def augment_with_missed_goals(simulation: Simulation, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def augment_with_missed_goals(execution: ExecutionResult, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
     """
     Add, for each agent, whether its final status was a timeout (has_timeout: goal not reached in time)
     or a missed goal (has_missed_goal: goal area passed), repeated on every time step.
     """
-    time_steps = list(range(0, _scenario_final_time_step(simulation) + 1))
+    time_steps = list(range(0, _scenario_final_time_step(execution) + 1))
 
     tables = []
-    for agent in sorted(simulation.agents, key = lambda a: a.id):
-        status = agent.agent_state.status
-        if status == AgentStatus.TIMELIMIT:
+    for agent in sorted(execution.agents.values(), key = lambda a: a.id):
+        status = agent.status
+        if status == STATUS_TIMELIMIT:
             has_timeout = 1.0
         else:
             has_timeout = 0.0
 
-        if status == AgentStatus.MAX_S_POSITION:
+        if status == STATUS_MISSED_GOAL:
             has_missed_goal = 1.0
         else:
             has_missed_goal = 0.0
@@ -860,15 +1043,15 @@ def augment_with_missed_goals(simulation: Simulation, criticality_dataframe: pd.
 
     return _merge_into(criticality_dataframe, tables)
 
-def augment_with_emergencies_and_disengagements(simulation: Simulation, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
+def augment_with_emergencies_and_disengagements(execution: ExecutionResult, criticality_dataframe: pd.DataFrame) -> pd.DataFrame:
     """
     Add, for each agent and time step, whether the agent was in emergency mode (has_emergency) or disengaged
     (has_disengagement), from the time steps recorded by the simulation.
     """
-    time_steps = list(range(0, _scenario_final_time_step(simulation) + 1))
+    time_steps = list(range(0, _scenario_final_time_step(execution) + 1))
 
     tables = []
-    for agent in sorted(simulation.agents, key = lambda a: a.id):
+    for agent in sorted(execution.agents.values(), key = lambda a: a.id):
         emergency, disengagement = set(agent.record_emergency), set(agent.record_disengagement)
         tables.append(_agent_table(agent.id, time_steps, {
             "has_emergency": [1.0 if t in emergency else 0.0 for t in time_steps],

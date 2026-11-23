@@ -52,7 +52,8 @@ class AgentOutcome:
     driven_states: List = field(default_factory = list)
     emergency_steps: Set[int] = field(default_factory = set)
     disengagement_steps: Set[int] = field(default_factory = set)
-    plans: Optional[List[Plan]] = None 
+    plans: Optional[List[Plan]] = None
+    history_length: Optional[int] = None    # Number of recorded time steps (collisions are evaluated until then)
 
     @property
     def started(self) -> bool:

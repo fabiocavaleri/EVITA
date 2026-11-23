@@ -521,7 +521,8 @@ class FrenetixScenarioExecution(AbstractScenarioExecutor):
                             last_timestep = int(agent.agent_state.last_timestep),
                             driven_states = sorted(agent.record_state_list, key = lambda state: state.time_step),
                             emergency_steps = set(agent.record_emergency),
-                            disengagement_steps = set(agent.record_disengagement))
+                            disengagement_steps = set(agent.record_disengagement),
+                            history_length = len(agent.vehicle_history))
 
     def release(self, execution: ExecutionResult) -> None:
         """

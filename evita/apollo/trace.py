@@ -14,6 +14,7 @@ The conversion gives:
 - per vehicle, the facts the executor needs to decide its outcome (start of motion, mission complete, collisions, emergency stops, disengagement advice).
 """
 
+import re
 import copy
 import gzip
 import json
@@ -32,9 +33,10 @@ from commonroad.scenario.state import CustomState, InitialState
 from commonroad.scenario.obstacle import DynamicObstacle, ObstacleType
 from commonroad.scenario.traffic_light import TrafficLightCycle, TrafficLightCycleElement
 
-from .map_data import ApolloMapData
+from .map_data import ApolloMapData, MapDataError
 from .scenario_converter import ApolloVehicle
 from .traffic_control import COMMONROAD_STATE, LONG_DURATION
+from ..execution import AgentOutcome, ExecutionResult, ObjectDecision, Plan, STATUS_COLLISION, STATUS_COMPLETED, STATUS_ERROR, STATUS_TIMELIMIT
 
 module_logger = logging.getLogger(__name__)
 
@@ -340,6 +342,20 @@ def build_obstacle(vehicle_id: int, samples: List[Dict], dimensions: ApolloVehic
 
 # ---------- Plans ----------
 
+# Relative times of trajectory points larger than this (s) are not relative (see relative_times)
+ABSOLUTE_TIME_LIMIT = 1e6
+
+def relative_times(stored: np.ndarray, header_ns: int) -> np.ndarray:
+    """
+    Time of each trajectory point relative to its plan (s).
+    In the records of DoppelTest's Apollo setup, the stored relative_time is the point's time on a clock starting at 0 minus the plan's header time on the wall clock
+    (first point -header, last point -header + ~3 s): the header time is added back.
+    """
+    if len(stored) and np.nanmax(np.abs(stored)) > ABSOLUTE_TIME_LIMIT:
+        return stored + header_ns / 1e9
+    
+    return stored
+
 def convert_plan(message: Dict, t0: int, dt: float, offset: float) -> ApolloPlan:
     """
     One plan of a vehicle, with its trajectory and decisions
@@ -354,7 +370,7 @@ def convert_plan(message: Dict, t0: int, dt: float, offset: float) -> ApolloPlan
     # Compute the time of the plan (s) and convert the trajectory to CommonRoad's reference point
     plan_time = (message["t"] - t0) / 1e9
     theta = column("theta")
-    converted = np.column_stack([plan_time + column("relative_time"),
+    converted = np.column_stack([plan_time + relative_times(column("relative_time"), message["t"]),
                                  column("x") + offset * np.cos(theta), column("y") + offset * np.sin(theta),
                                  theta, column("v"), column("a"), column("kappa"), column("s")]) if len(rows) else np.empty((0, 8))
 
@@ -532,3 +548,229 @@ def convert_trace(trace: Trace, generated_scenario: Scenario, map_data: ApolloMa
         module_logger.warning(warning)
 
     return TraceConversion(executed_scenario = executed, vehicles = vehicles, t0 = t_0, dt = dt, warnings = warnings)
+
+# ========== Trace -> ExecutionResult ==========
+
+# Double check of Apollo's collisions: the executed rectangles must touch (within this distance, m) within this many time
+# steps of the oracle's first entry.
+# DoppelTest's oracle uses the recorder's clock, the executed scenario the messages' header clock: on real records the two differ by up to a few time steps.
+from ..generators.utils import MIN_DISTANCE_FOR_COLLISION as COLLISION_CONTACT_DISTANCE
+COLLISION_CHECK_WINDOW = 5
+
+def classify_object(raw_id: str, vehicle_ids_by_apollo_id: Dict[int, int], map_data: ApolloMapData):
+    """
+    Convert the object ID of Apollo's decisions to EVITA (Frenetix) format:
+    - vehicles "<Apollo id>" or "<Apollo id>_<k>";
+    - traffic lights "TL_<signal>";
+    - stop signs "SS_<sign>";
+    - creeping "CREEP_<object>" (traffic light or stop sign);
+    - destination "DEST"; reference line end "REF..."; path end "PATH..."; crosswalks "CW_..."; anything else "unknown"
+    """
+
+    # Vehicles: "<Apollo id>" or "<Apollo id>_<k>"
+    if re.fullmatch(r"-?\d+(_\d+)*", raw_id):
+        return "vehicle", vehicle_ids_by_apollo_id.get(int(raw_id.split("_")[0]))
+
+    def traffic_light(signal):
+        try:
+            return map_data.traffic_light_id(signal)
+        except MapDataError:
+            return None
+
+    # Traffic lights
+    if raw_id.startswith("TL_"):
+        return "traffic_light", traffic_light(raw_id[len("TL_"):])
+
+    # Stop signs
+    if raw_id.startswith("SS_"):
+        return "stop_sign", None
+
+    # Creeping: "CREEP_<object>" (traffic light or stop sign)
+    if raw_id.startswith("CREEP_"):
+        target = raw_id[len("CREEP_"):]
+
+        if target.startswith("signal"):
+            return "traffic_light", traffic_light(target)
+        
+        if target.startswith("stopsign") or target.startswith("stop_sign"):
+            return "stop_sign", None
+        
+        return "unknown", None
+
+    # Other objects: destination, reference line end, path end, crosswalks
+    if raw_id.startswith("DEST"):
+        return "destination", None
+    if raw_id.startswith("REF"):
+        return "reference_end", None
+    if raw_id.startswith("PATH"):
+        return "path_end", None
+    if raw_id.startswith("CW_"):
+        return "crosswalk", None
+    
+    return "unknown", None
+
+def neutral_plan(apollo_plan: ApolloPlan, dt: float, vehicle_ids_by_apollo_id: Dict[int, int], map_data: ApolloMapData, unknown_objects: Set[str]) -> Plan:
+    """
+    Convert an ApolloPlan to a simulator-neutral Plan.
+    Trajectory is sampled at the time steps it covers (center positions, heading, speed), decisions with their objects classified
+    """
+    rows = apollo_plan.trajectory
+    trajectory = None
+
+    if len(rows):
+        # Extract trajectory timesteps
+        times = rows[:, 0]
+        steps = np.arange(math.ceil(times[0] / dt - 1e-9), math.floor(times[-1] / dt + 1e-9) + 1)
+        
+        if len(steps):
+            heading = np.interp(steps * dt, times, np.unwrap(rows[:, 3]))
+
+            states = []
+
+            # Interpolate the trajectory at each time step, creating CustomState objects for the Plan
+            for k, h in zip(steps, heading):
+                position = np.array([np.interp(k * dt, times, rows[:, 1]), np.interp(k * dt, times, rows[:, 2])])
+                orientation = float(math.atan2(math.sin(h), math.cos(h)))
+                velocity = float(np.interp(k * dt, times, rows[:, 4]))
+
+                state = CustomState(time_step = int(k), position = position, orientation = orientation, velocity = velocity)
+                
+                states.append(state)
+
+            trajectory = Trajectory(states[0].time_step, states)
+
+    # Convert Apollo replanning decisions to simulator-neutral ObjectDecisions
+    decisions = []
+    for item in apollo_plan.object_decisions:
+        kind, object_id = classify_object(item["id"], vehicle_ids_by_apollo_id, map_data)
+
+        if kind == "unknown" and item["id"] not in unknown_objects:
+            unknown_objects.add(item["id"])
+            module_logger.warning(f"Unknown object {item['id']} in Apollo's decisions: not counted as an interaction")
+        
+        for decision in item["decisions"]:
+            decisions.append(ObjectDecision(decision = decision["decision"], object_kind = kind, object_id = object_id,
+                                            raw_object_id = item["id"], reason = decision["details"].get("reason_code")))
+
+    main = apollo_plan.main_decision or {}
+
+    return Plan(time_step = int(round(apollo_plan.time_step)), trajectory = trajectory, object_decisions = decisions,
+                main_decision = main.get("decision"), main_reason = (main.get("details") or {}).get("reason_code"))
+
+def _touching(first: DynamicObstacle, second: DynamicObstacle, step: int) -> bool:
+    """
+    Check whether the two obstacles touch (within COLLISION_CONTACT_DISTANCE) at the given time step
+    """
+    a, b = first.occupancy_at_time(step), second.occupancy_at_time(step)
+
+    return a is not None and b is not None and a.shape.shapely_object.distance(b.shape.shapely_object) <= COLLISION_CONTACT_DISTANCE
+
+def collision_steps(conversion: TraceConversion) -> Dict[int, int]:
+    """
+    Extract the timestep of each vehicle's first collision from Apollo's oracle detections.
+    For each pair keep the first timestep within COLLISION_CHECK_WINDOW steps from the oracle's first entry where the two rectangles touch.
+    Collisions with objects that are not scenario vehicles keep the oracle's step.
+    Pairs are taken in time order: each vehicle collides at its first pair, also when its partner collided before
+    (a vehicle hitting a vehicle that already collided collides; the partner keeps its first collision).
+    """
+    events = []
+
+    # Iterate over each vehicle and its reported collisions
+    for vehicle_id, vehicle in conversion.vehicles.items():
+        # For each partner (other collided vehicle), keep the first reported collision step
+        by_partner = {}
+        for step, partner in zip(vehicle.collision_steps, vehicle.collision_partners):
+            by_partner[partner] = min(step, by_partner.get(partner, step))
+
+        # For each partner, check if the vehicles touch within the collision window
+        for partner, oracle_step in by_partner.items():
+            if partner is not None:
+                other_vehicle = conversion.vehicles.get(partner)
+            else:
+                other_vehicle = None
+
+            step = oracle_step
+            if other_vehicle is not None and vehicle.obstacle is not None and other_vehicle.obstacle is not None:
+                window = range(oracle_step - COLLISION_CHECK_WINDOW, oracle_step + COLLISION_CHECK_WINDOW + 1)
+                contact = [k for k in window if _touching(vehicle.obstacle, other_vehicle.obstacle, k)]
+                if contact:
+                    step = contact[0]
+                else:
+                    module_logger.warning(f"Collision of {vehicle_id} with {partner} reported by Apollo at step {oracle_step} not confirmed: the executed vehicles do not touch within {COLLISION_CHECK_WINDOW} steps")
+            elif partner is None:
+                module_logger.warning(f"Vehicle {vehicle_id} collided with an object that is not a scenario vehicle at step {oracle_step}")
+
+            events.append((step, [vehicle_id, partner] if other_vehicle is not None else [vehicle_id]))
+
+    # Extract the first collision step for each vehicle, taking the earliest event in time order
+    first = {}
+    for step, vehicles in sorted(events, key = lambda event: event[0]):
+        for v in vehicles:
+            if v not in first:
+                first[v] = step
+    return first
+
+def to_execution_result(trace: Trace, generated_scenario: Scenario, map_data: ApolloMapData, output_folder: str, scenario_id = None) -> ExecutionResult:
+    """
+    Convert an Apollo run to ExecutionResult, for the evaluator:
+    - collisions: Apollo's oracle detections, double checked; both vehicles of a pair collide, also with a vehicle that collided before;
+    each vehicle's evaluation stops at its first collision
+    - statuses: no localization -> not started (ERROR); else a collision (COLLISION: also for a vehicle that never moved,
+      or that completed its mission, and gets hit); else mission complete (COMPLETED_SUCCESS); else never moved -> not
+      started (ERROR); else still driving at the end (TIMELIMIT);
+    - plans: every plan, as simulator-neutral Plans with their decisions (classify_object).
+    """
+    # Convert the trace to CommonRoad and extract the executed scenario, plans and outcome facts
+    conversion = convert_trace(trace, generated_scenario, map_data)
+    executed, dt = conversion.executed_scenario, conversion.dt
+    vehicle_ids_by_apollo_id = trace.vehicle_ids_by_apollo_id()
+    first_collision = collision_steps(conversion)
+    unknown_objects: Set[str] = set()
+
+    agents = {}
+    for vehicle_id, vehicle in conversion.vehicles.items():
+        obstacle = vehicle.obstacle
+        # Extract vehicle's plans as simulator-neutral Plans, classifying the objects in Apollo's decisions
+        plans = [neutral_plan(p, dt, vehicle_ids_by_apollo_id, map_data, unknown_objects) for p in vehicle.plans]
+
+        # Extract the vehicle's outcome facts: first collision, mission complete, last time step
+        collision, complete = first_collision.get(vehicle_id), vehicle.mission_complete_step
+
+        if obstacle is None or (vehicle.first_motion_step is None and collision is None):
+            # Not started: no localization, or never moved (a vehicle standing at its start that gets hit collides)
+            if obstacle is not None:
+                initial_timestep = obstacle.initial_state.time_step
+            else:
+                initial_timestep = 0
+
+            status, last_timestep = STATUS_ERROR, initial_timestep
+        else:
+            initial_timestep = obstacle.initial_state.time_step
+
+            # A collision counts for both vehicles, also for one hit while standing at its goal after completing its mission
+            if collision is not None:
+                status, last_timestep = STATUS_COLLISION, collision
+            elif complete is not None:
+                status, last_timestep = STATUS_COMPLETED, complete
+            elif obstacle.prediction is None:
+                status, last_timestep = STATUS_TIMELIMIT, vehicle.last_time_step
+            else:
+                status, last_timestep = STATUS_TIMELIMIT, obstacle.prediction.final_time_step
+
+        driven = []
+        if obstacle is not None:
+            # Extract the vehicle's driven states: initial state and predicted trajectory, up to the last time step of its outcome
+            driven = [obstacle.initial_state] + (obstacle.prediction.trajectory.state_list if obstacle.prediction else [])
+
+            # If the vehicle collided, only keep the states up to the collision timestep
+            if status == STATUS_COLLISION:
+                driven = [state for state in driven if state.time_step <= last_timestep]
+        
+        
+        agents[vehicle_id] = AgentOutcome(id = vehicle_id, initial_time_step = initial_timestep, status = status, last_timestep = last_timestep,
+                                          driven_states = driven, emergency_steps = set(vehicle.emergency_steps),
+                                          disengagement_steps = set(vehicle.disengagement_steps), plans = plans,
+                                          history_length = (driven[-1].time_step + 1) if driven else 0)
+
+    return ExecutionResult(scenario_id = scenario_id, output_folder = output_folder, executed_scenario = executed,
+                           agents = agents, native = conversion, simulator = "apollo")

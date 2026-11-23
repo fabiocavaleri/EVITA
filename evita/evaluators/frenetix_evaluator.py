@@ -12,7 +12,7 @@ from cr_scenario_handler.simulation.simulation import Simulation
 
 from ..timing import TASK_TIMER
 from ..execution import ExecutionResult
-from ..data_analysis import read_frenetix_plans
+from ..executors.frenetix_executor import read_frenetix_plans
 from ..interfaces import AbstractScenarioEvaluator
 from ..utils import EVITA_MAIN_LOGGER_NAME, sanitize_dataframe
 from ..generators.utils import (augment_with_collisions, augment_with_danger, augment_with_emergencies_and_disengagements,
