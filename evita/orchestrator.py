@@ -393,7 +393,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
         raise click.UsageError("DoppelTestScenarioGenerator is not supported with --simulator apollo: the DoppelTest baseline on Apollo is DoppelTest's own EVITA_DoppelTest/main_ga.py")
     
     sg_class = _load_class(scenario_generator_path, scenario_generator_module, scenario_generator_class, logger)
-    scenario_generator: AbstractScenarioGenerator = sg_class(map_file, debug = debug, debug_folder = debug_folder)
+    # The simulator's generation settings (Apollo: vehicles, scenario length, vehicle model; FrenetiX: none) and its name
+    scenario_generator: AbstractScenarioGenerator = sg_class(map_file, debug = debug, debug_folder = debug_folder, simulator = simulator_settings.name, **simulators.generation_overrides(simulator_settings))
 
     se_class = _load_class(simulator_settings.executor_path, simulator_settings.executor_module, simulator_settings.executor_class, logger)
     sev_class = _load_class(".", simulator_settings.evaluator_module, simulator_settings.evaluator_class, logger)
@@ -403,7 +404,14 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
     scenario_executor: AbstractScenarioExecutor = se_class(output_folder, driving_agent_name = driving_agent_name, debug = debug, map_file = map_file, delete_records = delete_records, random_lights = True)
     scenario_evaluator: AbstractScenarioEvaluator = sev_class(output_folder)
-    scenario_validator = simulators.scenario_validator(simulator_settings, ValidationConfig())
+
+    # Apollo's validator needs Apollo's generation configuration (vehicle size); FrenetiX's keeps its default one
+    if simulator_settings.apollo_validation:
+        generation_config = simulators.generation_configuration(simulator_settings)
+    else:
+        generation_config = None
+        
+    scenario_validator = simulators.scenario_validator(simulator_settings, ValidationConfig(), generation_config)
 
     logger.info(f"Outputting results to [{output_folder}]")
     if debug:

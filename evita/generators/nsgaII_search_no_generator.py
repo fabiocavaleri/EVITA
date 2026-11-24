@@ -86,7 +86,8 @@ def main() -> None:
         sampling = ScenarioSampling(base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion)
         mutation = ScenarioMutation(args.scenario_seed_file, scenario_generator_configuration, termination_criterion)
 
-    crossover = ScenarioCrossover(scenario_generator_configuration, termination_criterion)
+    crossover = ScenarioCrossover(scenario_generator_configuration, termination_criterion, apollo_validation = simulator.apollo_validation)
+    
     algorithm = NSGA2(pop_size = args.population_size,
                       sampling = sampling,
                       mutation = mutation,

@@ -14,10 +14,11 @@ from commonroad.scenario.scenario import Scenario
 
 from . import scenario_mutation
 from . import utils as scenario_generation_utils
-from ..interfaces import AbstractScenarioGenerator
+from .. import simulators
+from ..validator import ValidationConfig
 from ..orchestrator import debug_plot_to_file
+from ..interfaces import AbstractScenarioGenerator
 from ..utils import EVITA_MAIN_LOGGER_NAME, Budget
-from ..validator import ScenarioValidator, ValidationConfig
 
 class RandomScenarioGenerator(AbstractScenarioGenerator):
     """
@@ -43,7 +44,9 @@ class RandomScenarioGenerator(AbstractScenarioGenerator):
 
         # Instantiate the scenario validator
         self.scenario_validator_configuration = ValidationConfig()
-        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, self.scenario_generator_configuration)
+        # The simulator's validator (Apollo: the validator's Apollo mode); FrenetiX by default
+        simulator = simulators.get_simulator(kwargs.get("simulator", simulators.FRENETIX))
+        self.scenario_validator = simulators.scenario_validator(simulator, self.scenario_validator_configuration, self.scenario_generator_configuration)
 
         self.generation = 0
         self.add_random_planning_problem =  scenario_mutation.add_random_planning_problem

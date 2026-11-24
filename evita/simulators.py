@@ -83,6 +83,18 @@ def generation_configuration(simulator: Simulator) -> ScenarioGeneratorConfig:
 
     return config
 
+def generation_overrides(simulator: Simulator) -> dict:
+    """
+    The settings where the simulator's generation configuration differs from the default one, as keyword arguments for
+    the orchestrator's generators (they build their configuration from matching keyword arguments).
+    Apollo: the limits for the number of vehicles and the duration of the scenarios.
+    FrenetiX: none.
+    """
+    default = {k: v for k, v in vars(ScenarioGeneratorConfig()).items() if not callable(v)}
+    configured = {k: v for k, v in vars(generation_configuration(simulator)).items() if not callable(v)}
+    
+    return {k: v for k, v in configured.items() if default.get(k) != v}
+
 def scenario_validator(simulator: Simulator, validation_configuration: ValidationConfig, generation_config: Optional[ScenarioGeneratorConfig] = None) -> ScenarioValidator:
     """
     The validator for the simulator (Apollo: the validator's Apollo mode)

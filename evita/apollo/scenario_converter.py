@@ -290,6 +290,9 @@ def build_adc(lanelet_network: LaneletNetwork, planning_problem: PlanningProblem
     except MapDataError as exc:
         raise ScenarioSpecError(f"Vehicle {vehicle_id}: {exc}") from exc
 
+    if len(routing) == 1:
+        routing = routing * 2
+
     return {
         "routing": routing,
         "start_s": start_s,

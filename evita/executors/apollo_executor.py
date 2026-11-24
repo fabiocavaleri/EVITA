@@ -40,7 +40,7 @@ STARTUP = os.path.join(DOPPELTEST_ROOT, "apollo_runner_startup.py")
 DEFAULT_PYTHON38 = os.path.join(ROOT_DIR, ".venv38", "bin", "python")
 
 # Seconds one run of the runner may take (DoppelTest's 30 s scenario, plus setting the instances up and writing records)
-EXECUTION_TIMEOUT = 60
+EXECUTION_TIMEOUT = 600
 # Retries of a scenario whose run failed or was unhealthy
 RETRIES = 1
 

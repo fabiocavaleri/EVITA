@@ -28,9 +28,13 @@ def settings(config):
 default, from_registry = settings(ScenarioGeneratorConfig()), settings(simulators.generation_configuration(frenetix))
 check("FrenetiX: generation configuration identical to ScenarioGeneratorConfig() (every attribute)", default == from_registry)
 config = simulators.generation_configuration(apollo)
-check(f"Apollo: DoppelTest's limits ({MAX_ADC_COUNT} vehicles, {SCENARIO_UPPER_LIMIT} s = {config.max_time_step} steps), vehicle model 101 "
+import yaml
+dt = simulators.frenetix_time_step()
+check(f"FrenetiX's time step read from its planning configuration ({dt} s)",
+      dt == float(yaml.safe_load(open(simulators.FRENETIX_PLANNING_CONFIGURATION))["dt"]) and dt > 0)
+check(f"Apollo: DoppelTest's limits ({MAX_ADC_COUNT} vehicles, {SCENARIO_UPPER_LIMIT} s / {dt} s = {config.max_time_step} steps), vehicle model 101 "
       f"({config.length} x {config.width} m)", (config.max_amount_pp, config.max_time_step, config.cr_vehicle_id, config.length, config.width)
-      == (MAX_ADC_COUNT, int(SCENARIO_UPPER_LIMIT * 10), 101, 4.933, 2.11))
+      == (MAX_ADC_COUNT, int(round(SCENARIO_UPPER_LIMIT / dt)), 101, 4.933, 2.11))
 others = {k: v for k, v in settings(config).items() if k not in ("max_amount_pp", "max_time_step", "cr_vehicle_id", "length", "width")}
 check("Apollo: every other setting as FrenetiX's", all(default[k] == v for k, v in others.items() if k in default))
 validator_f = simulators.scenario_validator(frenetix, ValidationConfig(), from_registry)

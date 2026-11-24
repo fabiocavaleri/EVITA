@@ -11,6 +11,7 @@ from itertools import combinations
 from typing import Dict, List, Optional, Tuple
 from shapely.geometry import LineString, Point
 
+from commonroad.geometry.shape import Rectangle
 from commonroad.scenario.scenario import Scenario
 from commonroad.scenario.trajectory import State
 from commonroad.scenario.lanelet import Lanelet, LaneletNetwork
@@ -20,6 +21,11 @@ from commonroad.planning.planning_problem import PlanningProblem, PlanningProble
 from .config import ScenarioGeneratorConfig, ValidationConfig
 from .timing import TASK_TIMER
 from .utils import EVITA_MAIN_LOGGER_NAME
+
+# DoppelTest's start-distance rule (EVITA_DoppelTest/apollo/utils.py, PositionEstimate.is_too_close, applied by
+# ADSection.add_agent when DoppelTest reads a scenario).
+# The outlines of two vehicles at their starts closer than this (metres), whatever their lanes, and the second vehicle is dropped (the runner then rejects the scenario)
+APOLLO_MIN_START_DISTANCE = 5.0
 
 module_logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME + "." + __name__)
 
@@ -168,8 +174,12 @@ class ScenarioValidator:
                 if not validity_flag:
                     return validity_flag, validity_message
         
-        # Validate initial distances between agents and obstacles on the same lanelet
-        validity_flag, validity_message = self._validate_init_distances(scenario, planning_problems)
+        # Validate initial distances: between agents and obstacles on the same lanelet; for Apollo, DoppelTest's rule instead
+        if self.apollo:
+            validity_flag, validity_message = self._validate_apollo_start_distances(planning_problems)
+        else:
+            validity_flag, validity_message = self._validate_init_distances(scenario, planning_problems)
+
         # Exit if any initial state is not valid
         if not validity_flag:
             return validity_flag, validity_message
@@ -282,6 +292,23 @@ class ScenarioValidator:
                 if not validity_flag:
                     return False, validity_message
                 
+        return True, ""
+
+    def _validate_apollo_start_distances(self, planning_problems: List[PlanningProblem]) -> Tuple[bool, str]:
+        """
+        DoppelTest's start-distance rule: every pair of vehicles, whatever their lanes, with the outlines of their rectangles
+        at their initial states at least APOLLO_MIN_START_DISTANCE apart
+        """
+        length, width = self.generation_config.length, self.generation_config.width
+        outlines = {pp.planning_problem_id: Rectangle(length, width, center = np.array(pp.initial_state.position), orientation = float(pp.initial_state.orientation)).shapely_object
+                    for pp in planning_problems}
+        
+        for (first, a), (second, b) in combinations(sorted(outlines.items()), 2):
+            distance = a.distance(b)
+
+            if distance < APOLLO_MIN_START_DISTANCE:
+                return False, (f"Vehicles {first} and {second} start {distance:.2f} m apart (outline to outline): Apollo (DoppelTest) needs at least {APOLLO_MIN_START_DISTANCE:.0f} m")
+            
         return True, ""
 
     def _validate_goal_areas_placement(self, scenario: Scenario, planning_problems: List[PlanningProblem]) -> Tuple[bool, str]:

@@ -36,7 +36,7 @@ open(RUNNER, "w").write(textwrap.dedent(f'''
     from framework.scenario.TrafficControlManager import TrafficControlManager
     from modules.localization.proto.localization_pb2 import LocalizationEstimate
     from modules.planning.proto.planning_pb2 import ADCTrajectory
-    p = argparse.ArgumentParser(); [p.add_argument(a) for a in ("--scenario-json", "--records-dir", "--generation", "--scenario", "--trace")]
+    p = argparse.ArgumentParser(); [p.add_argument(a) for a in ("--scenario-json", "--records-dir", "--scenario", "--trace")]
     args = p.parse_args()
     # The mode of this run: the next one of FAKE_MODES (a counter file keeps track of the runs)
     modes = os.environ.get("FAKE_MODES", "ok").split(","); counter = os.environ["FAKE_COUNTER"]
@@ -46,18 +46,19 @@ open(RUNNER, "w").write(textwrap.dedent(f'''
     if mode == "records": sys.exit(10)
     if mode == "timeout": time.sleep(30); sys.exit(0)
     sc = json.load(open(args.scenario_json))
-    section = {{"generation": "Generation_1", "scenario": f"Scenario_{{args.scenario}}", "status": "executed", "reason": "",
+    section = {{"scenario": f"Scenario_{{args.scenario}}", "status": "executed", "reason": "",
                "vehicle": {{"length": 4.933, "width": 2.11, "back_edge_to_center": 1.043}}, "json": sc}}
     if mode == "reject":
         section.update(status = "rejected", reason = "DoppelTest dropped 1 of 2 vehicles (start within 5 m of another vehicle)")
         rx.write_trace({{"format_version": 1, "scenario": section, "vehicles": []}}, args.trace); sys.exit(2)
     MapParser({HD_MAP!r}); mp = MapParser.get_instance()
     T0 = 1_700_000_000.0; manager = TrafficControlManager(TCSection(**sc["tc_section"]))
-    records = os.path.join(args.records_dir, "Generation_1", f"Scenario_{{args.scenario}}"); os.makedirs(records, exist_ok = True)
+    records = os.path.join(args.records_dir, f"Scenario_{{args.scenario}}"); os.makedirs(records, exist_ok = True)
     vehicles = []
     for k, adc in enumerate(sc["ad_section"]["adcs"]):
         open(os.path.join(records, f"apollo_dev_ROUTE_{{k}}.Scenario_{{args.scenario}}"), "w").write("record")
-        lanes = adc["routing"]; lengths = [mp.get_lane_length(l) for l in lanes]
+        # The route Apollo drives: a lane written twice (single-lane routes) is one lane
+        lanes = [l for i, l in enumerate(adc["routing"]) if i == 0 or l != adc["routing"][i - 1]]; lengths = [mp.get_lane_length(l) for l in lanes]
         def pose(t, adc = adc, lanes = lanes, lengths = lengths):
             s = adc["start_s"] + 6.0 * max(t - adc["start_t"], 0); i = 0
             while i < len(lanes) - 1 and s > lengths[i]: s -= lengths[i]; i += 1
@@ -144,6 +145,8 @@ check(f"healthy run: usable result (no failure), {len(result.agents)} vehicles, 
 check("files in <run>/<5-digit id>/: scenario.xml, c.json, runner.log, trace.json.gz, records kept by default",
       os.path.basename(folder) == "00007" and all(os.path.exists(os.path.join(folder, f)) for f in ("scenario.xml", "c.json", "runner.log", "trace.json.gz"))
       and glob.glob(os.path.join(folder, "records", "**", "apollo_dev_ROUTE_0*"), recursive = True))
+check("records in records/Scenario_<id>/ (no generation level), named after the scenario",
+      os.path.exists(os.path.join(folder, "records", "Scenario_7", "apollo_dev_ROUTE_0.Scenario_7")) and not glob.glob(os.path.join(folder, "records", "Generation_*")))
 result, _ = run(["ok"], scenario, planning_problems, delete_records = True)
 check("--delete-records: records deleted once the trace is written (trace kept)",
       not os.path.exists(os.path.join(result.output_folder, "records")) and os.path.exists(os.path.join(result.output_folder, "trace.json.gz")))
@@ -194,6 +197,10 @@ search_scenario.is_valid = True
 execution = problem._execute(search_scenario, planning_problems)
 check(f"EVITA's search: an unusable execution makes the scenario invalid, with the reason as its message",
       search_scenario.is_valid is False and "rejected" in search_scenario.validation_message)
+moved = os.path.join(problem.debug_folder, "00007")
+check("EVITA's search: the unusable scenario's folder is moved to <run>/debug/ (runner log and scenario kept), none left in the run folder",
+      os.path.exists(os.path.join(moved, "runner.log")) and os.path.exists(os.path.join(moved, "scenario.xml"))
+      and not os.path.exists(os.path.join(problem.output_folder, "00007")))
 os.environ["FAKE_MODES"], os.environ["FAKE_COUNTER"] = "ok", os.path.join(tempfile.mkdtemp(), "count")
 search_scenario.is_valid = True; search_scenario.validation_message = ""
 execution = problem._execute(search_scenario, planning_problems)

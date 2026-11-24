@@ -147,7 +147,7 @@ class EVITAScenarioSampling(ScenarioSampling):
         super().__init__(base_scenario, base_planning_problem_set, scenario_generator_configuration, termination_criterion)
 
         # Update the scenario validator to the EVITA one
-        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, apollo = True)
+        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, scenario_generator_configuration, apollo = True)
         
         # Update the add_random_planning_problem function to the EVITA one
         self.add_random_planning_problem = scenario_mutation.add_evita_random_planning_problem
@@ -174,7 +174,7 @@ class ScenarioMutation(Mutation):
     """
     Mutation operator to mutate scenarios and planning problem sets
     """
-    def __init__(self, map_file_path: str, scenario_generator_configuration, termination_criterion):
+    def __init__(self, map_file_path: str, scenario_generator_configuration, termination_criterion, apollo_validation: bool = False):
         """
         Mutation of each individual:
         - Each vehicle's planning problem is selected with probability 1 / (number of vehicles), and each of its attributes (initial position, initial velocity, goal area) is then mutated with probability 1/3;
@@ -191,7 +191,8 @@ class ScenarioMutation(Mutation):
         self.remove_random_planning_problem = scenario_mutation.remove_random_planning_problem
         
         self.scenario_validator_configuration = ValidationConfig()
-        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, scenario_generator_configuration)
+        # apollo_validation: the validator's Apollo mode (EVITA's search with Apollo)
+        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, scenario_generator_configuration, apollo = apollo_validation)
 
         self.map_file_path = map_file_path
         self.termination_criterion = termination_criterion
@@ -277,8 +278,9 @@ class EVITAScenarioMutation(ScenarioMutation):
     Mutation operator to mutate scenarios and planning problem sets for EVITA
     """
     def __init__(self, map_file_path: str, scenario_generator_configuration, termination_criterion):
-        # Use the parent ScenarioMutation class to initialize the common attributes and mutation operators
-        super().__init__(map_file_path, scenario_generator_configuration, termination_criterion)
+        # Use the parent ScenarioMutation class to initialize the common attributes and mutation operators, with the
+        # validator's Apollo mode (the mutated scenarios are Apollo's)
+        super().__init__(map_file_path, scenario_generator_configuration, termination_criterion, apollo_validation = True)
 
         # Update the mutation operators to the EVITA ones
         self.traffic_lights_mutation_operators = [scenario_mutation.mutate_tl_initial_configuration, scenario_mutation.mutate_green_light_duration]
@@ -295,13 +297,14 @@ class ScenarioCrossover(Crossover):
     One-point crossover of the parents' lists of planning problems at a random position; the offspring replace the parents only if both are valid (validation not counted against the budget).
     Planning problems are renumbered from av_base_id + 1, so ids stay unique.
     """
-    def __init__(self, scenario_generator_configuration, termination_criterion):
+    def __init__(self, scenario_generator_configuration, termination_criterion, apollo_validation: bool = False):
         # Define the crossover: number of parents and number of offsprings
         super().__init__(2, 2)
         self.scenario_generator_configuration = scenario_generator_configuration
 
         self.scenario_validator_configuration = ValidationConfig()
-        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, scenario_generator_configuration)
+        # apollo_validation: the validator's Apollo mode (EVITA's search with Apollo)
+        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, scenario_generator_configuration, apollo = apollo_validation)
 
         self.termination_criterion = termination_criterion
         self.logger = module_logger

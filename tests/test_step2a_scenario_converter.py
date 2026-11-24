@@ -99,5 +99,25 @@ path = os.path.join(tempfile.mkdtemp(), "c.json"); ss.write_scenario_json(spec, 
 check("DoppelTest's from_json keeps every vehicle", len(ApolloScenario.from_json(path).ad_section.adcs) == 2)
 check("traffic control in the JSON reads back unchanged", tcm.TrafficControl.from_doppeltest(spec["tc_section"], md) == tc)
 
+# Single-lane routes: written twice, so that DoppelTest's routing request has a destination (ADAgent.waypoints skips
+# the first lane and adds the destination only for a last lane that is not also the first)
+from framework.scenario.ad_agents import ADAgent
+long_lanelet = max(net.lanelets, key = lambda l: ss.centerline(l).length)
+single = ss.build_adc(net, problem(30, long_lanelet, 5.0, [long_lanelet.lanelet_id], long_lanelet, 30.0), md, sc.dt)
+lane = md.lane_id(long_lanelet.lanelet_id)
+check("single-lane route written twice in the JSON (start and destination on that lane)", single["routing"] == [lane, lane] and single["dest_s"] > single["start_s"])
+agent = ADAgent(single["routing"], single["start_s"], single["dest_s"], single["start_t"])
+check("DoppelTest's routing request for it: start and destination on the lane (before: no destination at all)",
+      [(w.lane_id, round(w.s, 3)) for w in agent.waypoints] == [(lane, round(single["dest_s"], 3))]
+      and (agent.initial_position.lane_id, agent.initial_position.s) == (lane, single["start_s"])
+      and ADAgent([lane], single["start_s"], single["dest_s"], single["start_t"]).waypoints == [])
+multi = ss.build_adc(net, problem(31, a, 6.0, chain, c), md, sc.dt)
+check("routes of several lanes unchanged (each lane once)", multi["routing"] == [md.lane_id(i) for i in chain])
+path = os.path.join(tempfile.mkdtemp(), "c.json")
+json.dump({"ad_section": {"adcs": [single]}, "pd_section": {"pds": []},
+           "tc_section": {"initial": {}, "final": {}, "duration_g": 5, "duration_y": 3, "duration_b": 2}}, open(path, "w"))
+check("DoppelTest's from_json reads the single-lane vehicle (routing kept as written)",
+      [ad.routing for ad in ApolloScenario.from_json(path).ad_section.adcs] == [[lane, lane]])
+
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

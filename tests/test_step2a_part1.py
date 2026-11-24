@@ -109,7 +109,7 @@ def run(name, adcs, ids=True):
     sc = {"ad_section": {"adcs": adcs}, "pd_section": {"pds": []}, "tc_section": {"initial": {}, "final": {}, "duration_g": 5, "duration_y": 3, "duration_b": 2}}
     if ids: sc["evita_vehicle_ids"] = [20000 + i for i in range(len(adcs))]
     path = os.path.join(d, name + ".json"); json.dump(sc, open(path, "w")); trace_path = os.path.join(d, name + ".json.gz")
-    args = runner_module.parse_arguments(["--scenario-json", path, "--records-dir", os.path.join(d, "records"), "--generation", "1", "--scenario", name, "--trace", trace_path])
+    args = runner_module.parse_arguments(["--scenario-json", path, "--records-dir", os.path.join(d, "records"), "--scenario", name, "--trace", trace_path])
     runner_module.RuntimeConfig.RECORDS_DIR = args.records_dir
     return runner_module.main(args), json.load(gzip.open(trace_path, "rt"))
 ok = [{"routing": [a], "start_s": 5.0, "dest_s": 60.0, "start_t": 0.0}, {"routing": [b], "start_s": 5.0, "dest_s": 20.0, "start_t": 1.5}]
@@ -123,7 +123,7 @@ check("runner: 6 vehicles -> rejected", code == 2)
 code, t = run("no_ids", ok, ids=False)
 check("runner: JSON without EVITA ids", code == 0 and [v["evita_id"] for v in t["vehicles"]] == [None, None])
 path = os.path.join(d, "crash.json"); json.dump({"ad_section": {"adcs": ok}, "pd_section": {"pds": []}, "tc_section": {"initial": {}, "final": {}, "duration_g": 5, "duration_y": 3, "duration_b": 2}}, open(path, "w"))
-crash_args = ["--scenario-json", path, "--records-dir", os.path.join(d, "records"), "--generation", "1", "--scenario", "crash", "--trace", os.path.join(d, "crash.json.gz")]
+crash_args = ["--scenario-json", path, "--records-dir", os.path.join(d, "records"), "--scenario", "crash", "--trace", os.path.join(d, "crash.json.gz")]
 original_run = FakeScenarioRunner.run_scenario
 def failing_run(self, g, s, save): raise RuntimeError("container ROUTE_1 is not running")
 FakeScenarioRunner.run_scenario = failing_run
