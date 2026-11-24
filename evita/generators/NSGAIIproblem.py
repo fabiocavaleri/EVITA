@@ -1,33 +1,24 @@
 """
-EVITA's search problem for NSGA-II: an individual is a scenario with its planning problems; its three objectives are computed from its simulation with FrenetiX.
-
-EVITADoppelTestNSGAIIproblem (at the end of the file) adapts the problem to the Apollo pipeline.
+EVITA's search problem for NSGA-II: an individual is a scenario with its planning problems; its three objectives are computed from its execution
+with the simulator chosen by --simulator (evita/simulators.py: FrenetiX or Apollo).
 """
 import os
 import sys
-import json
 import time
 import logging
 import traceback
-import subprocess
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from copy import deepcopy
-
 from pymoo.core.problem import ElementwiseProblem
 
-from commonroad.common.file_reader import XMLFileReader
-from commonroad.common.file_writer import CommonRoadFileWriter
 from commonroad.planning.goal import Interval
-from commonroad.visualization.mp_renderer import MPRenderer
 
 from evita import simulators
 
 from ..timing import TASK_TIMER
 from ..execution import ExecutionResult
-from ..validator import ScenarioValidator
 from ..generators.utils import compute_interaction_map
 from ..config import ValidationConfig
 from ..utils import EVITA_MAIN_LOGGER_NAME, RESULTS_FOLDER
@@ -334,193 +325,4 @@ class NSGAIIproblem(ElementwiseProblem):
  
         self.interaction_maps_by_generation.append((generation, interaction_map))
  
-        return [-fitness_num_interactions, fitness_num_cars, -min_dist]
-
-# ========== Apollo pipeline ==========
-
-class EVITADoppelTestNSGAIIproblem(NSGAIIproblem):
-    """
-    This class defines the problem to be solved by the NSGA-II algorithm for the EVITA DoppelTest
-    The problem is defined as follows:
-    - Decision variables: the scenario and the planning problem set
-    - Objectives:
-        1. Maximize the number of interactions in the scenario
-        2. Maximize the variety of the interaction in the scenario'
-        3. Minimize the number of cars in the scenario
-    """
-    def __init__(self, map_file_path, driving_agent_name, pop_size, termination_criterion, records_file_path, trajectory_difference_threshold, n_bins = None, **kwargs):
-        """
-        Use parent constructor to initialize the NSGAIIproblem and then add the specific attributes for EVITA + DoppelTest
-        """
-        super().__init__(map_file_path, driving_agent_name, pop_size, termination_criterion, trajectory_difference_threshold, n_bins, **kwargs)
-
-        self.scenario_validator = ScenarioValidator(self.scenario_validator_configuration, apollo = True)
-
-        self.records_file_path = records_file_path
-
-        # Python 3.8 environment and script that run a scenario with Apollo
-        self.python_38 = "../.venv38/bin/python"
-        self.scenario_running_script = "./apollo_scenario_runner.py"
-
-    def _load_executor_and_evaluator(self):
-        """
-        Apollo runs in a separate process (apollo_scenario_runner.py): no Frenetix executor or evaluator is needed
-        """
-        self.scenario_executor = None
-        self.scenario_evaluator = None
-
-    def _scenario_output_folder(self) -> str:
-        """
-        Folder of the current scenario's Apollo outputs: <evita-records>/Generation_<g>/Scenario_<i>
-        """
-        return os.path.join(self.records_file_path.replace("/records/", "/evita-records/"), f"Generation_{self.current_generation}", f"Scenario_{self.current_individual}")
-
-    def plot_pps(self, _scenario, planning_problems, output_folder: str):
-        """
-        This function plots the planning problems of a scenario and saves the plots to file
-        """
-        # Iterate over all scenario's planning problems
-        for pp in planning_problems:
-            # Initialize the plot
-            fig, ax = plt.subplots()
-            rnd = MPRenderer(ax = ax)
-
-            # Define the drawing parameters for the lanelet network and the traffic signs
-            rnd.draw_params.lanelet_network.traffic_sign.draw_traffic_signs = True
-            rnd.draw_params.lanelet_network.traffic_sign.scale_factor = 0.7
-            rnd.draw_params.lanelet_network.traffic_light.scale_factor = 0.7
-            rnd.draw_params.lanelet_network.lanelet.stop_line_color = "black"
-
-            # Plot the road and the signals
-            _scenario.lanelet_network.draw(rnd)
-
-            # Define the drawing parameters for the initial state and the goal area
-            rnd.draw_params.shape.facecolor = 'lightgreen'
-            rnd.draw_params.shape.edgecolor = 'green'
-            rnd.draw_params.shape.opacity = 0.6
-
-            # Extract and plot the initial state and the goal area of the planning problem
-            pp.goal.state_list[-1].position.draw(rnd)
-            rnd.render()
-
-            ax.scatter(
-                pp.initial_state.position[0],
-                pp.initial_state.position[1],
-                s = 12,
-                marker = 'o',
-                linewidths = 1,
-                c = 'red',
-                zorder = 10
-            )
-
-            plt.axis('off')
-            plt.savefig(
-                f"{output_folder}/pp_{pp.planning_problem_id}.png",
-                dpi = 500,
-                bbox_inches = "tight", # trims extra whitespace around the figure
-                pad_inches = 0,        # no padding
-                transparent = False,   # keep background white (or True if you want transparent)
-            )
-            plt.close()
-
-    def _execute(self, scenario, planning_problem_set):
-        """
-        Run the scenario with Apollo. Returns the folder with Apollo's outputs, or None if the execution failed
-        (scenario.is_valid and scenario.validation_message are then updated, as for Frenetix)
-        """
-        output_folder_path = self._scenario_output_folder()
-        self.logger.info(f"Executing scenario: {scenario.generation_id} with Apollo - {self.termination_criterion.remaining_time()}")
-
-        try:
-            os.makedirs(output_folder_path, exist_ok = True)
-            os.makedirs(os.path.join(output_folder_path, "scenario"), exist_ok = True)
-
-            # Scenario in Apollo's .json format, and in CommonRoad format
-            json_scenario = build_json_scenario(scenario, deepcopy(planning_problem_set), self.map_file)
-            evita_scenario_file_path = os.path.join(output_folder_path, "scenario", "evita_scenario.json")
-            with open(evita_scenario_file_path, "w") as f:
-                json.dump(json_scenario, f, indent = 2)
-
-            CommonRoadFileWriter(scenario, planning_problem_set).write_to_file(os.path.join(output_folder_path, "scenario", "scenario.xml"))
-
-            input("PAUSE: Press Enter to continue with the Apollo execution...")
-
-            # Run the scenario with Apollo; the script also converts the result to CommonRoad and saves collisions, interactions, and perception data
-            self.logger.info(f"Apollo records will be saved at: {os.path.join(self.records_file_path, f'Generation_{self.current_generation}', f'Scenario_{self.current_individual}')}")
-            try:
-                subprocess.run([self.python_38, self.scenario_running_script, evita_scenario_file_path,
-                                str(self.current_generation), str(self.current_individual), self.records_file_path], check = True)
-            except subprocess.CalledProcessError as e:
-                if e.returncode == 10 or not os.path.exists(os.path.join(output_folder_path, "executed_scenario.xml")):
-                    self.logger.critical(f"Scenario {scenario.generation_id} failed during the execution with Apollo (record file issue)")
-                    scenario.is_valid = False
-                    scenario.validation_message = "Error during the simulation execution"
-                    return None
-
-            # Plots of the planning problems: outputs, not testing, so excluded from the budget
-            with self.termination_criterion.paused():
-                planning_problems_plots_folder = os.path.join(output_folder_path, "scenario", "planning_problems_plots")
-                os.makedirs(planning_problems_plots_folder, exist_ok = True)
-                self.plot_pps(scenario, planning_problem_set.planning_problem_dict.values(), planning_problems_plots_folder)
-
-            return output_folder_path
-        except (ValueError, RecordFileError) as e:
-            self.logger.critical(f"Scenario {scenario.generation_id} could not be executed with Apollo: {e}")
-            scenario.is_valid = False
-            scenario.validation_message = "Error during the simulation execution"
-            return None
-
-    def _evaluate_simulation(self, scenario, simulation):
-        """
-        Compute collisions and interactions from Apollo's outputs (simulation is the folder returned by _execute)
-        """
-        output_folder_path = simulation
-        self.logger.info(f"Evaluating scenario: {scenario.generation_id} - {self.termination_criterion.remaining_time()}")
-
-        # Executed scenario, collisions, planned trajectories and perceptions written by the Apollo runner
-        executed_scenario, _ = XMLFileReader(os.path.join(output_folder_path, "executed_scenario.xml")).open(lanelet_assignment = True)
-        scenario_collisions = pd.read_csv(os.path.join(output_folder_path, "apollo_scenario_collisions.csv"))
-        scenario_vehicles_perceptions = pd.read_csv(os.path.join(output_folder_path, "vehicles_perception.csv"))
-        scenario_traffic_lights_perceptions = pd.read_csv(os.path.join(output_folder_path, "traffic_lights_perceptions.csv"))
-        with open(os.path.join(output_folder_path, "planned_trajectories.json"), "r") as f:
-            scenario_planned_trajectories_df = planned_trajectories_to_df(json.load(f))
-
-        # Collisions (and the collisions that could not be matched to obstacles)
-        collisions_df, issue_rows = augment_with_collisions(executed_scenario, scenario_collisions)
-        collisions_df.to_csv(os.path.join(output_folder_path, "fitness_functions", "collisions.csv"), index = False)
-        if len(issue_rows) > 0:
-            pd.DataFrame(issue_rows, columns = scenario_collisions.columns.tolist() + ["detected_obstacles"]).to_csv(os.path.join(output_folder_path, "fitness_functions", "invalid_collisions.csv"), index = False)
-
-        # Interactions and interaction map
-        interactions_df = augment_with_interactions(executed_scenario, scenario_planned_trajectories_df, scenario_vehicles_perceptions, scenario_traffic_lights_perceptions, scenario_collisions, self.trajectory_difference_threshold)
-        if interactions_df is None or interactions_map is None:
-            raise ValueError(f"No interactions could be computed for scenario {scenario.generation_id}")
-
-        interactions_df.to_csv(os.path.join(output_folder_path, "fitness_functions", "interactions.csv"), index = False)
-        pd.DataFrame(interactions_map).to_csv(os.path.join(output_folder_path, "fitness_functions", "interactions_map.csv"), index = False, header = False)
-
-        
-
-        self.logger.info(f"Evaluation completed - {self.termination_criterion.remaining_time()}")
-
-        return {"executed_scenario": executed_scenario, "interactions_df": interactions_df, "interactions_map": interactions_map}
-
-    def _compute_fitness(self, simulation, evaluation, generation):
-        """
-        Same three objectives as NSGAIIproblem (pymoo minimizes), from Apollo's outputs:
-        - minus the number of interactions
-        - the number of vehicles
-        - minus the distance of this interaction map from the closest map of the previous generations
-        """
-        interaction_map = np.asarray(evaluation["interactions_map"], dtype = float)
-
-        fitness_num_interactions = evaluation["interactions_df"]["is_interacting"].sum()
-        fitness_num_cars = len(evaluation["executed_scenario"].dynamic_obstacles)
-
-        # Variety of interactions: distance from the closest interaction map found in the PREVIOUS generations
-        previous_maps = [past_map for past_generation, past_map in self.interaction_maps_by_generation if past_generation < generation]
-        min_dist = min((np.linalg.norm(interaction_map - past_map) for past_map in previous_maps), default = sys.maxsize)
-
-        self.interaction_maps_by_generation.append((generation, interaction_map))
-
         return [-fitness_num_interactions, fitness_num_cars, -min_dist]

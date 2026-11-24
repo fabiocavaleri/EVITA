@@ -2,10 +2,16 @@
 set -Eeuo pipefail
 
 # Usage:
-#   [CPUS=<cpu-list>] ./run_EVITA.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
+#   [CPUS=<cpu-list>] [SIMULATOR=frenetix|apollo] [DELETE_RECORDS=1] [TH_ED=<m>] [N_BINS=<n>] ./run_EVITA.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
 #
 # CPUS (optional) pins every run of this script to the given cores, e.g. CPUS=0-3 or CPUS=0,2,4,6,
 # and limits the numerical libraries to that many threads. Give each terminal its own, disjoint list.
+#
+# SIMULATOR (optional) chooses the simulator: frenetix (default) or apollo. With apollo, every map must be the
+# converted map of the HD map Apollo runs (EVITA_DoppelTest/data/converted_maps/<map>/<map>.xml; HD_MAP_PATH in
+# EVITA_DoppelTest/config.py), the results go to the Apollo branch of the folders, and TH_ED plays no role (Apollo's
+# interactions come from its decisions).
+# DELETE_RECORDS=1 (optional, apollo only) deletes each scenario's .record files once its trace is written.
 #
 # TH_ED (optional) sets the trajectory difference threshold Th_ED in metres, e.g. TH_ED=1.25, for the
 # sensitivity analysis. Without it, EVITA uses its default (2.5 m). With it, runs are stored apart, under
@@ -63,6 +69,22 @@ if [[ -n "$cpus" ]]; then
     pin=(taskset -c "$cpus")
 fi
 
+# Optional simulator (see SIMULATOR above)
+simulator="${SIMULATOR:-frenetix}"
+case "$simulator" in
+    frenetix) simulator_folder="Frenetix" ;;
+    apollo) simulator_folder="Apollo" ;;
+    *) echo "Error: SIMULATOR must be frenetix or apollo, not: $simulator" >&2; exit 2 ;;
+esac
+simulator_args=(--simulator "$simulator")
+if [[ -n "${DELETE_RECORDS:-}" ]]; then
+    if [[ "$DELETE_RECORDS" != "1" || "$simulator" != "apollo" ]]; then
+        echo "Error: DELETE_RECORDS=1 applies only with SIMULATOR=apollo" >&2
+        exit 2
+    fi
+    simulator_args+=(--delete-records)
+fi
+
 time_budget_hours=3
 total_runs=$(( ${#maps_paths[@]} * number_of_repetitions ))
 
@@ -108,8 +130,8 @@ if [[ -n "$n_bins" ]]; then
     generator_label="${generator_label}_NBINS_${n_bins}"
 fi
 
-log_parent_dir="./logs/Ablation-Study/Frenetix/TotalInts-UniqueInts/${generator_label}/"
-output_parent_dir="./results/Ablation-Study/Frenetix/TotalInts-UniqueInts/${generator_label}/"
+log_parent_dir="./logs/Ablation-Study/${simulator_folder}/TotalInts-UniqueInts/${generator_label}/"
+output_parent_dir="./results/Ablation-Study/${simulator_folder}/TotalInts-UniqueInts/${generator_label}/"
 
 mkdir -p "$log_parent_dir" "$output_parent_dir"
 
@@ -200,6 +222,7 @@ for map_path in "${maps_paths[@]}"; do
             --time-budget "$((time_budget_hours * 60))" \
             --scenario-seed-file "../${map_path#../}" \
             --output-folder-name "$output_folder" \
+            "${simulator_args[@]}" \
             ${threshold_args[@]+"${threshold_args[@]}"}
         ) 2>&1 | tee "$log_file"
 

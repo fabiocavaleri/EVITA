@@ -6,6 +6,8 @@ set -Eeuo pipefail
 #
 # CPUS (optional) pins every run of this script to the given cores, e.g. CPUS=0-3 or CPUS=0,2,4,6,
 # and limits the numerical libraries to that many threads. Give each terminal its own, disjoint list.
+# FrenetiX only (SIMULATOR=apollo is refused): on Apollo, the DoppelTest baseline is DoppelTest's own
+# EVITA_DoppelTest/generate_DoppelTest_dataset.sh (main_ga.py).
 #
 # Examples:
 #   ./run_DoppelTest.sh 1 10 ../base-scenarios/CHN_Cho-2_2_I-1-1.cr.xml
@@ -53,6 +55,13 @@ if [[ -n "$cpus" ]]; then
     fi
     export OMP_NUM_THREADS=$n_threads MKL_NUM_THREADS=$n_threads OPENBLAS_NUM_THREADS=$n_threads NUMEXPR_NUM_THREADS=$n_threads
     pin=(taskset -c "$cpus")
+fi
+
+# FrenetiX only: on Apollo, the DoppelTest baseline is DoppelTest itself
+if [[ "${SIMULATOR:-frenetix}" != "frenetix" ]]; then
+    echo "Error: this script runs the DoppelTest generator with FrenetiX; the DoppelTest baseline on Apollo is DoppelTest's own" >&2
+    echo "       EVITA_DoppelTest/generate_DoppelTest_dataset.sh (main_ga.py)" >&2
+    exit 2
 fi
 
 time_budget_hours=3

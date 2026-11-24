@@ -2,10 +2,15 @@
 set -Eeuo pipefail
 
 # Usage:
-#   [CPUS=<cpu-list>] ./run_Random.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
+#   [CPUS=<cpu-list>] [SIMULATOR=frenetix|apollo] [DELETE_RECORDS=1] ./run_Random.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
 #
 # CPUS (optional) pins every run of this script to the given cores, e.g. CPUS=0-3 or CPUS=0,2,4,6,
 # and limits the numerical libraries to that many threads. Give each terminal its own, disjoint list.
+#
+# SIMULATOR (optional) chooses the simulator: frenetix (default) or apollo. With apollo, every map must be the
+# converted map of the HD map Apollo runs (EVITA_DoppelTest/data/converted_maps/<map>/<map>.xml; HD_MAP_PATH in
+# EVITA_DoppelTest/config.py), and the results go to a separate Apollo folder.
+# DELETE_RECORDS=1 (optional, apollo only) deletes each scenario's .record files once its trace is written.
 #
 # Examples:
 #   ./run_Random.sh 1 10 ../base-scenarios/CHN_Cho-2_2_I-1-1.cr.xml
@@ -55,6 +60,21 @@ if [[ -n "$cpus" ]]; then
     pin=(taskset -c "$cpus")
 fi
 
+# Optional simulator (see SIMULATOR above)
+simulator="${SIMULATOR:-frenetix}"
+case "$simulator" in
+    frenetix|apollo) ;;
+    *) echo "Error: SIMULATOR must be frenetix or apollo, not: $simulator" >&2; exit 2 ;;
+esac
+simulator_args=(--simulator "$simulator")
+if [[ -n "${DELETE_RECORDS:-}" ]]; then
+    if [[ "$DELETE_RECORDS" != "1" || "$simulator" != "apollo" ]]; then
+        echo "Error: DELETE_RECORDS=1 applies only with SIMULATOR=apollo" >&2
+        exit 2
+    fi
+    simulator_args+=(--delete-records)
+fi
+
 time_budget_hours=3
 total_runs=$(( ${#maps_paths[@]} * number_of_repetitions ))
 
@@ -66,8 +86,14 @@ for map_path in "${maps_paths[@]}"; do
     fi
 done
 
-log_parent_dir="./logs/Main-Experiment/Random"
-output_parent_dir="./results/Main-Experiment/Random"
+# FrenetiX's results keep their folders; Apollo's go to their own branch
+if [[ "$simulator" == "apollo" ]]; then
+    log_parent_dir="./logs/Main-Experiment/Apollo/Random"
+    output_parent_dir="./results/Main-Experiment/Apollo/Random"
+else
+    log_parent_dir="./logs/Main-Experiment/Random"
+    output_parent_dir="./results/Main-Experiment/Random"
+fi
 
 mkdir -p "$log_parent_dir" "$output_parent_dir"
 
@@ -151,7 +177,8 @@ for map_path in "${maps_paths[@]}"; do
             run --scenario-generator-path . \
             --scenario-generator-module evita.generators.random_generator \
             --scenario-generator-class RandomScenarioGenerator \
-            --driving-agent-name frenetix \
+            --driving-agent-name "$simulator" \
+            "${simulator_args[@]}" \
             --time-budget "$((time_budget_hours * 3600))" \
             --map-file "$map_path" \
             2>&1 | tee "$log_file"

@@ -6,7 +6,7 @@ traffic manager); a list of modes, one per run, plays every case.
 Run from the project root: PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python3 tests/test_step3_apollo_executor.py
 """
 import os, sys, json, glob, random, logging, tempfile, textwrap
-sys.path.insert(0, os.getcwd()); sys.path.insert(0, os.path.join(os.getcwd(), "scripts"))
+sys.path.insert(0, os.getcwd())
 logging.basicConfig(level = logging.CRITICAL)
 
 from evita import simulators
@@ -14,7 +14,11 @@ from evita.apollo.map_data import ApolloMapData
 from evita.apollo import traffic_control as tc
 from evita.executors.apollo_executor import ApolloScenarioExecution, ApolloSetupError
 from evita.generators.utils import get_base_scenario_from_file
-import apollo_live_run
+from copy import deepcopy
+from evita.config import ValidationConfig
+from evita.validator import ScenarioValidator
+from evita.generators import scenario_mutation
+from evita.apollo import scenario_converter as converter
 
 MAP = os.path.abspath("EVITA_DoppelTest/data/converted_maps/borregas_ave/borregas_ave.xml")
 HD_MAP = os.path.abspath("EVITA_DoppelTest/data/maps/borregas_ave/base_map.bin")
@@ -112,11 +116,33 @@ def run(modes, scenario, planning_problems, **options):
     return result, int(open(counter).read()) if os.path.exists(counter) else 0
 
 # ---------- A scenario from EVITA's Apollo generator ----------
+def generate(base_scenario, base_planning_problems, config, map_file, map_data, vehicles, rng):
+    """
+    One valid scenario of `vehicles` vehicles from EVITA's Apollo generator and validator, with DoppelTest lights
+    (formerly scripts/apollo_live_run.py's generate)
+    """
+    validator = ScenarioValidator(ValidationConfig(), config, apollo = True)
+    lights = [light.traffic_light_id for light in base_scenario.lanelet_network.traffic_lights]
+    for _ in range(ValidationConfig.retry_generation):
+        scenario, planning_problems = deepcopy(base_scenario), deepcopy(base_planning_problems)
+        for _ in range(vehicles):
+            planning_problems = scenario_mutation.add_evita_random_planning_problem(config, scenario, planning_problems, map_file)
+        tc.random_traffic_control(map_data, lights, tc.max_duration_green(config.max_time_step, scenario.dt), rng).to_commonroad(scenario.lanelet_network, scenario.dt)
+        if not validator.is_scenario_valid(scenario, planning_problems)[0]:
+            continue
+        try:
+            converter.build_scenario_json(scenario, planning_problems, map_data)
+        except converter.ScenarioSpecError:
+            continue
+        return scenario, planning_problems
+    raise RuntimeError("No valid scenario")
+
+
 random.seed(5)
 map_data = ApolloMapData.load(MAP)
 config = simulators.generation_configuration(simulators.get_simulator("apollo"))
 base, base_pps = get_base_scenario_from_file(MAP, remove_obstacles = True, remove_planning_problems = True)
-scenario, planning_problems, _, _ = apollo_live_run.generate(base, base_pps, config, MAP, map_data, 2, random.Random(5))
+scenario, planning_problems = generate(base, base_pps, config, MAP, map_data, 2, random.Random(5))
 scenario.generation_id = 7
 
 # ---------- Start of a run ----------

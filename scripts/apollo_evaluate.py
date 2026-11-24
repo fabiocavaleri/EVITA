@@ -5,7 +5,7 @@ step 2 on real data; step 3's executor will do the same for each scenario of a s
     python scripts/apollo_evaluate.py --traces <folder> --map <converted map.xml> --out <run folder> [--no-report]
 
 Every trace.json.gz under --traces is one scenario; its generated scenario is the scenario.xml next to it (as written by
-scripts/apollo_live_run.py), else the converted map (old runs without the generated scenario). For each scenario:
+the Apollo executor in every scenario folder), else the converted map. For each scenario:
 <run folder>/<scenario name>/logs/simulation.db (the evaluation, read by the report), then the report of the run
 folder (data_analysis.generate_report), as for a FrenetiX run. A summary per scenario is printed.
 
