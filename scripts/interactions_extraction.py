@@ -24,7 +24,6 @@ import pandas as pd
 
 import matplotlib as mpl
 mpl.use("Agg")
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 
 from tqdm import tqdm

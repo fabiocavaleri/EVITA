@@ -4,7 +4,6 @@ scenarios, duplicate elimination, and the termination criterion that manages the
 
 EVITAScenarioSampling and EVITAScenarioMutation adapt the operators to the Apollo pipeline; they are unchanged.
 """
-import copy
 import time
 import random
 import logging

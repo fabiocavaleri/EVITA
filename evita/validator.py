@@ -165,9 +165,11 @@ class ScenarioValidator:
             if not validity_flag:
                 return validity_flag, validity_message
 
-            # Check if the goal area is reachable from the initial state of each planning problem, only if the scenario is not an Apollo scenario            
-            if not self.apollo:
-                # Validate if goal area is reachable
+            # Check that the goal area is reachable from the initial state, at least min_dist_goal ahead along the route:
+            # the route FrenetiX's route planner plans, or for Apollo the route Apollo is given (the scenario converter's)
+            if self.apollo:
+                validity_flag, validity_message = self._validate_apollo_reachable_goal(scenario, planning_problem)
+            else:
                 validity_flag, validity_message = self._validate_reacheable_goal(scenario, planning_problem)
 
                 # Exit if any initial state is not valid
@@ -262,6 +264,45 @@ class ScenarioValidator:
 
             driving_distance = reference_path.project(Point(goal_state.position.center)) - s_start
             
+            if driving_distance < self.config.min_dist_goal:
+                return False, f"Goal area of agent {agent_id} is {driving_distance:.1f} m ahead along its route (min {self.config.min_dist_goal})"
+
+        return True, ""
+
+    def _validate_apollo_reachable_goal(self, scenario: Scenario, planning_problem: PlanningProblem) -> Tuple[bool, str]:
+        """
+        Apollo's version of _validate_reacheable_goal: the route is the one Apollo is given (the scenario converter's:
+        the planning problem's path, or the shortest chain of successors to the goal lanelet), and every goal area is at
+        least min_dist_goal meetrs ahead of the start along it.
+        Apollo considers its mission complete within destination_check_distance (5 m) of the destination, so a vehicle with
+        its goal just ahead would not move.
+        """
+        from .apollo import scenario_converter as converter
+        agent_id = planning_problem.planning_problem_id
+
+        # 1. Route, as given to Apollo
+        try:
+            route = converter.vehicle_route(scenario.lanelet_network, planning_problem)
+        except converter.ScenarioSpecError as e:
+            module_logger.debug(f"No route for agent {agent_id}: {e}")
+            return False, f"No route from the initial state to the goal of agent {agent_id}"
+
+        # Its reference path: the route's centerlines, joined
+        points = []
+        for lanelet_id in route:
+            vertices = [tuple(p) for p in scenario.lanelet_network.find_lanelet_by_id(lanelet_id).center_vertices]
+            points += vertices[1:] if points and np.allclose(points[-1], vertices[0]) else vertices
+            
+        reference_path = LineString(points)
+        s_start = reference_path.project(Point(planning_problem.initial_state.position))
+
+        # 2. Each goal area ahead, along the route, by at least min_dist_goal
+        for goal_state in planning_problem.goal.state_list:
+            if not hasattr(goal_state, "position"):
+                continue
+
+            driving_distance = reference_path.project(Point(goal_state.position.center)) - s_start
+
             if driving_distance < self.config.min_dist_goal:
                 return False, f"Goal area of agent {agent_id} is {driving_distance:.1f} m ahead along its route (min {self.config.min_dist_goal})"
 

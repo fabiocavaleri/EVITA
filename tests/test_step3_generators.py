@@ -82,6 +82,24 @@ for _ in range(400):
     total += 1; agree += evita_ok == doppeltest_ok
 check(f"EVITA's Apollo rule agrees with DoppelTest's is_too_close on {agree} of {total} random pairs on Borregas Ave", total > 300 and agree >= total - 2)
 
+# ---------- Route length under Apollo: EVITA's rule (goal at least min_dist_goal ahead) on Apollo's route ----------
+def with_goal(vehicle_id, lanelet, s, goal_lanelet, goal_s):
+    """A planning problem starting at s on a lanelet, its goal area centered at goal_s on another (or the same) lanelet"""
+    pp = vehicle(vehicle_id, lanelet, s)
+    line = converter.centerline(goal_lanelet); point = line.interpolate(goal_s); ahead = line.interpolate(min(goal_s + 0.5, line.length))
+    heading = float(np.arctan2(ahead.y - point.y, ahead.x - point.x))
+    pp.goal = GoalRegion([CustomState(time_step = Interval(0, 300), position = Rectangle(4, 3, np.array([point.x, point.y]), heading))])
+    pp.path = None
+    return pp
+min_goal = ValidationConfig.min_dist_goal
+near, far = with_goal(1, straight, 10.0, straight, 20.0), with_goal(1, straight, 10.0, straight, 10.0 + min_goal + 10)
+ok_near, message_near = apollo_validator._validate_apollo_reachable_goal(base, near)
+check(f"Apollo: a goal 10 m ahead on the start lane refused (EVITA's min_dist_goal = {min_goal} m): {message_near}", not ok_near and "ahead along its route" in message_near)
+check(f"Apollo: a goal {min_goal + 10} m ahead accepted", apollo_validator._validate_apollo_reachable_goal(base, far)[0])
+unreachable = next(l for l in network.lanelets if l.lanelet_id != straight.lanelet_id and not converter.shortest_successor_route(network, [straight.lanelet_id], [l.lanelet_id]))
+ok_none, message_none = apollo_validator._validate_apollo_reachable_goal(base, with_goal(1, straight, 10.0, unreachable, 5.0))
+check(f"Apollo: a goal no chain of successors reaches refused ({message_none})", not ok_none and "No route" in message_none)
+
 # ---------- Generation settings for the orchestrator's generators ----------
 check("generation_overrides: none for FrenetiX; Apollo's vehicles, vehicle model and size",
       simulators.generation_overrides(frenetix) == {} and simulators.generation_overrides(apollo)

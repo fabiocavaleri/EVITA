@@ -16,7 +16,6 @@ from typing import Dict, List, Optional, Tuple
 from deap import algorithms, base, tools
 
 from commonroad.planning.planning_problem import InitialState, PlanningProblem, PlanningProblemSet
-from commonroad.scenario.lanelet import Lanelet
 
 from DoppelTest.config import MAX_ADC_COUNT, MAX_PD_COUNT
 from DoppelTest.framework.scenario import Scenario
