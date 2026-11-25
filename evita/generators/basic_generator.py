@@ -117,6 +117,12 @@ class EAOnePlusOneGenerator(AbstractScenarioGenerator):
         _scenario = deepcopy(scenario)
         _planning_problem_set = deepcopy(planning_problem_set)
 
+        # The copy is a new individual and must be validated again
+        # Remove the parent's validation result (is_valid = True)
+        for attribute in ("is_valid", "validation_message"):
+            if hasattr(_scenario, attribute):
+                delattr(_scenario, attribute)
+
         # Try to mutate the existing planning problems.       
         for key, planning_problem in list(_planning_problem_set.planning_problem_dict.items()):
             mutated_planning_problem = planning_problem
