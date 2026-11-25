@@ -2,7 +2,9 @@
 set -Eeuo pipefail
 
 # Usage:
-#   [CPUS=<cpu-list>] [SIMULATOR=frenetix|apollo] [DELETE_RECORDS=1] ./run_MaxInteractions.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
+#   [HOURS=<hours>] [CPUS=<cpu-list>] [SIMULATOR=frenetix|apollo] [DELETE_RECORDS=1] ./run_MaxInteractions.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
+#
+# HOURS (optional) is the duration of each run in hours (default 3; decimals allowed, e.g. HOURS=0.33 for 20 minutes).
 #
 # CPUS (optional) pins every run of this script to the given cores, e.g. CPUS=0-3 or CPUS=0,2,4,6,
 # and limits the numerical libraries to that many threads. Give each terminal its own, disjoint list.
@@ -75,7 +77,14 @@ if [[ -n "${DELETE_RECORDS:-}" ]]; then
     simulator_args+=(--delete-records)
 fi
 
-time_budget_hours=3
+# Run duration in hours (HOURS, optional; decimals allowed, e.g. HOURS=0.33 for 20 minutes); default 3
+time_budget_hours="${HOURS:-3}"
+if ! [[ "$time_budget_hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v h="$time_budget_hours" 'BEGIN { exit !(h > 0) }'; then
+    echo "Error: HOURS must be a positive number of hours, not: $time_budget_hours" >&2
+    exit 2
+fi
+time_budget_seconds=$(awk -v h="$time_budget_hours" 'BEGIN { printf "%d", h * 3600 }')
+time_budget_minutes=$(awk -v h="$time_budget_hours" 'BEGIN { printf "%d", h * 60 }')
 total_runs=$(( ${#maps_paths[@]} * number_of_repetitions ))
 
 # Validate all map files before starting experiments.
@@ -179,7 +188,7 @@ for map_path in "${maps_paths[@]}"; do
             --scenario-generator-class EAOnePlusOneGenerator_MaxInteractions \
             --driving-agent-name "$simulator" \
             "${simulator_args[@]}" \
-            --time-budget "$((time_budget_hours * 3600))" \
+            --time-budget "$time_budget_seconds" \
             --map-file "$map_path" \
             2>&1 | tee "$log_file"
 
