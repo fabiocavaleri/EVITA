@@ -136,6 +136,33 @@ for _ in range(10):
 check(f"Random under Apollo: {generated} scenarios, at most {max_vehicles} vehicles, all convertible; DoppelTest drops {dropped} of {vehicles} vehicles",
       generated >= 8 and max_vehicles <= 5 and dropped == 0)
 
+# ---------- The (1+1) EA generators: a mutated child is validated again ----------
+from copy import deepcopy
+random.seed(31)
+ea = EAOnePlusOneGenerator_MaxDanger(MAP, debug = False, debug_folder = tempfile.mkdtemp(), simulator = "apollo", **simulators.generation_overrides(apollo)).wrapped_generator
+parent = None
+for _ in range(20):
+    candidate = ea.generate()[0]
+    apollo_validator.validate_all([candidate])
+    if candidate[0].is_valid:
+        parent = candidate; break
+ea.best_individual = parent
+child, child_pps = ea.generate()[0]
+check("EA: a mutated child carries no inherited validation result (the parent's is_valid = True is dropped)",
+      parent is not None and parent[0].is_valid is True and not hasattr(child, "is_valid") and not hasattr(child, "validation_message"))
+# A child whose mutation broke a rule (two vehicles at the same start) is refused by validate_all
+broken, broken_pps = ea._mutate(*parent)
+problems = list(broken_pps.planning_problem_dict.values())
+if len(problems) >= 2:
+    problems[1].initial_state.position = np.array(problems[0].initial_state.position)
+apollo_validator.validate_all([(broken, broken_pps)])
+check(f"EA: a child with overlapping vehicles is validated and refused ({getattr(broken, 'validation_message', '')})",
+      len(problems) >= 2 and broken.is_valid is False)
+# Before the fix, _mutate's copy kept the parent's is_valid, and validate_all skipped it
+stale = deepcopy(parent[0]); stale_pps = deepcopy(broken_pps); stale.generation_id = 999
+apollo_validator.validate_all([(stale, stale_pps)])
+check("EA (the bug, reproduced): a copy keeping is_valid = True is skipped by validate_all and stays valid", stale.is_valid is True)
+
 # ---------- EVITA's operators ----------
 from evita.generators.nsgaII_operators import CustomTimeTermination, EVITAScenarioMutation, EVITAScenarioSampling, ScenarioCrossover, ScenarioMutation
 term = CustomTimeTermination(1, 0)

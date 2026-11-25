@@ -47,7 +47,7 @@ from framework.scenario.tc_config import TCSection
 from framework.scenario.TrafficControlManager import TrafficControlManager
 from commonroad.common.file_reader import CommonRoadFileReader
 from commonroad.common.file_writer import CommonRoadFileWriter, OverwriteExistingFile
-from evita.apollo.map_data import ApolloMapData, MapDataError, SAME_COLOR
+from evita.apollo.map_data import ApolloMapData, MapDataError
 from evita.apollo import traffic_control as tcm
 
 results = []

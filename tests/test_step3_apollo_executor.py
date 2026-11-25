@@ -1,6 +1,6 @@
 """
 Tests of step 3, parts C and D: the Apollo executor (evita/executors/apollo_executor.py) and the health check
-(evita/apollo/health.py), with stand-ins for .venv38's Python, Apollo's start-up script and the runner. The stand-in
+(evita/apollo/health.py), with stand-ins for the runner's Python, Apollo's start-up script and the runner. The stand-in
 runner writes real-format traces from the scenario's JSON (vehicles drive their routes, lights from DoppelTest's
 traffic manager); a list of modes, one per run, plays every case.
 Run from the project root: PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python3 tests/test_step3_apollo_executor.py
@@ -49,6 +49,11 @@ open(RUNNER, "w").write(textwrap.dedent(f'''
     if mode == "crash": sys.exit(3)
     if mode == "records": sys.exit(10)
     if mode == "timeout": time.sleep(30); sys.exit(0)
+    if mode == "ticks":
+        # As DoppelTest's scenario logger: ticks on one line ("\\r"), then a silence while the records are saved
+        for k in range(6):
+            sys.stderr.write(f"2026-11-24 15:06:16,680 - Scenario - INFO - Scenario time: {{k * 0.3:.1f}}.\\r"); sys.stderr.flush(); time.sleep(0.3)
+        time.sleep(2.5)
     sc = json.load(open(args.scenario_json))
     section = {{"scenario": f"Scenario_{{args.scenario}}", "status": "executed", "reason": "",
                "vehicle": {{"length": 4.933, "width": 2.11, "back_edge_to_center": 1.043}}, "json": sc}}
@@ -94,18 +99,18 @@ open(RUNNER, "w").write(textwrap.dedent(f'''
     rx.write_trace({{"format_version": 1, "scenario": section, "vehicles": vehicles}}, args.trace)
 '''))
 STARTUP_MARKER = os.path.join(work, "startup_calls")
-PYTHON38 = os.path.join(work, "python38")
-open(PYTHON38, "w").write(f'''#!/bin/bash
+APOLLO_PYTHON = os.path.join(work, "apollo_python")
+open(APOLLO_PYTHON, "w").write(f'''#!/bin/bash
 case "$1" in
   *apollo_runner_startup.py) echo started >> {STARTUP_MARKER}; exit 0;;
   *apollo_scenario_runner.py) shift; exec {sys.executable} {RUNNER} "$@";;
 esac
 exit 1
 ''')
-os.chmod(PYTHON38, 0o755)
+os.chmod(APOLLO_PYTHON, 0o755)
 
 def executor(**options):
-    options.setdefault("python38", PYTHON38); options.setdefault("timeout", 10); options.setdefault("map_file", MAP)
+    options.setdefault("python", APOLLO_PYTHON); options.setdefault("timeout", 10); options.setdefault("map_file", MAP)
     return ApolloScenarioExecution(tempfile.mkdtemp(), **options)
 
 def run(modes, scenario, planning_problems, **options):
@@ -161,13 +166,14 @@ try:
 except ApolloSetupError as exc:
     check("start-up: a converted map that is not Apollo's HD map is refused", "not the HD map" in str(exc))
 try:
-    executor(python38 = "/nowhere/python", start_containers = False); check("missing .venv38 refused", False)
+    executor(python = "/nowhere/python", start_containers = False); check("missing Python refused", False)
 except ApolloSetupError as exc:
-    check("start-up: a missing .venv38 Python is refused with a clear message", "/nowhere/python" in str(exc))
+    check("start-up: a missing Python for the runner is refused with a clear message", "/nowhere/python" in str(exc) and "EVITA_APOLLO_PYTHON" in str(exc))
 
 # ---------- Healthy run, files, records ----------
 result, runs = run(["ok"], scenario, planning_problems)
 folder = result.output_folder
+timed_total = simulators.generation_configuration(simulators.get_simulator("apollo")).max_time_step
 check(f"healthy run: usable result (no failure), {len(result.agents)} vehicles, one run", result.failure is None and len(result.agents) == 2 and runs == 1)
 check("files in <run>/<5-digit id>/: scenario.xml, c.json, runner.log, trace.json.gz, records kept by default",
       os.path.basename(folder) == "00007" and all(os.path.exists(os.path.join(folder, f)) for f in ("scenario.xml", "c.json", "runner.log", "trace.json.gz"))
@@ -212,7 +218,7 @@ check(f"runner timeout: retried, then invalid: {result.failure}", runs == 2 and 
 # ---------- Entry points: the failure makes the scenario invalid, with its reason ----------
 from evita.generators.NSGAIIproblem import NSGAIIproblem
 from evita.generators.nsgaII_operators import CustomTimeTermination
-os.environ["EVITA_PYTHON38"] = PYTHON38
+os.environ["EVITA_APOLLO_PYTHON"] = APOLLO_PYTHON
 problem = NSGAIIproblem(MAP, "apollo", 2, CustomTimeTermination(1, 0), 2.5, output_folder_name = os.path.join(tempfile.mkdtemp(), "run"), simulator = "apollo")
 problem._load_executor_and_evaluator()
 check("NSGAIIproblem with apollo: Apollo's executor (lights kept: EVITA evolves them) and the common evaluator",
@@ -234,6 +240,27 @@ execution = problem._execute(search_scenario, planning_problems)
 table = problem.scenario_evaluator.evaluate(execution, 2.5)
 check(f"EVITA's search: a healthy execution evaluated by the common evaluator ({len(table)} rows, database written)",
       search_scenario.is_valid and len(table) > 0 and os.path.exists(os.path.join(execution.output_folder, "logs", "simulation.db")))
+
+# ---------- The scenario's progress bar, from DoppelTest's ticks ----------
+class FakeBar:
+    def __init__(self, **kwargs): self.kwargs, self.count, self.desc, self.seen, self.closed = kwargs, 0, kwargs.get("desc", ""), [], False
+    def refresh(self): self.seen.append((self.count, self.desc))
+    def close(self, clear = False): self.closed = True
+class FakeManager:
+    def __init__(self): self.bars = []
+    def counter(self, **kwargs): self.bars.append(FakeBar(**kwargs)); return self.bars[-1]
+manager, refreshed = FakeManager(), []
+os.environ["FAKE_MODES"], os.environ["FAKE_COUNTER"] = "ticks", os.path.join(tempfile.mkdtemp(), "count")
+scenario.generation_id = 52
+result = executor(start_containers = False).execute(scenario, planning_problems, manager, on_step = lambda: refreshed.append(1))
+bar = manager.bars[0] if manager.bars else None
+phases = [d.split(": ", 1)[1].rstrip(")") for _, d in bar.seen] if bar else []
+log = open(os.path.join(result.output_folder, "runner.log")).read()
+check(f"progress: runner.log still gets the whole output (DoppelTest's ticks: {log.count('Scenario time:')})", log.count("Scenario time:") == 6)
+check(f"progress: one scenario bar in time steps (counted up to {max((c for c, _ in bar.seen), default = 0)}), phases {list(dict.fromkeys(phases))}, closed at the end",
+      bar is not None and bar.kwargs.get("unit") == "timesteps" and bar.kwargs.get("total") == timed_total and max(c for c, _ in bar.seen) == 15
+      and list(dict.fromkeys(phases)) == ["setting up", "running", "saving records and trace"] and bar.closed)
+check(f"progress: the main progress bar refreshed while Apollo runs ({len(refreshed)} times)", len(refreshed) >= 5)
 
 # ---------- EVITA's task timer: Apollo's phases nested in the callers' "simulation" ----------
 from evita.timing import TASK_TIMER
