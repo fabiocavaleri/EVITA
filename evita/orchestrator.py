@@ -23,11 +23,12 @@ from commonroad.planning.planning_problem import PlanningProblemSet
 from commonroad.scenario.scenario import Scenario
 
 from . import simulators
+from .timing import TASK_TIMER
+from .outcomes import record_outcome
 from .config import ValidationConfig
 from .data_analysis import generate_report
 from .interfaces import AbstractScenarioEvaluator, AbstractScenarioExecutor, AbstractScenarioGenerator
 from .utils import (EVITA_MAIN_LOGGER_NAME, RESULTS_FOLDER, Budget, get_progress_bar_manager, simulation_folders)
-from .timing import TASK_TIMER
  
 # Th_ED: a replanning (condition C1) is detected when a planned position moves by at least this many metres
 TRAJECTORY_DIFFERENCE_THRESHOLD = 2.5
@@ -334,6 +335,8 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
         # ===== Execution and evaluation of each scenario =====
         simulation_data: List[Dict] = []
+        # Scenarios given to the simulator
+        executed_ids: Set[int] = set()
 
         # Iterate over each scenario and planning problem set tuple
         for scenario, planning_problem_set in scenario_tuples:
@@ -376,6 +379,7 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
                     # Make sure we execute the extended_scenario, not the original one
                     # Both will be available afterwards, but the original shall be used for evolution
+                    executed_ids.add(scenario.generation_id)
                     with TASK_TIMER.measure("simulation", key = scenario.generation_id):
                         execution = scenario_executor.execute(extended_scenario, time_shifted_planning_problem_set, progress_bar_manager, on_step = update_main_progress_bar)
 
@@ -450,7 +454,10 @@ def run(ctx, scenario_generator_path: str, scenario_generator_module: str, scena
 
         # ===== Counters =====
         # Iterate over the scenarios and count how many of them are valid and invalid
-        for scenario, _ in scenario_tuples:
+        for scenario, planning_problem_set in scenario_tuples:
+            # One row per scenario in scenario_outcomes.csv (counts by cause: scripts/scenario_outcomes_analysis.py)
+            record_outcome(output_folder, scenario, planning_problem_set, scenario.generation_id in executed_ids, simulator_settings.name)
+            
             if scenario.is_valid:
                 valid_scenarios += 1
             elif getattr(scenario, "validation_message", None) == TIMEOUT_MESSAGE:

@@ -548,7 +548,7 @@ def execute_one(task: Dict[str, str]) -> Dict[str, str]:
             try:
                 from commonroad.common.file_reader import CommonRoadFileReader
                 from evita.executors.frenetix_executor import FrenetixScenarioExecution
-                from evita.utils import LANELET_EXTENSION, extend_scenario_after_goal_areas, time_shift
+                from evita.utils import LANELET_EXTENSION, extend_scenario_after_goal_areas
 
                 scenario, planning_problem_set = CommonRoadFileReader(task["scenario_file"]).open()
 
