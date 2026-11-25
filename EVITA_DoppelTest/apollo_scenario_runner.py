@@ -18,10 +18,14 @@ Exit codes:
     3   unexpected error (e.g. Docker or Apollo failure): the message is on stderr
     1   wrong arguments
 """
+# The process's start, before the imports (its start-up time is part of the runner's timings)
+import time
+PROCESS_START = time.time()
 
 import os
 import sys
 import json
+import logging
 import argparse
 import traceback
 from typing import Any, Dict, List
@@ -33,6 +37,7 @@ from framework.scenario.ScenarioRunner import ScenarioRunner
 from config import (APOLLO_ROOT, APOLLO_VEHICLE_LENGTH, APOLLO_VEHICLE_WIDTH, APOLLO_VEHICLE_back_edge_to_center,
                     HD_MAP_PATH, MAX_ADC_COUNT, SCENARIO_UPPER_LIMIT, RuntimeConfig)
 
+from utils import get_scenario_logger
 from record_export import RecordExportError, build_trace, write_trace
 
 EXIT_OK = 0
@@ -99,11 +104,58 @@ def vehicles_that_ran(runners, json_scenario: Dict[str, Any]) -> List[Dict[str, 
         
     return vehicles
 
+class ScenarioClock(logging.Handler):
+    """
+    Times of DoppelTest's first and last scenario ticks ("Scenario time: ...", logged every 0.1 s by ScenarioRunner):
+    the scenario's own duration, without changing DoppelTest
+    """
+    def __init__(self):
+        super().__init__(level = logging.INFO)
+        self.first = None
+        self.last = None
+
+    def emit(self, record):
+        if str(record.getMessage()).startswith("Scenario time:"):
+            if self.first is not None:
+                self.first = self.first
+            else:
+                self.first = record.created
+
+            self.last = record.created
+
+def phase_timings(marks: Dict[str, float], clock: ScenarioClock) -> Dict[str, float]:
+    """
+    Seconds of each phase of the run, from the marks taken in main and the scenario's ticks:
+    - Startup (imports, arguments),
+    - Scenario_loading (map, JSON, DoppelTest's checks),
+    - Instances (ScenarioRunner, set_scenario, init_scenario),
+    - Setup (run_scenario until the first tick),
+    - Scenario (first to last tick),
+    - Recorders (last tick until run_scenario),
+    - Recorders (last tick until run_scenario returns: stopping the recorders, saving the records),
+    - Export (the trace built from the records)
+    """
+    timings = {"startup": marks["main"] - PROCESS_START,
+               "scenario_loading": marks["loaded"] - marks["main"],
+               "instances": marks["run"] - marks["loaded"]}
+    
+    if clock.first is not None:
+        timings.update(setup = clock.first - marks["run"], scenario = clock.last - clock.first, recorders = marks["ran"] - clock.last)
+    else:
+        timings["run_scenario"] = marks["ran"] - marks["run"]
+    
+    if "exported" in marks:
+        timings["export"] = marks["exported"] - marks["ran"]
+    
+    return {phase: round(max(0.0, seconds), 3) for phase, seconds in timings.items()}
+
 def main(args) -> int:
     """
     Run one scenario with Apollo and write its trace.
     The scenario is rejected if DoppelTest would silently change it.
     """
+    marks = {"main": time.time()}
+
     # DoppelTest's scenario classes and oracles use the map parser
     MapParser(HD_MAP_PATH)
 
@@ -120,6 +172,8 @@ def main(args) -> int:
         print(f"Scenario rejected: {reason}", file = sys.stderr)
         return EXIT_REJECTED
 
+    marks["loaded"] = time.time()
+
     # Set the names of the records folder
     # Names of the records folder: DoppelTest saves the record files to <records dir>/<generation>/<scenario>;
     # EVITA gives every scenario its own records folder, so the generation name is empty (os.path.join skips it) and the
@@ -133,7 +187,13 @@ def main(args) -> int:
     runner = ScenarioRunner(containers)
     runner.set_scenario(apollo_scenario)
     runner.init_scenario()
+
+    # DoppelTest's scenario logger, set up by DoppelTest's own function (run_scenario then finds it ready), plus the clock
+    clock = ScenarioClock()
+    get_scenario_logger().addHandler(clock)
+    marks["run"] = time.time()
     runners = runner.run_scenario(generation_name, scenario_name, True)
+    marks["ran"] = time.time()
 
     # Build the trace from the record files and the scenario description, and write it to the given file
     records_dir = os.path.join(RuntimeConfig.RECORDS_DIR, generation_name, scenario_name)
@@ -142,7 +202,11 @@ def main(args) -> int:
     except RecordExportError as exc:
         print(f"Cannot export the records: {exc}", file = sys.stderr)
         return EXIT_RECORD_ERROR
+    
+    marks["exported"] = time.time()
 
+    # Seconds of each phase, for EVITA's task timer (the trace's scenario section)
+    trace["scenario"]["timings"] = phase_timings(marks, clock)
     write_trace(trace, args.trace)
     return EXIT_OK
 

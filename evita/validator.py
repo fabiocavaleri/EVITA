@@ -172,9 +172,9 @@ class ScenarioValidator:
             else:
                 validity_flag, validity_message = self._validate_reacheable_goal(scenario, planning_problem)
 
-                # Exit if any initial state is not valid
-                if not validity_flag:
-                    return validity_flag, validity_message
+            # Exit if any initial state is not valid
+            if not validity_flag:
+                return validity_flag, validity_message
         
         # Validate initial distances: between agents and obstacles on the same lanelet; for Apollo, DoppelTest's rule instead
         if self.apollo:

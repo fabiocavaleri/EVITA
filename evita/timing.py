@@ -28,7 +28,11 @@ NOT_COUNTED_TASKS = {"validation", "debug_plots", "checkpoints"}
 AFTER_BUDGET_TASKS = {"report"}
 
 # Order of the tasks in the output (others follow in alphabetical order)
+APOLLO_RUNNER_PHASES = ["startup", "scenario_loading", "instances", "setup", "scenario", "recorders", "run_scenario", "export"]
 TASK_ORDER = ["generation", "validation", "debug_plots", "execution_preparation", "simulation",
+              "simulation.apollo_preparation", "simulation.apollo_runner"]
+TASK_ORDER += [f"simulation.apollo_runner.{phase}" for phase in APOLLO_RUNNER_PHASES]
+TASK_ORDER += ["simulation.apollo_trace", "simulation.apollo_health",
               "evaluation", "evaluation.planned_trajectories", "evaluation.frenetix_metrics", "evaluation.danger",
               "evaluation.interactions", "evaluation.collisions", "evaluation.missed_goals", "evaluation.emergencies",
               "evaluation.database", "fitness", "checkpoints", "report"]
@@ -76,6 +80,22 @@ class TaskTimer:
             # The enclosing task does not count this time as its own
             if self._stack:
                 self._stack[-1][3] += elapsed
+
+    def add(self, task: str, seconds: float, key: Optional[object] = None) -> None:
+        """
+        Record `seconds` measured elsewhere (e.g., by another process) as `task`, nested in the task being measured: the
+        enclosing task does not count them as its own
+        """
+        seconds = max(0.0, float(seconds))
+
+        self.totals[task] += seconds
+        self.calls[task] += 1
+        
+        if key is not None:
+            self.per_key[key][task] += seconds
+        
+        if self._stack:
+            self._stack[-1][3] += seconds
 
     def _ordered_tasks(self) -> List[str]:
         known = [task for task in TASK_ORDER if task in self.totals]

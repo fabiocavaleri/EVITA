@@ -2,7 +2,7 @@
 Tests of step 2a, part 1: record_export, apollo_scenario_runner, map_data, traffic_control.
 Run from the project root: PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python3 tests/test_step2a_part1.py
 """
-import sys, types, os, json, gzip, tempfile, random
+import sys, types, os, json, gzip, tempfile, random, time
 sys.path.insert(0, os.getcwd()); sys.path.insert(0, "EVITA_DoppelTest")
 
 def stub_module(name, **attrs):
@@ -12,10 +12,15 @@ stub_module("cyber_record"); stub_module("cyber_record.record", Record=object)
 class FakeContainer:
     def __init__(self, root, name): self.container_name = name
 class FakeScenarioRunner:
+    calls = 0       # run_scenario calls, all instances (each scenario must run exactly once)
     def __init__(self, containers): self.containers = containers
     def set_scenario(self, s): self.s = s
     def init_scenario(self): pass
     def run_scenario(self, g, s, save):
+        FakeScenarioRunner.calls += 1
+        # As DoppelTest's: ticks through its scenario logger (0.2 s of scenario), then 0.1 s for the recorders
+        from utils import get_scenario_logger
+        ticks = get_scenario_logger(); ticks.info("Scenario time: 0.0."); time.sleep(0.2); ticks.info("Scenario time: 0.2."); time.sleep(0.1)
         out = os.path.join(runner_module.RuntimeConfig.RECORDS_DIR, g, s); os.makedirs(out, exist_ok=True)
         runners = []
         for i, (c, adc) in enumerate(zip(self.containers, self.s.ad_section.adcs)):
@@ -113,8 +118,20 @@ def run(name, adcs, ids=True):
     runner_module.RuntimeConfig.RECORDS_DIR = args.records_dir
     return runner_module.main(args), json.load(gzip.open(trace_path, "rt"))
 ok = [{"routing": [a], "start_s": 5.0, "dest_s": 60.0, "start_t": 0.0}, {"routing": [b], "start_s": 5.0, "dest_s": 20.0, "start_t": 1.5}]
+FakeScenarioRunner.calls = 0
 code, t = run("ok", ok)
+check(f"runner: the scenario runs exactly once (run_scenario called {FakeScenarioRunner.calls} time(s))", FakeScenarioRunner.calls == 1)
 check("runner: normal scenario executed with ids", code == 0 and [(v["container"], v["evita_id"]) for v in t["vehicles"]] == [("ROUTE_0", 20000), ("ROUTE_1", 20001)])
+timings = t["scenario"].get("timings", {})
+check(f"runner: phase timings in the trace ({timings})",
+      set(timings) == {"startup", "scenario_loading", "instances", "setup", "scenario", "recorders", "export"}
+      and all(v >= 0 for v in timings.values()) and abs(timings["scenario"] - 0.2) < 0.05 and abs(timings["recorders"] - 0.1) < 0.05)
+import logging as _logging
+scenario_logger = _logging.getLogger("Scenario")
+doppeltest_handlers = [h for h in scenario_logger.handlers if not isinstance(h, runner_module.ScenarioClock)]
+check("runner: DoppelTest's scenario logger set up as DoppelTest does (INFO, its stream handler ending lines with \\r), plus the clock",
+      scenario_logger.level == _logging.INFO and len(doppeltest_handlers) == 1 and getattr(doppeltest_handlers[0], "terminator", "") == "\r"
+      and any(isinstance(h, runner_module.ScenarioClock) for h in scenario_logger.handlers))
 check("runner: vehicle dimensions in the trace", set(t["scenario"]["vehicle"]) == {"length", "width", "back_edge_to_center"})
 code, t = run("close", [ok[0], {"routing": [a], "start_s": 8.0, "dest_s": 60.0, "start_t": 0.0}, ok[1]])
 check("runner: dropped vehicle -> rejected", code == 2 and t["scenario"]["status"] == "rejected" and t["vehicles"] == [])

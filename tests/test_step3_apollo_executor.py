@@ -90,6 +90,7 @@ open(RUNNER, "w").write(textwrap.dedent(f'''
                          "routing": lanes, "start_s": adc["start_s"], "dest_s": adc["dest_s"], "start_t": adc["start_t"], "record_files": [],
                          "localization": {{"columns": rx.LOCALIZATION_COLUMNS, "rows": locs}}, "planning": plans, "obstacles": [], "traffic_lights": lights,
                          "oracles": {{"collisions": [], "stop_sign_violations": [], "traffic_light_violations": [], "speeding_violations": []}}}})
+    section["timings"] = {{"startup": 0.01, "scenario_loading": 0.01, "instances": 0.01, "setup": 0.01, "scenario": 0.05, "recorders": 0.01, "export": 0.01}}
     rx.write_trace({{"format_version": 1, "scenario": section, "vehicles": vehicles}}, args.trace)
 '''))
 STARTUP_MARKER = os.path.join(work, "startup_calls")
@@ -233,6 +234,28 @@ execution = problem._execute(search_scenario, planning_problems)
 table = problem.scenario_evaluator.evaluate(execution, 2.5)
 check(f"EVITA's search: a healthy execution evaluated by the common evaluator ({len(table)} rows, database written)",
       search_scenario.is_valid and len(table) > 0 and os.path.exists(os.path.join(execution.output_folder, "logs", "simulation.db")))
+
+# ---------- EVITA's task timer: Apollo's phases nested in the callers' "simulation" ----------
+from evita.timing import TASK_TIMER
+import time as _time
+TASK_TIMER.reset()
+scenario.generation_id = 41
+os.environ["FAKE_MODES"], os.environ["FAKE_COUNTER"] = "crash,ok", os.path.join(tempfile.mkdtemp(), "count")
+timed = executor(start_containers = False)
+started = _time.perf_counter()
+with TASK_TIMER.measure("simulation", key = 41):
+    timed.execute(scenario, planning_problems)
+wall = _time.perf_counter() - started
+phases = ["startup", "scenario_loading", "instances", "setup", "scenario", "recorders", "export"]
+per_scenario = TASK_TIMER.per_key[41]
+check("task timer: Apollo's preparation, runner phases, trace and health check per scenario",
+      all(f"simulation.apollo_runner.{p}" in per_scenario for p in phases)
+      and all(t in per_scenario for t in ("simulation.apollo_preparation", "simulation.apollo_runner", "simulation.apollo_trace", "simulation.apollo_health")))
+check(f"task timer: a retried scenario records both runner calls ({TASK_TIMER.calls['simulation.apollo_runner']}), the failed one by wall time only",
+      TASK_TIMER.calls["simulation.apollo_runner"] == 2 and TASK_TIMER.calls["simulation.apollo_runner.scenario"] == 1)
+nested = sum(v for k, v in TASK_TIMER.totals.items() if k.startswith("simulation."))
+check(f"task timer: simulation's own time plus its nested tasks = the measured time ({TASK_TIMER.totals['simulation'] + nested:.3f} s of {wall:.3f} s), nothing counted twice",
+      abs(TASK_TIMER.totals["simulation"] + nested - wall) < 0.05 and TASK_TIMER.totals["simulation"] >= 0 and all(v >= 0 for v in TASK_TIMER.totals.values()))
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

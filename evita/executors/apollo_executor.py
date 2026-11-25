@@ -17,12 +17,15 @@ The failed attempt kept in failed_attempt_<k>/; if every attempt fails, the scen
 With `delete_records`, the .record files are deleted once the trace is written.
 """
 import os
+import time
 import shutil
 import logging
 import subprocess
 from copy import deepcopy
 
 from commonroad.common.file_writer import CommonRoadFileWriter, OverwriteExistingFile
+
+from evita.timing import TASK_TIMER
 
 from .. import simulators
 from ..interfaces import AbstractScenarioExecutor
@@ -124,40 +127,54 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
         folder = os.path.join(self.output_folder, str(generation_id).rjust(5, "0"))
         os.makedirs(folder, exist_ok = True)
 
-        # The search keeps its scenario: lights drawn here go to a copy
-        scenario = deepcopy(scenario)
-        self._set_lights(scenario)
+        # Preparation: lights, DoppelTest's JSON, the scenario file (EVITA's task timer: simulation.apollo_preparation)
+        with TASK_TIMER.measure("simulation.apollo_preparation", key = generation_id):
+            # The search keeps its scenario: lights drawn here go to a copy
+            scenario = deepcopy(scenario)
+            self._set_lights(scenario)
 
-        try:
-            scenario_json = converter.build_scenario_json(scenario, planning_problem_set, self.map_data)
-        except (converter.ScenarioSpecError, MapDataError) as exc:
-            return self._failed(generation_id, folder, scenario, f"Apollo cannot run the scenario: {exc}")
+            try:
+                scenario_json = converter.build_scenario_json(scenario, planning_problem_set, self.map_data)
+            except (converter.ScenarioSpecError, MapDataError) as exc:
+                return self._failed(generation_id, folder, scenario, f"Apollo cannot run the scenario: {exc}")
         
-        CommonRoadFileWriter(scenario, planning_problem_set).write_to_file(os.path.join(folder, "scenario.xml"), OverwriteExistingFile.ALWAYS)
-        converter.write_scenario_json(scenario_json, os.path.join(folder, "c.json"))
+            CommonRoadFileWriter(scenario, planning_problem_set).write_to_file(os.path.join(folder, "scenario.xml"), OverwriteExistingFile.ALWAYS)
+            converter.write_scenario_json(scenario_json, os.path.join(folder, "c.json"))
 
         message, execution = None, None
         for attempt in range(1, self.retries + 2):
-            code, message = self._run(folder, generation_id)
+            code, message, runner_seconds = self._run(folder, generation_id)
 
             if on_step is not None:
                 on_step()
+
+            # A run without a trace: only its wall time (simulation.apollo_runner)
+            if code != EXIT_EXECUTED:
+                self._time_runner(generation_id, runner_seconds, {})
 
             if code == EXIT_REJECTED:
                 return self._failed(generation_id, folder, scenario, message)
 
             if code == EXIT_EXECUTED:
-                try:
-                    execution = tr.to_execution_result(tr.read_trace(os.path.join(folder, "trace.json.gz")), scenario, self.map_data, folder, scenario_id = generation_id)
-                except Exception as exc:
-                    return self._failed(generation_id, folder, scenario, f"Apollo's trace cannot be converted: {type(exc).__name__}: {exc}")
+                # The trace and its conversion (simulation.apollo_trace); then the runner's phases, from the trace
+                with TASK_TIMER.measure("simulation.apollo_trace", key = generation_id):
+                    try:
+                        trace = tr.read_trace(os.path.join(folder, "trace.json.gz"))
+                        execution = tr.to_execution_result(trace, scenario, self.map_data, folder, scenario_id = generation_id)
+                    except Exception as exc:
+                        trace, failure = None, f"Apollo's trace cannot be converted: {type(exc).__name__}: {exc}"
                 
-                collisions = {a.id: a.last_timestep for a in execution.agents.values() if a.status == STATUS_COLLISION}
+                self._time_runner(generation_id, runner_seconds, trace.scenario.get("timings", {}) if trace is not None else {})
                 
-                problems = health_problems(execution.native, collisions)
-                
-                self._records_done(folder)
-                
+                if trace is None:
+                    return self._failed(generation_id, folder, scenario, failure)
+
+                # Health check and records cleanup (simulation.apollo_health)
+                with TASK_TIMER.measure("simulation.apollo_health", key = generation_id):
+                    collisions = {a.id: a.last_timestep for a in execution.agents.values() if a.status == STATUS_COLLISION}
+                    problems = health_problems(execution.native, collisions)
+                    self._records_done(folder)
+
                 if not problems:
                     return execution
                 
@@ -199,15 +216,16 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
 
         command = [self.python38, RUNNER, "--scenario-json", os.path.join(folder, "c.json"), "--records-dir", os.path.join(folder, "records"),
                    "--scenario", str(generation_id), "--trace", trace_path]
-        
+
+        started = time.perf_counter()
         with open(os.path.join(folder, "runner.log"), "w") as log:
             try:
                 code = subprocess.run(command, cwd = DOPPELTEST_ROOT, stdout = log, stderr = subprocess.STDOUT, env = self._environment(), timeout = self.timeout).returncode
             except subprocess.TimeoutExpired:
-                return EXIT_UNEXPECTED_ERROR, f"Apollo's runner timed out after {self.timeout:.0f} s"
+                return EXIT_UNEXPECTED_ERROR, f"Apollo's runner timed out after {self.timeout:.0f} s", time.perf_counter() - started
 
         if code == EXIT_EXECUTED:
-            return code, ""
+            return code, "", time.perf_counter() - started
         
         if code == EXIT_REJECTED:
             reason = ""
@@ -215,9 +233,20 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
                 reason = tr.read_trace(trace_path).reason
             except Exception:
                 pass
-            return code, f"Apollo rejected the scenario: {reason or 'see runner.log'}"
+            return code, f"Apollo rejected the scenario: {reason or 'see runner.log'}", time.perf_counter() - started
         
-        return code, f"Apollo's runner failed: {RUNNER_FAILURES.get(code, f'exit {code}')}"
+        return code, f"Apollo's runner failed: {RUNNER_FAILURES.get(code, f'exit {code}')}", time.perf_counter() - started
+
+    def _time_runner(self, generation_id, wall_seconds: float, phases: dict) -> None:
+        """
+        EVITA's task timer: the runner's phases and the rest of its wall time
+        """
+        known = {phase: float(seconds) for phase, seconds in phases.items()}
+
+        for phase, seconds in known.items():
+            TASK_TIMER.add(f"simulation.apollo_runner.{phase}", seconds, key = generation_id)
+        
+        TASK_TIMER.add("simulation.apollo_runner", wall_seconds - sum(known.values()), key = generation_id)
 
     def _records_done(self, folder: str) -> None:
         """
