@@ -26,3 +26,9 @@ frenetix==0.3.1
 wale-net==3.0.3
 torch==2.3.1
 onnxruntime==1.18.1
+
+# --- Apollo runner: DoppelTest's runtime, run with EVITA's Python (EVITA_DoppelTest/apollo_scenario_runner.py,
+#     apollo_runner_startup.py); DoppelTest's own baseline keeps its pinned requirements in .venv38 ---
+docker==7.2.0
+websocket-client==1.9.2
+cyber_record==0.1.7
