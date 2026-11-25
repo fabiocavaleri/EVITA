@@ -91,53 +91,6 @@ def simulation_folders(run_folder: str) -> Iterator[Tuple[str, str]]:
             continue
         yield os.path.join(run_folder, name), name
 
-def collisions_folders(simulation_folder: str) -> Iterator[Tuple[str, str]]:
-    """
-    (path, name) of the collisions folder of a simulation, if it exists.
-    """
-    collisions_folder = os.path.join(simulation_folder, "logs", "collisions")
-    if os.path.exists(collisions_folder):
-        yield collisions_folder, "collisions"
-
-def find_csv_files(path_to_dir: str, suffix: str = ".csv") -> Iterator[Tuple[str, str]]:
-    """
-    (path, name) of each file in the folder whose name ends with `suffix`.
-    """
-    for filename in os.listdir(path_to_dir):
-        if filename.endswith(suffix):
-            yield os.path.join(path_to_dir, filename), filename
-
-def folders_of_completed_runs(result_folder: str, limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
-    """
-    (path, name) of each run folder that contains all the files a completed run writes, in name order;
-    at most `limit` folders if given.
-    """
-    required_file_names = ["behavior.csv",
-                           "collision_map.npy",
-                           "collision_map_impact_location_and_riv.npy",
-                           "collision_map_only_impact_location.npy",
-                           "interaction_map.npy",
-                           "metadata.csv",
-                           "performance.csv",
-                           "requirements_violations.csv"]
-
-    print(f"Checking run folders in {result_folder}")
-
-    count = 0
-    names = sorted(name for name in os.listdir(result_folder) if os.path.isdir(os.path.join(result_folder, name)))
-    for name in names:
-        if limit is not None and count >= limit:
-            return
-
-        full_path = os.path.join(result_folder, name)
-        missing = [f for f in required_file_names if not os.path.exists(os.path.join(full_path, f))]
-        if missing:
-            print(f"Missing file {os.path.join(full_path, missing[0])} in run folder {full_path}")
-            continue
-
-        count += 1
-        yield full_path, name
-
 # ========== Time budget ==========
 
 class Budget:

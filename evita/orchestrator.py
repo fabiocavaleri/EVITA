@@ -13,7 +13,6 @@ import time
 import click
 import shutil
 import logging
-import tempfile
 import traceback
 import importlib
 from typing import Dict, List, Set, Tuple
@@ -23,15 +22,12 @@ from commonroad.planning.goal import Interval
 from commonroad.planning.planning_problem import PlanningProblemSet
 from commonroad.scenario.scenario import Scenario
 
-from cr_scenario_handler.simulation.agent import AgentStatus
-
 from . import simulators
 from .config import ValidationConfig
 from .data_analysis import generate_report
 from .interfaces import AbstractScenarioEvaluator, AbstractScenarioExecutor, AbstractScenarioGenerator
-from .utils import (EVITA_MAIN_LOGGER_NAME, RESULTS_FOLDER, Budget, get_progress_bar_manager, simulation_folders, time_shift)
+from .utils import (EVITA_MAIN_LOGGER_NAME, RESULTS_FOLDER, Budget, get_progress_bar_manager, simulation_folders)
 from .timing import TASK_TIMER
-from .validator import ScenarioValidator
  
 # Th_ED: a replanning (condition C1) is detected when a planned position moves by at least this many metres
 TRAJECTORY_DIFFERENCE_THRESHOLD = 2.5
@@ -74,32 +70,6 @@ def backup_debug(_output_folder: str, _debug_folder: str, _scenario: Scenario, _
         shutil.move(execution_folder, _debug_folder)
     else:
         _logger.critical(f"Folder {execution_folder} does not exist")
-
-def debug_plot_planning_problem_to_file(scenario: Scenario, planning_problem, output_file: str) -> None:
-    """
-    Plot the road network with one planning problem into a PNG file.
-    """
-    import matplotlib.pyplot as plt
-    from commonroad.visualization.mp_renderer import MPRenderer
-    
-    # Initialize the renderer
-    rnd = MPRenderer(figsize = (20, 10))
-
-    # Set renderer draw params
-    rnd.draw_params.time_begin = 0
-    rnd.draw_params.dynamic_obstacle.draw_icon = True
-
-    # Draw Road and Obstacles at time stamp
-    scenario.draw(rnd)
-    planning_problem.draw(rnd)
-
-    # Render the plot
-    rnd.render()
-
-    # Add title
-    plt.title(f"Agent {planning_problem.planning_problem_id}")
-    plt.savefig(f"{output_file}", format = 'png', dpi = 500, bbox_inches = 'tight')
-    plt.close("all")
 
 def debug_plot_to_file(scenario, planning_problem_set, output_file):
     """
@@ -200,150 +170,6 @@ def checkpoint(checkpoint_id: int, output_folder: str, all_scenarios: int, valid
 
     # Generate the usual report in the checkpoint folder using whatever data is available at this point
     generate_report(output_folder, checkpoint_folder, n_bins = n_bins)
-
-@click.command()
-@click.option("--scenario-file", type=click.Path(exists=True), required=True, multiple=False)
-@click.option("--driving-agent-name", type=str, required=True, multiple=False)
-@click.pass_context 
-def replay(ctx, scenario_file, driving_agent_name):
-    """
-    This command allows to replay a single scenario and evaluate it
-    It is useful for debugging purposes and to replay interesting scenarios that were generated during the evolution
-    """
-    debug = ctx.obj["debug"]
-
-    # Get the main logger
-    logger = logging.getLogger(EVITA_MAIN_LOGGER_NAME)
-    
-    logger.info(f"Replay Scenario {scenario_file}")
-
-    # Get the output folder from the context, if not present create a temporary one
-    if "output_folder" in ctx.obj:
-        output_folder = ctx.obj["output_folder"]
-    else:
-        output_folder = tempfile.TemporaryDirectory().name
-    os.makedirs(output_folder, exist_ok = True)
-
-    # Load the Scenario Executor
-    scenario_executor_path = os.path.join(ROOT_DIR, "Frenetix-Motion-Planner")
-    scenario_executor_module = "evita.executors.frenetix_executor"
-    scenario_executor_class = "FrenetixScenarioExecution"
-
-    logger.debug(f"Add scenario execution to path {scenario_executor_path}")
-    sys.path.append(scenario_executor_path)
-        
-    logger.debug(f"Try to import {scenario_executor_class} from {scenario_executor_module}")
-    se_module = importlib.import_module(scenario_executor_module)
-    se_class = getattr(se_module, scenario_executor_class)
-
-    # Load the Scenario Evaluator
-    scenario_evaluator_path = "."
-    scenario_evaluator_module = "evita.evaluators.frenetix_evaluator"
-    scenario_evaluator_class = "FrenetixScenarioEvaluator"
-
-    logger.debug(f"Add scenario evaluator to path {scenario_evaluator_path}")
-    sys.path.append(scenario_evaluator_path)
-        
-    logger.debug(f"Try to import {scenario_evaluator_class} from {scenario_evaluator_module}")
-    sev_module = importlib.import_module(scenario_evaluator_module)
-    sev_class = getattr(sev_module, scenario_evaluator_class)
-
-    scenario_executor: AbstractScenarioExecutor
-    scenario_executor = se_class(output_folder, driving_agent_name = driving_agent_name, debug=debug)
-
-    scenario_evaluator: AbstractScenarioEvaluator
-    scenario_evaluator = sev_class(output_folder)
-
-    # Instantiate the scenario validator
-    scenario_validator_configuration = ValidationConfig()
-    scenario_validator = ScenarioValidator(scenario_validator_configuration)
-
-    # Log the metadata of this execution in a csv file for future reference
-    logger.info("*" * len(f"Outputting results to {output_folder}"))
-    logger.info(f"Outputting results to {output_folder}")
-    logger.info("*" * len(f"Outputting results to {output_folder}"))
-    
-    if debug:
-        debug_folder = os.path.join(output_folder, "debug")
-        os.makedirs(debug_folder, exist_ok = True)
-        logger.info(f"Outputting debug data to {debug_folder}")
-    
-    # Load the scenario from the file
-    crfr = CommonRoadFileReader(scenario_file)
-    scenario_tuples = [crfr.open()]
-    
-    # Ensure required attributes are there
-    # This contains a static reference, so tests will fail
-    # ensure_generation_id(scenario_tuples)
-    scenario, planning_problem_set = scenario_tuples[0]
-    setattr(scenario, "generation_id", 1)
-
-    # Validate the generated scenarios. This will add the attribute: is_valid to the scenario object
-    scenario_validator.validate_all(scenario_tuples)
-
-    # Plot scenario if debug is enabled
-    if debug:
-        for scenario, planning_problem_set in scenario_tuples:
-            debug_plot_file = os.path.join(debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}.png")
-            debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
-            # Plot each single planning problem
-            for planning_problem in planning_problem_set.planning_problem_dict.values():
-                debug_plot_planning_problem_file = os.path.join(debug_folder, f"plot_{(str(scenario.generation_id).rjust(5, '0'))}_{planning_problem.planning_problem_id}.png")
-                debug_plot_planning_problem_to_file(scenario, planning_problem, debug_plot_planning_problem_file)
-
-    # Iterate over the scenarios and try to execute them if they are valid, then evaluate them
-    for scenario, planning_problem_set in scenario_tuples:
-        if scenario.is_valid:
-            # Log infos about the replayed scenario
-            logger.info(f"Replay Scenario: {scenario.generation_id}")
-            [logger.debug(f"- {pp.planning_problem_id} - {pp.initial_state.position} - {pp.initial_state.velocity} - planned start at {pp.initial_state.time_step}") for pp in planning_problem_set.planning_problem_dict.values()]
-
-            # We empirically show that shorter extensions cause the agent to slow down considerably before reaching the goal area!
-            
-            # Make sure we enlong the lanelets nearby goal areas or the planner will fail to reach them
-            # extended_scenario = extend_scenario_after_goal_areas(scenario, extend_by_meters=2 * LANELET_EXTENSION)
-            # During Replay we should not extend again the scenario
-            extended_scenario = scenario
-            
-            # Time Shift so at least one agent starts at time_step=0
-            time_shifted_planning_problem_set = time_shift(scenario, planning_problem_set)
-
-            # Make sure we execute the extended_scenario, not the original one
-            # Both will be available afterwards, but the original shall be used for evolution
-            simulation = scenario_executor.execute(extended_scenario, time_shifted_planning_problem_set)
-
-            # Check if any agent has an ERROR state at time_step == 0
-            # Run evaluation and postprocessing outside the budget
-            for agent in simulation.agents:
-                if agent.agent_state.status == AgentStatus.ERROR and agent.agent_state.last_timestep == 0:
-                    logger.critical(f"The scenario is invalid. Agent {agent.id} did not even start")
-                    scenario.is_valid = False
-        else:
-            logger.info(f"Invalid Scenario {scenario.validation_message}")
-
-        # Save the simulation data and the evaluation results only for valid scenarios
-        # For invalid ones we just want to keep track of the fact that they were invalid and the reason why
-        if scenario.is_valid:
-            logger.info(f"Evaluate the Scenario")
-            scenario_evaluator.evaluate(simulation, TRAJECTORY_DIFFERENCE_THRESHOLD)
-        
-            logger.info(f"Generate the report")
-            performance_file = os.path.join(output_folder, "performance.csv")
-            with open(performance_file, "w", newline = "") as csvfile:
-                csv_writer = csv.writer(csvfile, delimiter = ',', quotechar = '"', quoting = csv.QUOTE_MINIMAL)
-                csv_writer.writerow(["all_scenarios", "valid_scenarios", "invalid_scenarios", "total_generation_time"])
-                csv_writer.writerow([str(1), str(1), str(0), str(100)])
-                
-            generate_report(output_folder)
-
-            # This will be true only if forced in the yml or because of the debug flag
-            simulation.make_gif()
-        else:
-            logger.critical("Skip Evaluation and Report Generation for invalid scenarios")
-                 
-    logger.info("*" * len(f"Outputting results to {output_folder}"))
-    logger.info(f"Outputting results to {output_folder}")
-    logger.info("*" * len(f"Outputting results to {output_folder}"))
 
 @click.command()
 @click.option("--scenario-generator-path", type = click.Path(exists = True), required = True, multiple = False)
