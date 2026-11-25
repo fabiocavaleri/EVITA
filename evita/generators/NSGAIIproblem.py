@@ -16,6 +16,7 @@ from commonroad.planning.goal import Interval
 from evita import simulators
 
 from ..timing import TASK_TIMER
+from ..outcomes import record_outcome
 from ..execution import ExecutionResult
 from ..generators.utils import compute_interaction_map
 from ..config import ValidationConfig
@@ -161,12 +162,14 @@ class NSGAIIproblem(ElementwiseProblem):
                     debug_plot_to_file(scenario, planning_problem_set, debug_plot_file)
 
         # ===== 2. Budget check: no new scenario is executed once the budget is over =====
+        executed = False
         if self.termination_criterion.is_over():
             self.logger.critical("Timeout is over. Force the current scenario to be invalid")
             scenario.is_valid = False
             scenario.validation_message = TIMEOUT_MESSAGE
         elif scenario.is_valid:
             # ===== 3. Execution (counted in the budget) =====
+            executed = True
             execution = self._execute(scenario, planning_problem_set)
 
             try:
@@ -179,6 +182,9 @@ class NSGAIIproblem(ElementwiseProblem):
 
         # ===== Fitness, counters, and progress bars =====
         out["F"] = fitness
+
+        # One row per scenario in scenario_outcomes.csv (counts by cause: scripts/scenario_outcomes_analysis.py)
+        record_outcome(self.output_folder, scenario, planning_problem_set, executed, self.simulator.name)
 
         # Skipped scenarios (budget over) are counted separately by the termination criterion
         if scenario.is_valid:

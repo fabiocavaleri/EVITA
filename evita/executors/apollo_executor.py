@@ -1,14 +1,14 @@
 """
-Executes scenarios with Baidu Apollo, through DoppelTest's setup (EVITA_DoppelTest, Python 3.8).
+Executes scenarios with Baidu Apollo, through DoppelTest's setup (EVITA_DoppelTest), with EVITA's own Python.
 
-Start of a run: checks the setup (.venv38's Python, the runner, the converted map is the HD map Apollo runs), then starts
+Start of a run: checks the setup (the runner and start-up script, the converted map is the HD map Apollo runs), then starts
 Apollo's containers with EVITA_DoppelTest/apollo_runner_startup.py.
 
 Each scenario, in <output folder>/<generation id, 5 digits>/ (as FrenetiX's executor):
 1. traffic lights: a new random DoppelTest traffic control when `random_lights` is set.
     This is required for generators that do not evolve lights (Random, MaxDanger, MaxInteractions) or when the scenario has no DoppelTest lights
 2. scenario.xml and c.json (a scenario that cannot be described for Apollo is invalid)
-3. EVITA_DoppelTest/apollo_scenario_runner.py with .venv38's Python and a timeout;
+3. EVITA_DoppelTest/apollo_scenario_runner.py in its own process (EVITA's Python; EVITA_APOLLO_PYTHON overrides it), with a timeout;
 4. The trace is converted into an ExecutionResult and its health check.
 
 A rejected scenario is invalid.
@@ -17,9 +17,12 @@ The failed attempt kept in failed_attempt_<k>/; if every attempt fails, the scen
 With `delete_records`, the .record files are deleted once the trace is written.
 """
 import os
+import re
+import sys
 import time
 import shutil
 import logging
+import threading
 import subprocess
 from copy import deepcopy
 
@@ -40,7 +43,6 @@ from ..apollo.map_data import ApolloMapData, MapDataError
 DOPPELTEST_ROOT = os.path.join(ROOT_DIR, "EVITA_DoppelTest")
 RUNNER = os.path.join(DOPPELTEST_ROOT, "apollo_scenario_runner.py")
 STARTUP = os.path.join(DOPPELTEST_ROOT, "apollo_runner_startup.py")
-DEFAULT_PYTHON38 = os.path.join(ROOT_DIR, ".venv38", "bin", "python")
 
 # Seconds one run of the runner may take (DoppelTest's 30 s scenario, plus setting the instances up and writing records)
 EXECUTION_TIMEOUT = 600
@@ -52,8 +54,37 @@ EXIT_EXECUTED, EXIT_REJECTED, EXIT_UNEXPECTED_ERROR, EXIT_RECORD_ERROR = 0, 2, 3
 RUNNER_FAILURES = {EXIT_UNEXPECTED_ERROR: "Unexpected error (Docker, Apollo or DoppelTest; see runner.log)",
                    EXIT_RECORD_ERROR: "The record files are missing or cannot be read"}
 
+# DoppelTest's scenario ticks in the runner's output, and the seconds without a new
+# tick after which the scenario is over and the runner is saving the records and writing the trace
+SCENARIO_TICK = re.compile(r"Scenario time: (\d+(?:\.\d+)?)")
+SAVING_AFTER_SECONDS = 2.0
+# How often the progress bars are refreshed while the runner works (seconds)
+PROGRESS_REFRESH = 0.5
+
 class ApolloSetupError(RuntimeError):
     pass
+
+class RunnerOutput(threading.Thread):
+    """
+    Reads the runner's output as it arrives: writes it to runner.log (as before) and keeps the latest scenario time
+    """
+    def __init__(self, stream, log):
+        super().__init__(daemon = True)
+        self.stream, self.log = stream, log
+        self.scenario_time = None     # seconds, from DoppelTest's latest tick
+        self.last_tick = None         # when that tick arrived (time.perf_counter())
+        self._tail = ""
+
+    def run(self):
+        for chunk in iter(lambda: self.stream.read1(4096), b""):
+            text = chunk.decode(errors = "replace")
+            self.log.write(text)
+            self.log.flush()
+            self._tail = (self._tail + text)[-200:]
+            ticks = SCENARIO_TICK.findall(self._tail)
+            if ticks:
+                self.scenario_time = float(ticks[-1])
+                self.last_tick = time.perf_counter()
 
 class ApolloScenarioExecution(AbstractScenarioExecutor):
     """
@@ -72,11 +103,12 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
         
         self.delete_records = bool(kwargs.get("delete_records", False))
         self.random_lights = bool(kwargs.get("random_lights", False))
-        self.python38 = kwargs.get("python38") or os.environ.get("EVITA_PYTHON38", DEFAULT_PYTHON38)
+        self.python = kwargs.get("python") or os.environ.get("EVITA_APOLLO_PYTHON") or sys.executable
         self.timeout = float(kwargs.get("timeout") or os.environ.get("EVITA_APOLLO_TIMEOUT", EXECUTION_TIMEOUT))
         self.retries = int(kwargs.get("retries", RETRIES))
 
         self.max_time_step = simulators.generation_configuration(simulators.get_simulator(simulators.APOLLO)).max_time_step
+        self.time_step = simulators.frenetix_time_step()
         
         self._check_setup()
         
@@ -90,12 +122,12 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
 
     def _check_setup(self) -> None:
         """
-        Check .venv38's Python virtual environment, the runner and the start-up script; the converted map is the HD map Apollo runs
+        Check the Python that runs the runner, the runner and the start-up script; the converted map is the HD map Apollo runs
         (DoppelTest's HD_MAP_PATH: <maps>/<map_name>/base_map.bin, converted map <map_name>.xml)
         """
-        missing = [path for path in (self.python38, RUNNER, STARTUP) if not os.path.exists(path)]
+        missing = [path for path in (self.python, RUNNER, STARTUP) if not os.path.exists(path)]
         if missing:
-            raise ApolloSetupError(f"Missing for Apollo: {', '.join(missing)} (.venv38's Python can be given with EVITA_PYTHON38)")
+            raise ApolloSetupError(f"Missing for Apollo: {', '.join(missing)} (the runner's Python can be given with EVITA_APOLLO_PYTHON)")
 
         from EVITA_DoppelTest.config import HD_MAP_PATH
         hd_map = os.path.basename(os.path.dirname(os.path.normpath(HD_MAP_PATH)))
@@ -115,7 +147,7 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
         self.logger.info(f"Starting Apollo's containers (log: {log_path})")
         
         with open(log_path, "w") as log:
-            result = subprocess.run([self.python38, STARTUP], cwd = DOPPELTEST_ROOT, stdout = log, stderr = subprocess.STDOUT, env = self._environment())
+            result = subprocess.run([self.python, STARTUP], cwd = DOPPELTEST_ROOT, stdout = log, stderr = subprocess.STDOUT, env = self._environment())
         
         if result.returncode != 0:
             raise ApolloSetupError(f"Apollo's containers did not start (exit {result.returncode}, see {log_path})")
@@ -124,6 +156,10 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
 
     def execute(self, scenario, planning_problem_set, progress_bar_manager = None, on_step = None) -> ExecutionResult:
         generation_id = scenario.generation_id
+
+        # The scenario's progress bar while Apollo runs, and the main bar's refresh
+        self._progress_bar_manager, self._on_step = progress_bar_manager, on_step
+
         folder = os.path.join(self.output_folder, str(generation_id).rjust(5, "0"))
         os.makedirs(folder, exist_ok = True)
 
@@ -206,6 +242,7 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
             control = tc.random_traffic_control(self.map_data, lights, tc.max_duration_green(self.max_time_step, scenario.dt))
             control.to_commonroad(scenario.lanelet_network, scenario.dt)
 
+
     def _run(self, folder: str, generation_id):
         """
         One run of the runner: (exit code, message); a timeout counts as an unexpected error
@@ -214,15 +251,33 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
         if os.path.exists(trace_path):
             os.remove(trace_path)
 
-        command = [self.python38, RUNNER, "--scenario-json", os.path.join(folder, "c.json"), "--records-dir", os.path.join(folder, "records"),
+        command = [self.python, RUNNER, "--scenario-json", os.path.join(folder, "c.json"), "--records-dir", os.path.join(folder, "records"),
                    "--scenario", str(generation_id), "--trace", trace_path]
 
         started = time.perf_counter()
-        with open(os.path.join(folder, "runner.log"), "w") as log:
-            try:
-                code = subprocess.run(command, cwd = DOPPELTEST_ROOT, stdout = log, stderr = subprocess.STDOUT, env = self._environment(), timeout = self.timeout).returncode
-            except subprocess.TimeoutExpired:
-                return EXIT_UNEXPECTED_ERROR, f"Apollo's runner timed out after {self.timeout:.0f} s", time.perf_counter() - started
+        bar = self._execution_bar()
+        try:
+            with open(os.path.join(folder, "runner.log"), "w") as log:
+                process = subprocess.Popen(command, cwd = DOPPELTEST_ROOT, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, env = self._environment())
+                output = RunnerOutput(process.stdout, log)
+                output.start()
+
+                # Wait for the runner, refreshing the progress bars; past the timeout it is stopped
+                while True:
+                    try:
+                        code = process.wait(timeout = PROGRESS_REFRESH)
+                        break
+                    except subprocess.TimeoutExpired:
+                        self._show_progress(bar, output)
+                        if time.perf_counter() - started > self.timeout:
+                            process.kill()
+                            process.wait()
+                            output.join(timeout = 5)
+                            return EXIT_UNEXPECTED_ERROR, f"Apollo's runner timed out after {self.timeout:.0f} s", time.perf_counter() - started
+                output.join(timeout = 5)
+        finally:
+            if bar is not None:
+                bar.close(clear = True)
 
         if code == EXIT_EXECUTED:
             return code, "", time.perf_counter() - started
@@ -236,6 +291,38 @@ class ApolloScenarioExecution(AbstractScenarioExecutor):
             return code, f"Apollo rejected the scenario: {reason or 'see runner.log'}", time.perf_counter() - started
         
         return code, f"Apollo's runner failed: {RUNNER_FAILURES.get(code, f'exit {code}')}", time.perf_counter() - started
+    
+    def _execution_bar(self):
+        """
+        The scenario's progress bar (as FrenetiX's "Scenario Execution"): Apollo's time steps, from DoppelTest's ticks
+        """
+        manager = getattr(self, "_progress_bar_manager", None)
+
+        if manager is None:
+            return None
+        
+        return manager.counter(total = self.max_time_step, desc = "Scenario Execution (Apollo: setting up)", unit = "timesteps", color = "orange", leave = False)
+
+    def _show_progress(self, bar, output: RunnerOutput) -> None:
+        """
+        Update the scenario's bar from the latest tick, its description from the phase, and the main progress bar
+        """
+        if bar is not None:
+            if output.scenario_time is None:
+                phase = "setting up"
+            elif time.perf_counter() - output.last_tick > SAVING_AFTER_SECONDS:
+                phase = "saving records and trace"
+            else:
+                phase = "running"
+
+            bar.count = min(self.max_time_step, int(round(output.scenario_time / self.time_step))) if output.scenario_time is not None else 0
+            bar.desc = f"Scenario Execution (Apollo: {phase})"
+            bar.refresh()
+        
+        on_step = getattr(self, "_on_step", None)
+        
+        if on_step is not None:
+            on_step()
 
     def _time_runner(self, generation_id, wall_seconds: float, phases: dict) -> None:
         """
