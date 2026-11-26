@@ -2,7 +2,8 @@ from copy import deepcopy
 from datetime import datetime
 import pickle
 from random import random, sample, shuffle, randint
-from config import APOLLO_ROOT, HD_MAP_PATH, MAX_ADC_COUNT, MAX_PD_COUNT, RUN_FOR_HOUR, RECORDS_DIR_BASE, RuntimeConfig
+import shutil
+from config import APOLLO_ROOT, HD_MAP_PATH, MAX_ADC_COUNT, MAX_PD_COUNT, RuntimeConfig, RUN_FOR_HOUR
 from apollo.ApolloContainer import ApolloContainer
 from framework.oracles import RecordAnalyzer
 from framework.oracles.ViolationTracker import ViolationTracker
@@ -16,9 +17,10 @@ from deap import base, tools, algorithms
 from utils import get_logger, remove_record_files
 import os
 import numpy as np
-from pathlib import Path
 
 # EVALUATION (FITNESS)
+
+
 def eval_scenario(ind: Scenario):
     g_name = f'Generation_{ind.gid:05}'
     s_name = f'Scenario_{ind.cid:05}'
@@ -26,6 +28,7 @@ def eval_scenario(ind: Scenario):
     srunner.set_scenario(ind)
     srunner.init_scenario()
     runners = srunner.run_scenario(g_name, s_name, True)
+
     obs_routing_map = dict()
     for a, r in runners:
         obs_routing_map[a.nid] = r.routing_str
@@ -42,7 +45,6 @@ def eval_scenario(ind: Scenario):
         record_path = os.path.join(RuntimeConfig.RECORDS_DIR, g_name, s_name, r_name)
         ra = RecordAnalyzer(record_path)
         ra.analyze()
-
         for v in ra.get_results():
             main_type = v[0]
             sub_type = v[1]
@@ -81,6 +83,7 @@ def eval_scenario(ind: Scenario):
     return min(min_distance), len(decisions), conflict, unique_violation
 
 # MUTATION OPERATOR
+
 
 def mut_ad_section(ind: ADSection):
     mut_pb = random()
@@ -264,7 +267,9 @@ def cx_scenario(ind1: Scenario, ind2: Scenario):
         )
     return ind1, ind2
 
+
 # MAIN
+
 def main():
     logger = get_logger('MAIN')
     mp = MapParser(HD_MAP_PATH)
@@ -291,42 +296,8 @@ def main():
     toolbox.register("mutate", mut_scenario)
     toolbox.register("select", tools.selNSGA2)
 
-    #####
-
-    # Adjust folder names to save scenario files and planned trajectories
-    # I create a new parent folder with name format YYYYMMDDHHMMSS
-    
-    start_time = datetime.now()
-    experiment_time = start_time.strftime("%Y%m%d%H%M%S")
-    map_name = Path(HD_MAP_PATH).parent.name
-    experiment_name = os.path.join(f"MAX_ADC_COUNT_{MAX_ADC_COUNT}_RUN_FOR_HOUR_{RUN_FOR_HOUR}_SCENARIO_MAP_{map_name}_{experiment_time}")
-
-    RuntimeConfig.RECORDS_DIR = os.path.join(RECORDS_DIR_BASE, experiment_name)
-
-    os.makedirs(RuntimeConfig.RECORDS_DIR)
-    destination = os.path.join(RuntimeConfig.RECORDS_DIR, "config.py")
-
-    with open("config.py", "r") as f:
-        config_src = f.read()
-
-    config_src = config_src.replace(
-        'RECORDS_DIR = None',
-        f'RECORDS_DIR = "{RuntimeConfig.RECORDS_DIR}"'
-    )
-
-    with open(destination, "w") as f:
-        f.write(config_src)
-
-    destination = os.path.join(RuntimeConfig.RECORDS_DIR, "main_ga_config.py")
-    with open(destination, "w") as f:
-        f.write(f"POP_SIZE = {POP_SIZE}\n")
-        f.write(f"OFF_SIZE = {OFF_SIZE}\n")
-        f.write(f"CXPB = {CXPB}\n")
-        f.write(f"MUTPB = {MUTPB}\n")
-
-    #####
-
     # start GA
+    start_time = datetime.now()
     population = [Scenario.get_conflict_one() for _ in range(POP_SIZE)]
     for index, c in enumerate(population):
         c.gid = 0

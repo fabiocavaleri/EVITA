@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 # APOLLO CONFIGURATION ==============================
 PERCEPTION_FREQUENCY = 25
@@ -16,9 +17,9 @@ APOLLO_VEHICLE_back_edge_to_center = 1.043
 # DIRECTORIES =======================================
 APOLLO_ROOT = '/home/fabio/BaiduApollo_DoppelTest/'
 """Root directory of Apollo 7.0"""
-DT_ROOT = "/home/fabio/TIAV/EVITA/EVITA_DoppelTest"
+DT_ROOT = Path(__file__).parent
 """Root directory of DoppelTest"""
-RECORDS_DIR_BASE = f'{DT_ROOT}/data/records'
+RECORDS_DIR = f'{DT_ROOT}/data/records'
 """Desired directory to save record files"""
 LOG_DIR = f'{DT_ROOT}/data/Logs'
 """Desired directory to save log files"""
@@ -29,7 +30,7 @@ STREAM_LOGGING_LEVEL = logging.INFO
 USE_SIM_CONTROL_STANDALONE = True
 """Whether you wish to use extracted SimControl when executing scenario"""
 FORCE_INVALID_TRAFFIC_CONTROL = False
-"""Whether you wish to force invalid traffic control (e.g., every signal being green)"""
+"""Whether you wish to force invalid traffic cnotrol (e.g., every signal being green)"""
 SCENARIO_UPPER_LIMIT = 30
 """The length of each scenario (in seconds)"""
 INSTANCE_MAX_WAIT_TIME = 15
@@ -40,8 +41,6 @@ MAX_PD_COUNT = 0
 """Number of pedestrians you wish to include in simulations"""
 RUN_FOR_HOUR = 24
 """Number of hours you wish to run"""
-MAPS_ROOT_FOLDER = f'{DT_ROOT}/data/maps/'
-"""Root folder with all the DoppelTest maps"""
 HD_MAP_PATH = f'{DT_ROOT}/data/maps/borregas_ave/base_map.bin'
 """
 The HD map you are currently using
@@ -50,5 +49,10 @@ The HD map you are currently using
   to match the HD map you are using
 """
 
+
 class RuntimeConfig:
-    RECORDS_DIR = None
+    """
+    Where the record files go, set at run time: by EVITA's Apollo runner (apollo_scenario_runner.py, per scenario) and
+    by run_main_ga.py (per run of DoppelTest's search); RECORDS_DIR when nothing sets it (main_ga.py run directly)
+    """
+    RECORDS_DIR = RECORDS_DIR
