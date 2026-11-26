@@ -259,7 +259,7 @@ class ScenarioMutation(Mutation):
                 # - With a certain probability to avoid always adding a planning problem at each mutation
                 if len(_planning_problem_set.planning_problem_dict) < self.scenario_generator_configuration.max_amount_pp and random.random() <= (1 / len(planning_problems)):
                     self.logger.debug(f"Mutating scenario with {self.add_random_planning_problem.__name__}")
-                    _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set)
+                    _planning_problem_set = self.add_random_planning_problem(self.scenario_generator_configuration, _scenario, _planning_problem_set, self.map_file_path)
 
                 # Check mutated scenario validity
                 with self.termination_criterion.paused():
