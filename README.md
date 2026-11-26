@@ -12,38 +12,51 @@ We introduce EVITA (EVolutionary Interaction Testing Approach): a scenario-gener
 
 # What is included
 
-The package bundles the following modules:
-- `evita`: The EVITA framework
-- `DoppelTest`: The original version of the DoppelTest framework
-- `EVITA_DoppelTest`: The extended version of the DoppelTest framework
-- `Frenetix-Motion-Planner`: The Frenetix-Motion-Planner module
-- `EVITA_DoppelTest/conversion_scripts`: The conversion scripts to parse scenarios from CommonRoad to Baidu Apollo format and viceversa
-- `EVITA_DoppelTest/analysis_scripts`: The analysis and visualization utilities
+- `evita`: the EVITA framework. Every generator (EVITA, Random, MaxDanger, MaxInteractions, and DoppelTest's generator
+  on FrenetiX) runs with either simulator, **FrenetiX** or **Baidu Apollo**, selected with `--simulator`, and is
+  evaluated by the same evaluator.
+- `Frenetix-Motion-Planner`: EVITA's fork of the Frenetix motion planner
+  ([alessiogambi/Evita-Frenetix-Motion-Planner](https://github.com/alessiogambi/Evita-Frenetix-Motion-Planner), a git
+  submodule; it adds, e.g., Apollo's vehicle model).
+- `EVITA_DoppelTest`: DoppelTest extended for EVITA: the Apollo runner (`apollo_scenario_runner.py`), Apollo's
+  start-up script (`apollo_runner_startup.py`), the record export (`record_export.py`), DoppelTest's HD maps and their
+  CommonRoad conversions (`data/`), and DoppelTest's own search, the DoppelTest baseline on Apollo (`main_ga.py`).
+- `DoppelTest`: the original version of the DoppelTest framework, for reference.
+- `base-scenarios`: the CommonRoad maps of the FrenetiX experiments.
+- `scripts`: the replication scripts, the analysis and plotting scripts, and Apollo tools.
 
 # Requirements
 
-The setup uses two Python environments:
-
-- Python 3.8 for DoppelTest and Apollo-based scripts.
-- Python 3.10 for EVITA and the Frenetix integration.
-
-> The paper was developed on an Ubuntu 25.04 machine with Python 3.8.10 and Python 3.10.14.
-
-The repository also depends on patched upstream projects. The setup script installs those dependencies directly from their source repositories.
+- Ubuntu (the paper was developed on Ubuntu 25.04), `git`, Python 3.10 (3.10.14 in the paper).
+- For the Apollo experiments: Docker and Baidu Apollo 7.0 as distributed by DoppelTest (see [Baidu Apollo](#baidu-apollo)).
+- Only for DoppelTest's own baseline on Apollo: Python 3.8 (3.8.10 in the paper).
+- The system libraries OpenCV needs (`libgl1`, `libglib2.0-0`): `setup.sh` checks them and installs the missing ones.
 
 # Setup
 
-From the repository root, run:
+From the repository root:
 
 ```bash
-./setup.sh
+bash setup.sh                                  # EVITA
+bash setup.sh --with-doppeltest-baseline       # EVITA, and DoppelTest's own baseline
 ```
 
-This script will:
-- Create two virtual environments `.venv38` and `.venv310`
-- Install DoppelTest requirements in `.venv38`
-- Clone and install `Frenetix-Motion-Planner` submodule
-- Install requirements for EVITA
+The project uses two Python environments, each with one role:
+
+| Environment | Python | Used for |
+|---|---|---|
+| `.venv310` | 3.10 | EVITA: every generator, FrenetiX and Apollo (the Apollo runner runs with EVITA's Python) |
+| `.venv38` | 3.8 | only DoppelTest's own baseline (`EVITA_DoppelTest/main_ga.py`), with DoppelTest's pinned requirements, so that it runs as published |
+
+`setup.sh`:
+- checks the system libraries OpenCV needs and installs the missing ones (`apt-get`, as root or through `sudo`);
+- with `--with-doppeltest-baseline`: creates `.venv38` with DoppelTest's requirements (without the option, an existing
+  `.venv38` is left as it is);
+- creates `.venv310` with EVITA's requirements (pinned with `constraints.txt`), including the Apollo runner's
+  packages (`docker`, `websocket-client`, `cyber_record`);
+- installs `Frenetix-Motion-Planner` from EVITA's fork, at the latest commit of its `main` branch, and prints that
+  commit: record it with your results;
+- verifies the environment by importing OpenCV, FrenetiX's prediction, and EVITA's FrenetiX and Apollo executors.
 
 ## Baidu Apollo
 
@@ -65,25 +78,43 @@ Follow the Apollo setup instructions from the DoppelTest replication package:
 
 6. In the container, build Apollo via `./apollo.sh build`
 
+Then configure `EVITA_DoppelTest/config.py`:
+
+- `APOLLO_ROOT`: path to the root directory of Apollo 7.0.
+- `DT_ROOT`: path to the `EVITA_DoppelTest` folder.
+- `HD_MAP_PATH`: the HD map Apollo runs (default: `data/maps/borregas_ave/base_map.bin`).
+- `SCENARIO_UPPER_LIMIT` (scenario length, seconds) and `MAX_ADC_COUNT` (vehicles per scenario): EVITA takes both
+  from here when it runs on Apollo.
+
+EVITA starts Apollo's containers itself at the beginning of every run (with `apollo_runner_startup.py`): one
+container per vehicle, `apollo_dev_ROUTE_0` to `apollo_dev_ROUTE_<MAX_ADC_COUNT - 1>`.
+
+### Maps
+
+EVITA works on CommonRoad maps. For Apollo, each DoppelTest HD map has a CommonRoad conversion in
+`EVITA_DoppelTest/data/converted_maps/<map>/<map>.xml` (with the id files linking CommonRoad and Apollo ids, and the
+map's feasible paths). On Apollo, **the converted map given to EVITA must be the conversion of the HD map in
+`HD_MAP_PATH`**; EVITA checks this at start-up. To convert the maps again (every map in `data/maps`):
+
+```bash
+source .venv310/bin/activate
+cd EVITA_DoppelTest/data
+python map_converter.py
+```
+
 # Smoke Test
 
-Use these checks to confirm the environment is working before running experiments.
-
-## EVITA
-
-Activate the Python 3.10 environment:
+Activate EVITA's environment, from the root of the project:
 
 ```bash
 source .venv310/bin/activate
 ```
 
-In the active virtual environment, from the root of the project, run:
+Check EVITA's command line:
 
 ```bash
 (.venv310) evita --help
 ```
-
-Check that the result looks like:
 
 ```bash
 Usage: evita [OPTIONS] COMMAND [ARGS]...
@@ -91,159 +122,59 @@ Usage: evita [OPTIONS] COMMAND [ARGS]...
 Options:
   -d, --debug
   --output-folder-name TEXT
-  --output-folder DIRECTORY
   --help
 
 Commands:
-  analyse  Run all the data analyses and by loading data from the given...
-  replay
   run
-```
-
-## DoppelTest
-
-Activate the Python 3.8 environment:
-
-```bash
-source .venv38/bin/activate
-```
-
-Then, enter `EVITA_DoppelTest` folder an test the tool:
-
-```bash
-(.venv38) cd EVITA_DoppelTest
-(.venv38) python test_main.py
-```
-
-Check that the result looks like:
-
-```bash
-apollo_dev_ROUTE_0: starting
-Dreamview at http://172.17.0.3:8888
-apollo_dev_ROUTE_1: starting
-Dreamview at http://172.17.0.4:8888
-apollo_dev_ROUTE_2: starting
-Dreamview at http://172.17.0.5:8888
-
-
-2026-04-22 09:52:18,365 - ScenarioRunner - INFO - 3 agents running a scenario G0S0.
-2026-04-22 09:52:49,546 - Scenario - INFO - Scenario time: 30.0.
 ```
 
 # Running the experiments
 
-## DoppelTest + Baidu Apollo
+All of EVITA's generators run from the root of the project in `.venv310`, with either simulator:
 
-Activate the Python 3.8 environment and move into the `EVITA_DoppelTest` folder:
+- `--simulator frenetix` (default): the maps in `base-scenarios/`.
+- `--simulator apollo`: the converted map of Apollo's HD map (see [Maps](#maps)). `--delete-records` deletes each scenario's `.record` files once its
+  trace is written (by default they are kept: tens of MB per scenario).
 
-```bash
-source .venv38/bin/activate
-(.venv38) cd EVITA_DoppelTest
-```
+> Note: add `--force-max-duration N` to limit each scenario to N steps (useful for debugging).
 
-The main configuration options are stored in `config.py`.
-The most relevant parameters are:
+## Replication scripts
 
-- `APOLLO_ROOT`: Path to root directory of Apollo 7.0.
-- `DT_ROOT`: Path to root directory of DoppelTest. This path should point to the `EVITA_DoppelTest` folder you are currently in.
-- `RECORDS_DIR_BASE`: Directory where record files produced by the execution of scenarios are saved. The default value is `f'{DT_ROOT}/data/records'`.
-- `SCENARIO_UPPER_LIMIT`: Scenarios duration (in seconds).
-- `MAX_ADC_COUNT`: Maximum number of AVs instances in the generated scenarios.
-- `RUN_FOR_HOUR`: Number of hours you wish to run the tool for.
-- `MAPS_ROOT_FOLDER`: Root folder with all the DoppelTest maps. Default value is `f'{DT_ROOT}/data/maps/'`.
-- `HD_MAP_PATH`: The map used for the scenarios generation.
+`scripts/` has one replication script per generator; each runs repetitions on one or more maps and writes every run's
+results and log:
 
-Start scenarios generation with:
+| Script | Generator |
+|---|---|
+| `EVITA_replication_custom.sh` | EVITA |
+| `Random_replication_custom.sh` | Random |
+| `TIAV_replication_custom.sh` | (1+1) EA, MaxDanger |
+| `MaxInteractions_replication_custom.sh` | (1+1) EA, MaxInteractions |
+| `DoppelTest_replication_custom.sh` | DoppelTest's generator, FrenetiX only |
 
 ```bash
-(.venv38) python main_ga.py
+[HOURS=<hours>] [CPUS=<cpu-list>] [SIMULATOR=frenetix|apollo] [DELETE_RECORDS=1] \
+    bash scripts/<Generator>_replication_custom.sh <start_repetition> <number_of_repetitions> <map_path1> [map_path2 ...]
 ```
 
-After DoppelTest scenarios generation, convert the generated `.record` files to CommonRoad format using the script `convert_analyze_experiment.py`.
+- `HOURS`: duration of each run (default 3; decimals allowed, e.g. `HOURS=0.33` for 20 minutes).
+- `CPUS`: pins every run to the given cores (e.g. `CPUS=0-1`) and limits the numerical libraries to that many threads;
+  give each terminal its own, disjoint list.
+- `SIMULATOR`: `frenetix` (default) or `apollo`; `DELETE_RECORDS=1` (Apollo only) as `--delete-records`.
+- EVITA's script also takes `TH_ED=<m>` and `N_BINS=<n>`.
 
-> Note: This conversion script requires `.venv310` virtual environment
+A repetition whose completed run already exists (same hours, map and repetition) is skipped, and an interrupted one is
+moved to `_incomplete/` and repeated: a script can be restarted safely. To rerun experiments from scratch, move their
+results folder aside first. For example, the MaxDanger (TIAV) experiments on five maps, one terminal per map with two:
 
 ```bash
-source .venv310/bin/activate
-(.venv310) cd EVITA_DoppelTest
-(.venv310) python convert_analyze_experiment.py <record_files_folder> <output_files_folder> [max_workers]
+CPUS=0-1 bash scripts/TIAV_replication_custom.sh 1 10 base-scenarios/CHN_Cho-2_2_I-1-1.cr.xml       # terminal 1
+CPUS=2-3 bash scripts/TIAV_replication_custom.sh 1 10 base-scenarios/DEU_Cologne-79_2_I-1.cr.xml    # terminal 2
+CPUS=4-5 bash scripts/TIAV_replication_custom.sh 1 10 base-scenarios/USA_US101-15_2_T-1.xml         # terminal 3
+CPUS=6-7 bash scripts/TIAV_replication_custom.sh 1 10 base-scenarios/USA_US101-23_1_T-1.xml         # terminal 4
+CPUS=8-9 bash scripts/TIAV_replication_custom.sh 1 10 base-scenarios/USA_US101-9_1_T-1.xml          # terminal 5
 ```
 
-For example, if the `main_ga.py` script has generated some experiments in the `data/records` folder, the call to the conversion script should look like:
-
-```bash
-(.venv310) python convert_analyze_experiment.py data/records/ data/evita-records/
-```
-
-> Note: You can also specify the number of parallel processes with `max_workers` (default value is 5) to speed up the conversion and analysis process
-
-Specifically, this script will:
-- Convert the executed scenario from `.record` files to a CommonRoad `.xml` scenario file
-- Extract the vehicles' planned trajectories and save them in a `.json` file
-- Extract the vehicles' perception messages of other cars or traffic lights and save them in a `.csv` file
-- Extract the stop signs, traffic lights and speeding violations detected by the DoppelTest oracles and save them in a `.csv` file
-- Extract the collisions detected by the DoppelTest oracles, compute additional collision features and save them in a `.csv` file
-- Compute the vehicles interactions and save them in a `.csv` file
-
-### Dataset generation
-
-The replication package also includes a helper script to run multiple consecutive generations.
-
-Before executing the script you can adjust the following parameters in it:
-- `TOTAL_RUNS` = 20
-- `LOG_DIR` = dataset_generation_logs/DoppelTest
-
-```bash
-source .venv38/bin/activate
-(.venv38) cd EVITA_DoppelTest
-(.venv38) ./generate_DoppelTest_dataset.sh
-```
-
-## EVITA + Baidu Apollo
-
-Activate the Python 3.10 environment and enter `EVITA_DoppelTest` folder:
-
-```bash
-source .venv310/bin/activate
-(.venv310) cd EVITA_DoppelTest
-```
-
-Check the generator configuration file `config.py`.
-
-Start scenarios generation with:
-
-```bash
-(.venv310) python main_ga_evita.py
-```
-
-The execution of `main_ga_evita.py` will automatically create a new folder storing the Apollo scenario converted in CommonRoad format, the planned trajectories, the perception messages, the vehicles' violations and the detected interactions and collisions.
-For example for a scenario with folder path `data/records/Experiment_1/Generation_1/Scenario_1/` the tool will create the folder `data/evita-records/Experiment_1/Generation_1/Scenario_1/` 
-
-### Dataset generation
-
-The replication package also includes a helper script to run multiple consecutive generations.
-
-Before executing the script you can adjust the following parameters in it:
-- `TOTAL_RUNS` = 20
-- `LOG_DIR` = dataset_generation_logs/EVITA
-
-```bash
-source .venv310/bin/activate
-(.venv310) cd EVITA_DoppelTest
-(.venv310) ./generate_EVITA_dataset.sh
-```
-
-## EVITA + Frenetix
-
-All the generators must be executed from the root of the project after activating the virtual environment.
-
-> Note: Add the --max-duration N to limit the execution of each scenario to N steps (useful for debug and play around with the execution)
-
-The execution of EVITA with Frenetix-Motion-Planner requires python 3.10:
-
-```bash
-source .venv310/bin/activate
-```
+## Generators, run directly
 
 ### Random Generation
 
@@ -261,6 +192,9 @@ It generates random scenarios as follows:
 --time-budget 3600 \
 --map-file base-scenarios/showcase-scenario.xml
 ```
+
+`--time-budget` is in seconds. On Apollo: `--driving-agent-name apollo --simulator apollo` and the converted map, e.g.
+`--map-file EVITA_DoppelTest/data/converted_maps/borregas_ave/borregas_ave.xml`.
 
 ### 1+1 EA
 
@@ -281,20 +215,19 @@ This is a simple Single Objective generator. It takes the fitness function to ma
 --scenario-generator-class EAOnePlusOneGenerator_MaxInteractions \
 --driving-agent-name frenetix \
 --time-budget 3600 \
---map-file base-scenarios/showcase-scenario.xml 
+--map-file base-scenarios/showcase-scenario.xml
 ```
 
 ### EVITA
 
-For the moment, EVITA runs on pymoo which is not well integrated in the orchestrator, so we invoke this generator directly.
-To run it invoke:
+EVITA runs on pymoo and has its own entry point; `--time-budget` is in minutes:
 
 ```bash
-(.venv310) cd evita
-(.venv310) python generators/nsgaII_search_no_generator.py 10 3 ../base-scenarios/showcase-scenario.xml
+(.venv310) python -m evita.generators.nsgaII_search_no_generator --population-size 10 --time-budget 180 \
+    --scenario-seed-file base-scenarios/showcase-scenario.xml [--simulator apollo] [--seed N] [--threshold M] [--n-bins N]
 ```
 
-## DoppelTest + Frenetix
+### DoppelTest + Frenetix
 
 Please refer to the ICSE 2023 paper for the description of the algorithm.
 
@@ -309,47 +242,85 @@ Please refer to the ICSE 2023 paper for the description of the algorithm.
 --map-file base-scenarios/showcase-scenario.xml
 ```
 
-# Aggregate Experiments Results
+This generator runs on FrenetiX only; on Apollo, the DoppelTest baseline is DoppelTest itself (next section).
 
-We can aggregate the analysis metrics generated using `DoppelTest + BaiduApollo` and `EVITA + BaiduApollo` using the following script:
+## DoppelTest + Baidu Apollo (the DoppelTest baseline)
 
-```bash
-source .venv310/bin/activate
-(.venv310) cd EVITA_DoppelTest/analysis_scripts
-(.venv310) python analysis.py <experiment_folder_path> [<max_workers>]
-```
-> Note: `experiment_folder_path` refers to the directory containing the CommonRoad version of the generated scenarios
-
-> Note: You can also specify the number of parallel processes with `max_workers` (default value is 5) to speed up the conversion and analysis process
-
-This script aggregates the values of the analysis metrics for the scenarios creating a new folder `experiments_analysis`
-
-# Generate Comparison Plots
-
-We can compare the aggregated analysis metrics of `DoppelTest + BaiduApollo` and `EVITA + BaiduApollo` experiments generated using the `analysis.py` script:
+DoppelTest's own search (`main_ga.py`), in its own environment (`bash setup.sh --with-doppeltest-baseline`).
+`generate_DoppelTest_dataset.sh` runs repetitions of it, like the replication scripts:
 
 ```bash
-source .venv310/bin/activate
-(.venv310) cd EVITA_DoppelTest/analysis_scripts
-(.venv310) python generate_plots.py <evita_experiments_folder_path> <doppeltest_experiments_folder_path> <output_folder_path>"
+source .venv38/bin/activate
+[HOURS=<hours>] [MAP=<map>] bash EVITA_DoppelTest/generate_DoppelTest_dataset.sh <start_repetition> <number_of_repetitions>
 ```
-> Note: `evita_experiments_folder_path` and `doppeltest_experiments_folder_path` refer to the directories containing the CommonRoad version of the generated scenarios
 
-This script aggregates the values of the analysis metrics for the scenarios creating a new folder `experiments_analysis`
+- `HOURS`: duration of each run (default: `RUN_FOR_HOUR` in `config.py`; decimals allowed).
+- `MAP`: DoppelTest's map, a folder of `EVITA_DoppelTest/data/maps` (default: the map of `HD_MAP_PATH`). It must be the
+  map Apollo loads (`--map_dir` in Apollo's `modules/common/data/global_flagfile.txt`): checked before every run.
+- `MAX_ADC_COUNT` and `SCENARIO_UPPER_LIMIT` stay as in `config.py` (EVITA takes them from there too, on Apollo).
 
-# Scenarios Animation
+Each repetition gets `results/Main-Experiment/Apollo/DoppelTest/<map>/DoppelTest_RUN_FOR_<h>_HOURS_SCENARIO_MAP_<map>_REPETITION_<k>_<time>/`
+(main_ga.py's experiment folder with the records, `run_parameters.json`, main_ga.py's `log.bin` and `hof.bin`,
+`run_completed.json`) and its log in `logs/Main-Experiment/Apollo/DoppelTest/<map>/`. Completed repetitions are skipped
+and interrupted ones repeated, as in the replication scripts. The script runs DoppelTest through
+`EVITA_DoppelTest/run_main_ga.py`, which sets the run's values on `config` before DoppelTest's modules are imported.
 
-We can animate the scenarios generated in the steps `DoppelTest + BaiduApollo` and `EVITA + BaiduApollo` using the following script:
+> TODO: DoppelTest's runs produce `.record` files; their export to traces and evaluation with EVITA's evaluator
+> (`scripts/apollo_evaluate.py`) is to be documented once the record export for DoppelTest's runs is restored.
+
+## How Apollo runs a scenario
+
+On Apollo, every scenario runs in `<run folder>/<scenario id>/`: DoppelTest's JSON (`c.json`), the scenario
+(`scenario.xml`), the runner's log (`runner.log`), the trace (`trace.json.gz`) and the records (`records/`). Each run
+is health-checked: a run where a vehicle did not run, lost its planning or never moved is retried once (the failed
+attempt is kept in `failed_attempt_1/`); a scenario that stays unusable, or that DoppelTest rejects, is invalid and
+its folder is moved to `<run folder>/debug/`. A progress bar shows each scenario's execution (setting up, running,
+saving records and trace).
+
+# Outputs
+
+Every run folder contains, besides the scenario folders:
+
+- the report: `behavior.csv`, the interaction and collision maps (`*.npy`), `requirements_violations.csv`;
+- `metadata.csv` (generator, map, budget, simulator), `performance.csv`;
+- `task_times.csv`, `task_times_per_scenario.csv`: the time spent in each task (Apollo's phases included);
+- `scenario_outcomes.csv`: one row per generated scenario (executed, valid, and why not).
+
+# Analysis
+
+## Scenario outcomes
+
+Counts of the runs' scenarios by outcome (usable, refused by validation, skipped, non-interesting, simulator failure,
+with their causes), per generator and simulator:
 
 ```bash
-source .venv310/bin/activate
-(.venv310) cd EVITA_DoppelTest/conversion_scripts
-(.venv310) python animate_scenarios.py <experiment_folder_path> [<max_workers>]
+(.venv310) python scripts/scenario_outcomes_analysis.py results/Main-Experiment [--out summary.csv]
 ```
 
-> Note: `experiment_folder_path` refers to the directory containing the CommonRoad version of the generated scenarios
+## Aggregate Experiments Results
 
-> Note: You can also specify the number of parallel processes with `max_workers` (default value is 3) to speed up the animation process
+```bash
+(.venv310) python scripts/analysis.py <experiments_folder_path> [<max_workers>]
+```
 
-This script will first plot each simulation frame and then creates a gif to animate them.
-The files will be saved in each CommonRoad scenario's folder.
+`scripts/analysis.sh <experiments_folder_path> <analysis|plot|both> [max_workers]` runs the aggregation and the plots together.
+
+## Generate Comparison Plots
+
+```bash
+(.venv310) python scripts/generate_plots.py --experiments <folder> [<folder> ...] --labels <label> [<label> ...] --output <output_folder>
+```
+
+## Interactions and false positives
+
+- `scripts/interactions_extraction.py` (`extract`, `criticality`, `maneuvers`): the interactions of the experiments,
+  their criticality and maneuvers.
+- `scripts/false_positive_analysis.py` (`sample`, `execute`, `analyze`): interacting vehicles removed from scenarios,
+  to measure false positives of the interaction detection.
+
+## Apollo tools
+
+- `scripts/apollo_evaluate.py --traces <folder> --map <converted map.xml> --out <run folder>`: evaluates Apollo traces
+  again (e.g. after a change of the evaluator) and writes the report, without running Apollo.
+- `scripts/apollo_check.py trace|convert|spec`: inspects a trace, converts it into the executed scenario, or builds a
+  scenario's DoppelTest JSON.
