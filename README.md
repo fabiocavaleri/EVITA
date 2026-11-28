@@ -8,7 +8,6 @@ We introduce EVITA (EVolutionary Interaction Testing Approach): a scenario-gener
 [![Baidu Apollo](https://img.shields.io/badge/BaiduApollo-7.0-green?logo=github)](https://github.com/ApolloAuto/apollo)
 [![DoppelTest](https://img.shields.io/badge/DoppelTest-Replication_Package-purple?logo=zenodo)](https://zenodo.org/records/7657587)
 ![Python 3.10](https://img.shields.io/badge/Python-3.10-orange?logo=python)
-![Python 3.8](https://img.shields.io/badge/Python-3.8-yellow?logo=python)
 
 # What is included
 
@@ -24,6 +23,8 @@ We introduce EVITA (EVolutionary Interaction Testing Approach): a scenario-gener
 - `DoppelTest`: the original version of the DoppelTest framework, for reference.
 - `base-scenarios`: the CommonRoad maps of the FrenetiX experiments.
 - `scripts`: the replication scripts, the analysis and plotting scripts, and Apollo tools.
+- `tests`: the test suites.
+- `equivalence_check.py`, `calibrate_threshold.py`: developer checks (see the end of this file).
 
 # Requirements
 
@@ -87,7 +88,10 @@ Then configure `EVITA_DoppelTest/config.py`:
   from here when it runs on Apollo.
 
 EVITA starts Apollo's containers itself at the beginning of every run (with `apollo_runner_startup.py`): one
-container per vehicle, `apollo_dev_ROUTE_0` to `apollo_dev_ROUTE_<MAX_ADC_COUNT - 1>`.
+container per vehicle, `apollo_dev_ROUTE_0` to `apollo_dev_ROUTE_<MAX_ADC_COUNT - 1>`. Containers left by an earlier
+run are removed first (EVITA's and DoppelTest's runs use the same names; a left-over container, above all after an
+interrupted run, may refuse Dreamview's connection), so every run starts with fresh containers. DoppelTest's baseline
+script does the same before each repetition. Do not run EVITA and DoppelTest on the same machine at the same time.
 
 ### Maps
 
@@ -99,7 +103,7 @@ map's feasible paths). On Apollo, **the converted map given to EVITA must be the
 ```bash
 source .venv310/bin/activate
 cd EVITA_DoppelTest/data
-python map_converter.py
+PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python map_converter.py
 ```
 
 # Smoke Test
@@ -108,6 +112,7 @@ Activate EVITA's environment, from the root of the project:
 
 ```bash
 source .venv310/bin/activate
+export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python   # needed by the Apollo side (DoppelTest's message modules)
 ```
 
 Check EVITA's command line:
@@ -128,12 +133,24 @@ Commands:
   run
 ```
 
+Run the test suites (each prints its number of passed checks):
+
+```bash
+for t in test_vehicle_models test_step2a_part1 test_step2a_scenario_converter test_step2a_trace test_step2_plans \
+         test_step2a_generation test_step2_evaluator test_step3_simulators test_step3_generators \
+         test_step3_apollo_executor test_scenario_outcomes; do
+    printf "%-34s " $t; python tests/$t.py 2>&1 | tail -1; done
+```
+
+For Apollo, a short run of any generator (e.g. `HOURS=0.33 SIMULATOR=apollo bash scripts/Random_replication_custom.sh 1 1 EVITA_DoppelTest/data/converted_maps/borregas_ave/borregas_ave.xml`) starts the containers, executes scenarios and writes the run's report.
+
 # Running the experiments
 
 All of EVITA's generators run from the root of the project in `.venv310`, with either simulator:
 
 - `--simulator frenetix` (default): the maps in `base-scenarios/`.
-- `--simulator apollo`: the converted map of Apollo's HD map (see [Maps](#maps)). `--delete-records` deletes each scenario's `.record` files once its
+- `--simulator apollo`: the converted map of Apollo's HD map (see [Maps](#maps)); also export
+  `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`. `--delete-records` deletes each scenario's `.record` files once its
   trace is written (by default they are kept: tens of MB per scenario).
 
 > Note: add `--force-max-duration N` to limit each scenario to N steps (useful for debugging).
@@ -143,13 +160,13 @@ All of EVITA's generators run from the root of the project in `.venv310`, with e
 `scripts/` has one replication script per generator; each runs repetitions on one or more maps and writes every run's
 results and log:
 
-| Script | Generator |
-|---|---|
-| `EVITA_replication_custom.sh` | EVITA |
-| `Random_replication_custom.sh` | Random |
-| `TIAV_replication_custom.sh` | (1+1) EA, MaxDanger |
-| `MaxInteractions_replication_custom.sh` | (1+1) EA, MaxInteractions |
-| `DoppelTest_replication_custom.sh` | DoppelTest's generator, FrenetiX only |
+| Script | Generator | Results (`<simulator folder>`: none for FrenetiX, `Apollo/` for Apollo) |
+|---|---|---|
+| `EVITA_replication_custom.sh` | EVITA | `results/Ablation-Study/<Frenetix or Apollo>/TotalInts-UniqueInts/EVITA[...]/` |
+| `Random_replication_custom.sh` | Random | `results/Main-Experiment/<simulator folder>Random/` |
+| `TIAV_replication_custom.sh` | (1+1) EA, MaxDanger | `results/Main-Experiment/<simulator folder>TIAV/` |
+| `MaxInteractions_replication_custom.sh` | (1+1) EA, MaxInteractions | `results/Main-Experiment/<simulator folder>MaxInteractions/` |
+| `DoppelTest_replication_custom.sh` | DoppelTest's generator, FrenetiX only | `results/Main-Experiment/DoppelTest/` |
 
 ```bash
 [HOURS=<hours>] [CPUS=<cpu-list>] [SIMULATOR=frenetix|apollo] [DELETE_RECORDS=1] \
@@ -160,11 +177,12 @@ results and log:
 - `CPUS`: pins every run to the given cores (e.g. `CPUS=0-1`) and limits the numerical libraries to that many threads;
   give each terminal its own, disjoint list.
 - `SIMULATOR`: `frenetix` (default) or `apollo`; `DELETE_RECORDS=1` (Apollo only) as `--delete-records`.
-- EVITA's script also takes `TH_ED=<m>` and `N_BINS=<n>`.
+- EVITA's script also takes `TH_ED=<m>` and `N_BINS=<n>` (ablation study).
 
 A repetition whose completed run already exists (same hours, map and repetition) is skipped, and an interrupted one is
 moved to `_incomplete/` and repeated: a script can be restarted safely. To rerun experiments from scratch, move their
-results folder aside first. For example, the MaxDanger (TIAV) experiments on five maps, one terminal per map with two:
+results folder aside first. For example, the MaxDanger (TIAV) experiments on five maps, one terminal per map with two
+cores each (run each in `tmux` or `screen`):
 
 ```bash
 CPUS=0-1 bash scripts/TIAV_replication_custom.sh 1 10 base-scenarios/CHN_Cho-2_2_I-1-1.cr.xml       # terminal 1
@@ -246,7 +264,7 @@ This generator runs on FrenetiX only; on Apollo, the DoppelTest baseline is Dopp
 
 ## DoppelTest + Baidu Apollo (the DoppelTest baseline)
 
-DoppelTest's own search (`main_ga.py`), in its own environment (`bash setup.sh --with-doppeltest-baseline`).
+DoppelTest's own search (`main_ga.py`, unchanged), as published, in its own environment (`bash setup.sh --with-doppeltest-baseline`).
 `generate_DoppelTest_dataset.sh` runs repetitions of it, like the replication scripts:
 
 ```bash
@@ -258,15 +276,39 @@ source .venv38/bin/activate
 - `MAP`: DoppelTest's map, a folder of `EVITA_DoppelTest/data/maps` (default: the map of `HD_MAP_PATH`). It must be the
   map Apollo loads (`--map_dir` in Apollo's `modules/common/data/global_flagfile.txt`): checked before every run.
 - `MAX_ADC_COUNT` and `SCENARIO_UPPER_LIMIT` stay as in `config.py` (EVITA takes them from there too, on Apollo).
+- `MAX_PD_COUNT = 0` in `config.py`: no pedestrians, as in EVITA's scenarios (DoppelTest's original setting is 5).
 
 Each repetition gets `results/Main-Experiment/Apollo/DoppelTest/<map>/DoppelTest_RUN_FOR_<h>_HOURS_SCENARIO_MAP_<map>_REPETITION_<k>_<time>/`
-(main_ga.py's experiment folder with the records, `run_parameters.json`, main_ga.py's `log.bin` and `hof.bin`,
-`run_completed.json`) and its log in `logs/Main-Experiment/Apollo/DoppelTest/<map>/`. Completed repetitions are skipped
+(DoppelTest's records, `Generation_*/Scenario_*`, and `summary.csv`; `run_parameters.json` with the GA's
+hyperparameters; a copy of `config.py`; main_ga.py's `log.bin` and `hof.bin`; `run_completed.json`) and its log in `logs/Main-Experiment/Apollo/DoppelTest/<map>/`. Completed repetitions are skipped
 and interrupted ones repeated, as in the replication scripts. The script runs DoppelTest through
 `EVITA_DoppelTest/run_main_ga.py`, which sets the run's values on `config` before DoppelTest's modules are imported.
 
-> TODO: DoppelTest's runs produce `.record` files; their export to traces and evaluation with EVITA's evaluator
-> (`scripts/apollo_evaluate.py`) is to be documented once the record export for DoppelTest's runs is restored.
+### Converting DoppelTest's runs for EVITA's analysis
+
+DoppelTest's runs keep DoppelTest's own output (records and scenario JSON in `Generation_*/Scenario_*/`).
+`scripts/convert_doppeltest_runs.py` converts every scenario into EVITA's format, in the run folder itself, with the
+same rules as EVITA's runs on Apollo:
+
+```bash
+source .venv310/bin/activate
+export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+python scripts/convert_doppeltest_runs.py results/Main-Experiment/Apollo/DoppelTest [--workers N] [--force]
+```
+
+- each scenario gets an id (`00001`, ...; `doppeltest_scenarios.csv` maps it to its generation and scenario), a trace
+  from its records, and its CommonRoad scenario rebuilt from DoppelTest's JSON;
+- a scenario that cannot be converted, fails EVITA's Apollo validation, or fails the health check (a vehicle that did
+  not run, lost its planning, or never moved) is invalid: its folder goes to `debug/<id>/` with `reason.txt`;
+- valid scenarios are evaluated with EVITA's evaluator (`<id>/logs/simulation.db`); the run gets `scenario_outcomes.csv`,
+  `performance.csv`, `metadata.csv` and the report;
+- DoppelTest's Apollo ids (random per scenario) come from the `ids_map.json` that `run_main_ga.py` saves, or are
+  recovered from the obstacles the vehicles perceived (for runs made before);
+- converted runs are skipped unless `--force`;
+- `--workers N` converts N scenarios at a time (separate processes; each needs memory for one trace); the results do not depend on N.
+
+`scripts/analysis.sh results/Main-Experiment/Apollo <analysis|plot|both>` then analyses DoppelTest next to EVITA's
+generators, and `scripts/scenario_outcomes_analysis.py` counts its scenarios by outcome.
 
 ## How Apollo runs a scenario
 
@@ -324,3 +366,9 @@ with their causes), per generator and simulator:
   again (e.g. after a change of the evaluator) and writes the report, without running Apollo.
 - `scripts/apollo_check.py trace|convert|spec`: inspects a trace, converts it into the executed scenario, or builds a
   scenario's DoppelTest JSON.
+
+# Developer checks
+
+- `equivalence_check.py` (`generate`, `execute`, `compare`): executes a fixed set of scenarios with FrenetiX and
+  compares the evaluation tables between code versions (`compare --labels <before> <after>`: identical expected).
+- `calibrate_threshold.py` (`generate`, `execute`, `analyze`): calibrates the trajectory difference threshold Th_ED.

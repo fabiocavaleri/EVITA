@@ -76,6 +76,9 @@ def classify(row, run_folder: str):
         return SKIPPED, "budget over"
     if row["executed"] != "1":
         return REFUSED, normalise(message)
+    # DoppelTest's own runs (scripts/convert_doppeltest_runs.py): executed by DoppelTest, refused by EVITA's validation
+    if message.startswith("Refused by EVITA's Apollo validation:"):
+        return REFUSED, normalise(message.split(":", 1)[1])
 
     # Executed, then unusable
     if message == EXECUTION_ERROR_MESSAGE:
@@ -113,7 +116,8 @@ def never_moved_kinds(run_folder: str, scenario_id: str, vehicle_ids):
         if os.path.exists(path):
             with gzip.open(path, "rt") as f:
                 trace = json.load(f)
-            vehicles = {v.get("evita_id"): v for v in trace.get("vehicles", [])}
+            # Vehicle ids as in evita/apollo/trace.py: EVITA's id, or 30000 + the vehicle's index (DoppelTest's own runs)
+            vehicles = {(v.get("evita_id") if v.get("evita_id") is not None else 30000 + v.get("json_index", 0)): v for v in trace.get("vehicles", [])}
             return [planner_state(vehicles[v]) if v in vehicles else "unknown" for v in vehicle_ids]
     return ["unknown" for _ in vehicle_ids]
 
